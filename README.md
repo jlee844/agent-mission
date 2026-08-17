@@ -64,6 +64,19 @@ complete is a judgement, so it stays with you; the agent may record evidence.
 
 There are 24 tests and most of them guard exactly this.
 
+**The honest scope of that guarantee.** The store refuses agent-authored
+missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
+because a person is assumed to be at the keyboard. So:
+
+> An agent calling the library **cannot** set your objective or tick your
+> checklist. An agent with **shell access** can run `mission init` and pretend
+> to be you.
+
+This defends against an agent quietly redefining the goal in the course of its
+work, not against one deliberately impersonating you with full local
+privileges. Closing that needs the CLI to prove a human is present — a
+confirmation the agent cannot supply — which is not built.
+
 ## Several sessions at once
 
 Two agents in one directory is normal — one on the sub-project, one that needs
