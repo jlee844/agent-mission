@@ -51,17 +51,57 @@ class ProtectedFieldError(PermissionError):
     """Raised when an agent tries to write a field the human owns."""
 
 
+class NoSuchItemError(KeyError):
+    """Raised for an item id that is not in the plan.
+
+    Appending an event for an unknown id used to succeed silently, so a typo'd
+    id reported "done" and changed nothing.
+    """
+
+
 @dataclass
 class Item:
-    """A checklist entry. `done` is set by a human; evidence is measured."""
+    """A node in the plan. `done` is set by a human; evidence is measured.
+
+    A plan is a tree, not a list: an objective breaks into subgoals, and those
+    into work. Flattening it loses which piece a task belongs to, which is the
+    first thing you want to know when three sessions are running.
+    """
     id: str
     text: str
     done: bool = False
     proposed_by: str = "agent"
     accepted: bool = False
+    parent: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class Node:
+    """An Item plus its children, with progress rolled up from the leaves."""
+    item: Item
+    children: list["Node"] = field(default_factory=list)
+
+    @property
+    def leaves(self) -> list[Item]:
+        if not self.children:
+            return [self.item]
+        return [lf for c in self.children for lf in c.leaves]
+
+    @property
+    def done_count(self) -> int:
+        return sum(1 for lf in self.leaves if lf.done)
+
+    @property
+    def total(self) -> int:
+        return len(self.leaves)
+
+    @property
+    def complete(self) -> bool:
+        """A branch is done when its leaves are; a leaf when it is ticked."""
+        return self.done_count == self.total and self.total > 0
 
 
 @dataclass
@@ -84,9 +124,37 @@ class Mission:
     def items(self) -> list[Item]:
         return [Item(**d) for d in self.checklist]
 
+    def tree(self) -> list[Node]:
+        """The plan as a forest, in insertion order at every level.
+
+        An item whose parent is missing is treated as a root rather than
+        dropped: losing a task because its parent was deleted is worse than
+        showing it slightly out of place.
+        """
+        by_id = {i.id: Node(i) for i in self.items}
+        roots: list[Node] = []
+        for i in self.items:
+            node = by_id[i.id]
+            parent = by_id.get(i.parent) if i.parent else None
+            if parent is None or parent is node:
+                roots.append(node)
+            else:
+                parent.children.append(node)
+        return roots
+
+    @property
+    def leaves(self) -> list[Item]:
+        """Only leaves are work. A subgoal is a container, and counting it as a
+        task both inflates the total and can never be ticked honestly."""
+        return [lf for n in self.tree() for lf in n.leaves]
+
     @property
     def done_count(self) -> int:
-        return sum(1 for i in self.items if i.done)
+        return sum(1 for lf in self.leaves if lf.done)
+
+    @property
+    def total_count(self) -> int:
+        return len(self.leaves)
 
     @property
     def pending(self) -> list[Item]:
@@ -139,13 +207,21 @@ class MissionStore:
                 f"{fieldname} is yours; the agent cannot set it")
         return self._append("set", by, field=fieldname, value=value)
 
-    def propose(self, text: str, by: str = "agent") -> dict:
-        """Agent suggests a checklist item. It is inert until accepted."""
-        return self._append("proposed", by, item_id=uuid.uuid4().hex[:8], text=text)
+    def propose(self, text: str, by: str = "agent",
+                parent: str | None = None) -> dict:
+        """Suggest a node. Inert until accepted. `parent` nests it under another."""
+        return self._append("proposed", by, item_id=uuid.uuid4().hex[:8],
+                            text=text, parent=parent)
+
+    def _require(self, item_id: str) -> None:
+        m = self.load()
+        if m is None or not any(d["id"] == item_id for d in m.checklist):
+            raise NoSuchItemError(item_id)
 
     def accept(self, item_id: str, by: str) -> dict:
         if by != "human":
             raise ProtectedFieldError("only you can accept a proposal")
+        self._require(item_id)
         return self._append("accepted", by, item_id=item_id)
 
     def complete(self, item_id: str, by: str) -> dict:
@@ -153,6 +229,7 @@ class MissionStore:
         if by != "human":
             raise ProtectedFieldError(
                 "the agent may record evidence, not declare an item done")
+        self._require(item_id)
         return self._append("completed", by, item_id=item_id)
 
     def observe(self, fieldname: str, text: str, by: str = "agent") -> dict:
@@ -182,7 +259,8 @@ class MissionStore:
                 setattr(m, f, list(v) if f in LIST_FIELDS and isinstance(v, list) else v)
             elif k == "proposed":
                 m.checklist.append(Item(ev["item_id"], ev["text"],
-                                        proposed_by=ev.get("by", "agent")).to_dict())
+                                        proposed_by=ev.get("by", "agent"),
+                                        parent=ev.get("parent")).to_dict())
             elif k == "accepted":
                 for d in m.checklist:
                     if d["id"] == ev["item_id"]:

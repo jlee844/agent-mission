@@ -27,7 +27,14 @@ CHECKLIST:
     assert p["success_criteria"] == ["lists sync", "parity regenerated"]
     assert p["constraints"] == ["no schema migration"]
     assert p["non_goals"] == ["redesigning the map"]
-    assert p["checklist"] == ["port the types"]
+    assert p["checklist"] == [{"text": "port the types", "indent": 0}]
+
+
+def test_indentation_in_the_checklist_is_nesting():
+    """A plan is a tree. Two spaces hangs a task under the subgoal above it."""
+    p = _parse("OBJECTIVE: x\nCHECKLIST:\n- Mobile port\n  - types\n  - sheet\n- Backend\n")
+    assert [(c["text"], c["indent"]) for c in p["checklist"]] == [
+        ("Mobile port", 0), ("types", 2), ("sheet", 2), ("Backend", 0)]
 
 
 def test_empty_bullets_are_dropped_not_stored_blank():

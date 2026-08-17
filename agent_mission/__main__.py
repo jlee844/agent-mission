@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .daemon import ensure as ensure_board, running as board_running, stop as board_stop
 from .session import activity, current_session_id, transcript_for
-from .store import (FIELD_AUTHORITY, Authority, MissionStore,
+from .store import (FIELD_AUTHORITY, Authority, MissionStore, NoSuchItemError,
                     ProtectedFieldError, root_for)
 
 TEMPLATE = """\
@@ -41,7 +41,8 @@ CONSTRAINTS:
 NON-GOALS:
 -
 
-# Things to do. Tick them off with `mission done <id>`.
+# The plan. Indent with two spaces to nest a task under a subgoal.
+# Tick items off with `mission done <id>`.
 CHECKLIST:
 -
 """
@@ -65,7 +66,13 @@ def _parse(text: str) -> dict:
             key = keys[line.strip()]
         elif line.lstrip().startswith("-") and key:
             v = line.lstrip()[1:].strip()
-            if v:
+            if not v:
+                continue
+            if key == "checklist":
+                # indentation is nesting: "  - x" hangs under the previous "- y"
+                indent = len(line) - len(line.lstrip())
+                out[key].append({"text": v, "indent": indent})
+            else:
                 out[key].append(v)
     return out
 
@@ -121,9 +128,15 @@ def cmd_init(a) -> int:
     for f in ("success_criteria", "constraints", "non_goals"):
         if parsed[f]:
             st.set_protected(f, parsed[f], by="human")
-    for item in parsed["checklist"]:
-        ev = st.propose(item, by="human")
+    stack: list[tuple[int, str]] = []          # (indent, item_id)
+    for entry in parsed["checklist"]:
+        text, indent = entry["text"], entry["indent"]
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        parent = stack[-1][1] if stack else None
+        ev = st.propose(text, by="human", parent=parent)
         st.accept(ev["item_id"], by="human")
+        stack.append((indent, ev["item_id"]))
     print(f"\n  mission set for {sid[:8]}\n")
     # Start/join the board BEFORE showing: otherwise the mission prints
     # "board: not running" and the next line says it just started one.
@@ -167,12 +180,10 @@ def cmd_show(a) -> int:
         for c in m.non_goals:
             print(f"    · {c}")
     if m.checklist:
-        print(f"\n  CHECKLIST  {m.done_count}/{len(m.checklist)}")
-        for i in m.items:
-            mark = "x" if i.done else (" " if i.accepted else "?")
-            print(f"    [{mark}] {i.id}  {i.text}")
+        print(f"\n  PLAN  {m.done_count}/{m.total_count}")
+        _print_tree(m.tree())
         if m.unaccepted:
-            print(f"    {len(m.unaccepted)} proposed, awaiting your accept")
+            print(f"\n    {len(m.unaccepted)} proposed, awaiting your accept")
     if act:
         print(f"\n  MEASURED SO FAR")
         print(f"    {act.calls} tool calls · {len(act.files)} files changed · "
@@ -189,23 +200,43 @@ def cmd_show(a) -> int:
     return 0
 
 
+def _print_tree(nodes, depth: int = 0, prefix: str = "") -> None:
+    """Indented, with a branch's progress rolled up from its leaves."""
+    for n, last in ((n, i == len(nodes) - 1) for i, n in enumerate(nodes)):
+        item = n.item
+        mark = "x" if (n.complete if n.children else item.done) else (
+            " " if item.accepted else "?")
+        elbow = "" if depth == 0 else ("└─ " if last else "├─ ")
+        roll = f"   {n.done_count}/{n.total}" if n.children else ""
+        print(f"    {prefix}{elbow}[{mark}] {item.id}  {item.text}{roll}")
+        if n.children:
+            _print_tree(n.children, depth + 1,
+                        prefix + ("" if depth == 0 else ("   " if last else "│  ")))
+
+
 def cmd_add(a) -> int:
     sid = a.session or current_session_id()
     st = _store(sid)
-    ev = st.propose(a.text, by="human")
+    ev = st.propose(a.text, by="human", parent=a.under)
     st.accept(ev["item_id"], by="human")
-    print(f"  added {ev['item_id']}  {a.text}")
+    where = f" under {a.under}" if a.under else ""
+    print(f"  added {ev['item_id']}{where}  {a.text}")
     return 0
 
 
 def cmd_propose(a) -> int:
-    ev = _store(a.session or current_session_id()).propose(a.text, by="agent")
+    ev = _store(a.session or current_session_id()).propose(
+        a.text, by="agent", parent=a.under)
     print(f"  proposed {ev['item_id']} — inert until you `mission accept {ev['item_id']}`")
     return 0
 
 
 def cmd_accept(a) -> int:
-    _store(a.session or current_session_id()).accept(a.item_id, by="human")
+    try:
+        _store(a.session or current_session_id()).accept(a.item_id, by="human")
+    except NoSuchItemError:
+        print(f"  no item {a.item_id!r} in this plan — `mission` to see the ids")
+        return 1
     print(f"  accepted {a.item_id}")
     return 0
 
@@ -213,6 +244,9 @@ def cmd_accept(a) -> int:
 def cmd_done(a) -> int:
     try:
         _store(a.session or current_session_id()).complete(a.item_id, by="human")
+    except NoSuchItemError:
+        print(f"  no item {a.item_id!r} in this plan — `mission` to see the ids")
+        return 1
     except ProtectedFieldError as e:
         print(f"  {e}")
         return 1
@@ -285,8 +319,16 @@ def main(argv: list[str] | None = None) -> int:
     i.set_defaults(fn=cmd_init)
 
     s = sub.add_parser("show", parents=[common]); s.set_defaults(fn=cmd_show)
-    ad = sub.add_parser("add", parents=[common]); ad.add_argument("text"); ad.set_defaults(fn=cmd_add)
-    pr = sub.add_parser("propose", parents=[common]); pr.add_argument("text"); pr.set_defaults(fn=cmd_propose)
+    ad = sub.add_parser("add", parents=[common])
+    ad.add_argument("text")
+    ad.add_argument("--under", default=None, metavar="ID",
+                    help="nest this under another item")
+    ad.set_defaults(fn=cmd_add)
+
+    pr = sub.add_parser("propose", parents=[common])
+    pr.add_argument("text")
+    pr.add_argument("--under", default=None, metavar="ID")
+    pr.set_defaults(fn=cmd_propose)
     ac = sub.add_parser("accept", parents=[common]); ac.add_argument("item_id"); ac.set_defaults(fn=cmd_accept)
     dn = sub.add_parser("done", parents=[common]); dn.add_argument("item_id"); dn.set_defaults(fn=cmd_done)
     su = sub.add_parser("setup", parents=[common],

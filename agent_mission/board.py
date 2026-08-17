@@ -18,6 +18,23 @@ def _slug(cwd: str) -> str:
     return "-" + cwd.replace("/", "-").lstrip("-")
 
 
+def _tree(m) -> list[dict]:
+    """The plan as nested rows the page can render without re-deriving it."""
+    def walk(nodes, depth=0):
+        out = []
+        for n in nodes:
+            out.append({
+                "id": n.item.id, "t": n.item.text, "d": depth,
+                "done": n.complete if n.children else n.item.done,
+                "ok": n.item.accepted,
+                "branch": bool(n.children),
+                "roll": f"{n.done_count}/{n.total}" if n.children else "",
+            })
+            out.extend(walk(n.children, depth + 1))
+        return out
+    return walk(m.tree())
+
+
 def _missions_home() -> Path:
     import os
     return Path(os.environ.get("AGENT_MISSION_HOME",
@@ -49,10 +66,9 @@ def snapshot() -> list[dict]:
                 "criteria": m.success_criteria if m else [],
                 "constraints": m.constraints if m else [],
                 "non_goals": m.non_goals if m else [],
-                "items": [{"id": i.id, "t": i.text, "done": i.done,
-                           "ok": i.accepted} for i in m.items] if m else [],
+                "tree": _tree(m) if m else [],
                 "done": m.done_count if m else 0,
-                "total": len(m.checklist) if m else 0,
+                "total": m.total_count if m else 0,
                 "pending_accept": len(m.unaccepted) if m else 0,
                 "calls": a.calls, "files": len(a.files), "tests": a.tests,
                 "failures": a.failures, "asks": a.last_asks,
@@ -90,9 +106,8 @@ def snapshot() -> list[dict]:
                 "has_mission": True, "objective": m.objective,
                 "criteria": m.success_criteria, "constraints": m.constraints,
                 "non_goals": m.non_goals,
-                "items": [{"id": i.id, "t": i.text, "done": i.done,
-                           "ok": i.accepted} for i in m.items],
-                "done": m.done_count, "total": len(m.checklist),
+                "tree": _tree(m),
+                "done": m.done_count, "total": m.total_count,
                 "pending_accept": len(m.unaccepted),
                 "calls": a.calls if a else 0, "files": len(a.files) if a else 0,
                 "tests": a.tests if a else 0, "failures": a.failures if a else 0,
@@ -140,6 +155,12 @@ li{margin:.16rem 0;line-height:1.45;font-size:.86rem}
 li.ng{color:var(--mut)}
 .chk{list-style:none;padding:0}
 .chk li{display:flex;gap:.5rem;align-items:flex-start;font-size:.88rem;padding:.13rem 0}
+.chk li.d1{padding-left:1.15rem}
+.chk li.d2{padding-left:2.3rem}
+.chk li.d3{padding-left:3.45rem}
+.chk li.branch{font-weight:600;margin-top:.3rem}
+.chk .roll{margin-left:auto;font-family:var(--mono);font-size:.7rem;color:var(--mut);
+flex:none;padding-left:.6rem}
 .box{font-family:var(--mono);color:var(--mut);flex:none}
 .chk li.done{color:var(--mut);text-decoration:line-through}
 .chk li.done .box{color:var(--ok);text-decoration:none}
@@ -171,10 +192,11 @@ async function tick(){
        ${s.total? `<div class=bar><i style="width:${100*s.done/s.total}%"></i></div>
          <div class=sid><span>${s.done} of ${s.total} done</span>
          ${s.pending_accept?`<span class=warn>${s.pending_accept} awaiting accept</span>`:'<span></span>'}</div>
-         <ul class=chk>${s.items.map(i=>`
-           <li class="${i.done?'done':(i.ok?'':'prop')}">
+         <ul class=chk>${s.tree.map(i=>`
+           <li class="d${i.d} ${i.branch?'branch':''} ${i.done?'done':(i.ok?'':'prop')}">
              <span class=box>[${i.done?'x':(i.ok?' ':'?')}]</span>
-             <span>${esc(i.t)}</span></li>`).join('')}</ul>`:''}
+             <span>${esc(i.t)}</span>
+             ${i.roll?`<span class=roll>${i.roll}</span>`:''}</li>`).join('')}</ul>`:''}
        ${s.criteria.length?`<h3>Done when</h3><ul>${s.criteria.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
        ${s.constraints.length?`<h3>Constraints</h3><ul>${s.constraints.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
        ${s.non_goals.length?`<h3>Not doing</h3><ul>${s.non_goals.map(c=>`<li class=ng>${esc(c)}</li>`).join('')}</ul>`:''}

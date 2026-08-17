@@ -66,8 +66,11 @@ Work through, in order:
    creep visible later, so it is worth one real push. Name the adjacent thing
    they are most likely to be dragged into.
 
-5. **Checklist.** Propose 3–7 concrete items from everything above and the
-   session so far. Ask them to cut or reorder rather than to write from blank.
+5. **The plan — as a tree, not a list.** Propose 2–4 **subgoals** that carry
+   the objective, then 2–5 concrete tasks under each. A flat list of twelve
+   items hides which piece a task belongs to, which is the first thing you want
+   to know when several sessions are running. Ask them to cut, rename or
+   re-parent rather than to write from blank.
 
 **Stop when a competent stranger could pick up this session and know what to do
 and when to stop.** Not before. If a question remains, it is not done.
@@ -85,8 +88,15 @@ CONSTRAINTS:
 NON-GOALS:
 - <non-goal>
 CHECKLIST:
-- <item>
+- <subgoal>
+  - <task>          # two spaces nests it under the subgoal above
+  - <task>
+- <subgoal>
+  - <task>
 ```
+
+Indentation is the nesting. Only leaves count as work; a subgoal shows the
+progress of its children.
 
 Then run:
 

@@ -48,6 +48,15 @@ mission board     # the shared board (starts it, or joins the one running)
 
 `[?]` is an agent proposal. It is inert until you accept it.
 
+**The plan is a tree.** An objective breaks into subgoals, subgoals into work.
+Only leaves count — a subgoal is a container, so counting it as a task both
+inflates the total and can never be ticked honestly. A branch shows the progress
+of its children and is done when they are.
+
+```bash
+mission add "Wire the invite flow" --under e92721c7
+```
+
 ## Use it from inside a session
 
 ```
@@ -87,7 +96,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 47 tests and most of them guard exactly this.
+There are 52 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store refuses agent-authored
 missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
@@ -165,7 +174,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 47 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 52 tests, no network
 ```
 
 ## Status

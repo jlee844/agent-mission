@@ -103,3 +103,63 @@ def test_an_empty_store_has_no_mission(tmp_path):
 def test_root_is_scoped_per_session(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
     assert root_for("aaa") != root_for("bbb")
+
+
+# ── the plan is a tree ───────────────────────────────────────────────────────
+
+def _plan(store):
+    a = store.propose("Mobile port", by="human")
+    store.accept(a["item_id"], by="human")
+    kids = []
+    for t in ("types", "selector", "sheet"):
+        e = store.propose(t, by="human", parent=a["item_id"])
+        store.accept(e["item_id"], by="human")
+        kids.append(e["item_id"])
+    flat = store.propose("Regenerate PARITY.md", by="human")
+    store.accept(flat["item_id"], by="human")
+    return a["item_id"], kids, flat["item_id"]
+
+
+def test_children_nest_under_their_parent(store):
+    parent, kids, flat = _plan(store)
+    roots = store.load().tree()
+    assert [n.item.id for n in roots] == [parent, flat]
+    assert [n.item.id for n in roots[0].children] == kids
+
+
+def test_a_branch_rolls_progress_up_from_its_leaves(store):
+    parent, kids, _ = _plan(store)
+    store.complete(kids[0], by="human")
+    store.complete(kids[1], by="human")
+    branch = store.load().tree()[0]
+    assert (branch.done_count, branch.total) == (2, 3)
+    assert not branch.complete
+    store.complete(kids[2], by="human")
+    assert store.load().tree()[0].complete
+
+
+def test_only_leaves_count_as_work(store):
+    """A subgoal is a container. Counting it as a task inflates the total and
+    can never be ticked honestly."""
+    _plan(store)
+    m = store.load()
+    assert m.total_count == 4, "3 children + 1 flat item, not 5 with the parent"
+
+
+def test_an_orphan_is_shown_as_a_root_not_dropped(store):
+    """Losing a task because its parent vanished is worse than showing it
+    slightly out of place."""
+    ev = store.propose("stray", by="human", parent="nonexistent")
+    store.accept(ev["item_id"], by="human")
+    assert [n.item.text for n in store.load().tree()] == ["stray"]
+
+
+def test_an_unknown_item_id_is_refused(store):
+    """Appending an event for an id that is not in the plan used to succeed
+    silently, so a typo reported 'done' and changed nothing."""
+    from agent_mission.store import NoSuchItemError
+    _plan(store)
+    with pytest.raises(NoSuchItemError):
+        store.complete("not-an-id", by="human")
+    with pytest.raises(NoSuchItemError):
+        store.accept("not-an-id", by="human")
