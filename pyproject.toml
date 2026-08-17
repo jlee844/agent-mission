@@ -14,3 +14,9 @@ mission = "agent_mission.__main__:main"
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["agent_mission"]
+
+[tool.setuptools.data-files]
+"share/agent-mission/commands" = ["commands/mission.md"]

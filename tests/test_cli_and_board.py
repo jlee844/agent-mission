@@ -122,3 +122,37 @@ def test_an_ended_session_keeps_its_mission_on_the_board():
     from agent_mission import board
     src = inspect.getsource(board.snapshot)
     assert '"ended": True' in src and "_missions_home" in src
+
+
+# ── the slash command ────────────────────────────────────────────────────────
+
+def test_setup_installs_the_slash_command(tmp_path):
+    from agent_mission.__main__ import main
+    assert main(["setup", "--dest", str(tmp_path)]) == 0
+    assert (tmp_path / "mission.md").exists()
+
+
+def test_setup_refuses_to_clobber_without_force(tmp_path):
+    from agent_mission.__main__ import main
+    (tmp_path).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "mission.md").write_text("mine", encoding="utf-8")
+    assert main(["setup", "--dest", str(tmp_path)]) == 1
+    assert (tmp_path / "mission.md").read_text() == "mine"
+    assert main(["setup", "--dest", str(tmp_path), "--force"]) == 0
+    assert (tmp_path / "mission.md").read_text() != "mine"
+
+
+def test_the_slash_command_tells_the_agent_to_execute_not_interpret():
+    """'mission init' typed into a session was read as 'go re-initialise the
+    project' and the agent did something else entirely. The command file has to
+    close that off explicitly."""
+    src = (Path(__file__).resolve().parents[1] / "commands" / "mission.md").read_text()
+    assert "Do not interpret" in src
+    assert "mission $ARGUMENTS" in src
+    assert "print the output verbatim" in src
+
+
+def test_the_slash_command_does_not_let_the_agent_author_the_mission():
+    src = (Path(__file__).resolve().parents[1] / "commands" / "mission.md").read_text()
+    assert "belong to the user" in src
+    assert "route around it" in src

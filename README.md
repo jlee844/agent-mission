@@ -14,6 +14,7 @@ has ticked off, and what it has actually done.
 git clone https://github.com/jlee844/agent-mission && cd agent-mission
 pip install -e .
 
+mission setup     # install the /mission slash command (once)
 mission init      # write it — opens your editor, then opens the board
 mission           # show it, with measured activity
 mission board     # the shared board (starts it, or joins the one running)
@@ -47,6 +48,23 @@ mission board     # the shared board (starts it, or joins the one running)
 
 `[?]` is an agent proposal. It is inert until you accept it.
 
+## Use it from inside a session
+
+```
+/mission init
+/mission add "port the list types"
+/mission done 5005d9f8
+```
+
+**Install the slash command with `mission setup`.** Without it, typing
+`mission init` into a session is read as an *instruction* rather than run as a
+command — in testing, an agent took it as "go re-initialise the project" and
+spent a long turn rewriting unrelated files. A slash command executes.
+
+The command file also tells the agent it may `mission propose "..."` freely —
+proposals are inert until you accept them — and that it must not author the
+mission itself or route around the store's refusal via the CLI.
+
 ## Three levels of authority
 
 This is the whole design.
@@ -62,7 +80,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 30 tests and most of them guard exactly this.
+There are 34 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store refuses agent-authored
 missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
@@ -121,7 +139,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 30 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 34 tests, no network
 ```
 
 ## Status

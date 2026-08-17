@@ -215,6 +215,26 @@ def cmd_done(a) -> int:
     return cmd_show(a)
 
 
+def cmd_setup(a) -> int:
+    """Install the /mission slash command so sessions run it, not read it."""
+    src = Path(__file__).resolve().parent.parent / "commands" / "mission.md"
+    if not src.exists():
+        print("  commands/mission.md not found in the package")
+        return 1
+    dest_dir = Path(a.dest).expanduser() if a.dest else Path.home() / ".claude" / "commands"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / "mission.md"
+    if dest.exists() and not a.force:
+        print(f"  {dest} already exists — `mission setup --force` to overwrite")
+        return 1
+    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    print(f"\n  installed {dest}")
+    print("  type /mission in any Claude Code session\n")
+    print("  Without this, typing 'mission init' into a session is read as an")
+    print("  instruction and the agent goes and does something else entirely.\n")
+    return 0
+
+
 def cmd_board(a) -> int:
     from .board import serve
     if a.stop:
@@ -262,6 +282,12 @@ def main(argv: list[str] | None = None) -> int:
     pr = sub.add_parser("propose", parents=[common]); pr.add_argument("text"); pr.set_defaults(fn=cmd_propose)
     ac = sub.add_parser("accept", parents=[common]); ac.add_argument("item_id"); ac.set_defaults(fn=cmd_accept)
     dn = sub.add_parser("done", parents=[common]); dn.add_argument("item_id"); dn.set_defaults(fn=cmd_done)
+    su = sub.add_parser("setup", parents=[common],
+                        help="install the /mission slash command")
+    su.add_argument("--dest", default=None)
+    su.add_argument("--force", action="store_true")
+    su.set_defaults(fn=cmd_setup)
+
     bd = sub.add_parser("board", parents=[common])
     bd.add_argument("--port", type=int, default=8976)
     bd.add_argument("--open", action="store_true", help="open it in your browser")
