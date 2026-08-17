@@ -20,17 +20,20 @@ def _slug(cwd: str) -> str:
 
 def _tree(m) -> list[dict]:
     """The plan as nested rows the page can render without re-deriving it."""
-    def walk(nodes, depth=0):
+    def walk(nodes, depth=0, guides=()):
         out = []
-        for n in nodes:
+        for idx, n in enumerate(nodes):
+            last = idx == len(nodes) - 1
             out.append({
                 "id": n.item.id, "t": n.item.text, "d": depth,
                 "done": n.complete if n.children else n.item.done,
                 "ok": n.item.accepted,
                 "branch": bool(n.children),
                 "roll": f"{n.done_count}/{n.total}" if n.children else "",
+                "pct": round(100 * n.done_count / n.total) if n.children and n.total else 0,
+                "guides": list(guides), "last": last,
             })
-            out.extend(walk(n.children, depth + 1))
+            out.extend(walk(n.children, depth + 1, (*guides, not last)))
         return out
     return walk(m.tree())
 
@@ -154,13 +157,22 @@ ul{margin:0;padding-left:1.05rem}
 li{margin:.16rem 0;line-height:1.45;font-size:.86rem}
 li.ng{color:var(--mut)}
 .chk{list-style:none;padding:0}
-.chk li{display:flex;gap:.5rem;align-items:flex-start;font-size:.88rem;padding:.13rem 0}
-.chk li.d1{padding-left:1.15rem}
-.chk li.d2{padding-left:2.3rem}
-.chk li.d3{padding-left:3.45rem}
-.chk li.branch{font-weight:600;margin-top:.3rem}
-.chk .roll{margin-left:auto;font-family:var(--mono);font-size:.7rem;color:var(--mut);
-flex:none;padding-left:.6rem}
+.chk li{display:flex;gap:0;align-items:flex-start;font-size:.87rem;padding:.12rem 0;
+line-height:1.45}
+.chk .g{flex:none;width:1.05rem;font-family:var(--mono);color:var(--rule);
+white-space:pre;-webkit-user-select:none;user-select:none}
+.chk .box{flex:none;font-family:var(--mono);color:var(--mut);padding-right:.42rem}
+.chk li.done{color:var(--mut)}
+.chk li.done .txt{text-decoration:line-through;text-decoration-color:var(--rule)}
+.chk li.done .box{color:var(--ok)}
+.chk li.prop .box{color:var(--bad)}
+.chk li.branch{font-weight:600;margin-top:.42rem}
+.chk li.branch .txt{letter-spacing:-.005em}
+.chk .txt{flex:1}
+.chk .roll{flex:none;font-family:var(--mono);font-size:.68rem;color:var(--mut);
+padding-left:.6rem;display:flex;align-items:center;gap:.4rem}
+.chk .mini{width:2.4rem;height:3px;background:var(--soft);border-radius:2px;overflow:hidden}
+.chk .mini i{display:block;height:100%;background:var(--ok)}
 .box{font-family:var(--mono);color:var(--mut);flex:none}
 .chk li.done{color:var(--mut);text-decoration:line-through}
 .chk li.done .box{color:var(--ok);text-decoration:none}
@@ -192,11 +204,15 @@ async function tick(){
        ${s.total? `<div class=bar><i style="width:${100*s.done/s.total}%"></i></div>
          <div class=sid><span>${s.done} of ${s.total} done</span>
          ${s.pending_accept?`<span class=warn>${s.pending_accept} awaiting accept</span>`:'<span></span>'}</div>
-         <ul class=chk>${s.tree.map(i=>`
-           <li class="d${i.d} ${i.branch?'branch':''} ${i.done?'done':(i.ok?'':'prop')}">
-             <span class=box>[${i.done?'x':(i.ok?' ':'?')}]</span>
-             <span>${esc(i.t)}</span>
-             ${i.roll?`<span class=roll>${i.roll}</span>`:''}</li>`).join('')}</ul>`:''}
+         <ul class=chk>${s.tree.map(i=>{
+             const guides = i.guides.map(g=>`<span class=g>${g?'│':' '}</span>`).join('');
+             const elbow  = i.d? `<span class=g>${i.last?'└':'├'}</span>` : '';
+             return `<li class="${i.branch?'branch':''} ${i.done?'done':(i.ok?'':'prop')}">
+               ${guides}${elbow}
+               <span class=box>${i.done?'▪':(i.ok?'▫':'?')}</span>
+               <span class=txt>${esc(i.t)}</span>
+               ${i.roll?`<span class=roll><span class=mini><i style="width:${i.pct}%"></i></span>${i.roll}</span>`:''}
+             </li>`;}).join('')}</ul>`:''}
        ${s.criteria.length?`<h3>Done when</h3><ul>${s.criteria.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
        ${s.constraints.length?`<h3>Constraints</h3><ul>${s.constraints.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
        ${s.non_goals.length?`<h3>Not doing</h3><ul>${s.non_goals.map(c=>`<li class=ng>${esc(c)}</li>`).join('')}</ul>`:''}

@@ -55,7 +55,12 @@ of its children and is done when they are.
 
 ```bash
 mission add "Wire the invite flow" --under e92721c7
+mission remove e92721c7          # drops it and its subtree
 ```
+
+Removal is soft: the event log keeps it. Append-only is about not losing
+history, not about being unable to change your mind — a plan you cannot prune
+stops being a plan.
 
 ## Use it from inside a session
 
@@ -96,7 +101,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 53 tests and most of them guard exactly this.
+There are 57 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store refuses agent-authored
 missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
@@ -174,7 +179,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 53 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 57 tests, no network
 ```
 
 ## Status

@@ -274,6 +274,16 @@ def cmd_setup(a) -> int:
     return 0
 
 
+def cmd_remove(a) -> int:
+    try:
+        _store(a.session or current_session_id()).remove(a.item_id, by="human")
+    except NoSuchItemError:
+        print(f"  no item {a.item_id!r} in this plan")
+        return 1
+    print(f"  removed {a.item_id}")
+    return cmd_show(a)
+
+
 def cmd_board(a) -> int:
     from .board import serve
     if a.stop:
@@ -336,6 +346,10 @@ def main(argv: list[str] | None = None) -> int:
     su.add_argument("--dest", default=None)
     su.add_argument("--force", action="store_true")
     su.set_defaults(fn=cmd_setup)
+
+    rm = sub.add_parser("remove", parents=[common], help="drop an item (and its subtree)")
+    rm.add_argument("item_id")
+    rm.set_defaults(fn=cmd_remove)
 
     bd = sub.add_parser("board", parents=[common])
     bd.add_argument("--port", type=int, default=8976)

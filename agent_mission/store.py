@@ -232,6 +232,17 @@ class MissionStore:
         self._require(item_id)
         return self._append("completed", by, item_id=item_id)
 
+    def remove(self, item_id: str, by: str) -> dict:
+        """Drop an item from the plan. A soft delete: the event log keeps it.
+
+        Append-only is about not losing history, not about being unable to
+        change your mind. A plan you cannot prune stops being a plan.
+        """
+        if by != "human":
+            raise ProtectedFieldError("only you can remove an item")
+        self._require(item_id)
+        return self._append("removed", by, item_id=item_id)
+
     def observe(self, fieldname: str, text: str, by: str = "agent") -> dict:
         if FIELD_AUTHORITY.get(fieldname) is not Authority.OBSERVABLE:
             raise ValueError(f"{fieldname} is not observable")
@@ -269,6 +280,17 @@ class MissionStore:
                 for d in m.checklist:
                     if d["id"] == ev["item_id"]:
                         d["done"] = True
+            elif k == "removed":
+                gone = {ev["item_id"]}
+                # a removed subgoal takes its subtree with it
+                changed = True
+                while changed:
+                    changed = False
+                    for d in m.checklist:
+                        if d.get("parent") in gone and d["id"] not in gone:
+                            gone.add(d["id"])
+                            changed = True
+                m.checklist = [d for d in m.checklist if d["id"] not in gone]
             elif k == "observed":
                 getattr(m, ev["field"]).append(ev["value"])
         return m

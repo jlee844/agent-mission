@@ -163,3 +163,32 @@ def test_an_unknown_item_id_is_refused(store):
         store.complete("not-an-id", by="human")
     with pytest.raises(NoSuchItemError):
         store.accept("not-an-id", by="human")
+
+
+def test_an_item_can_be_removed(store):
+    """Append-only is about not losing history, not about being unable to
+    change your mind. A plan you cannot prune stops being a plan."""
+    parent, kids, flat = _plan(store)
+    store.remove(flat, by="human")
+    assert [n.item.id for n in store.load().tree()] == [parent]
+
+
+def test_removing_a_subgoal_takes_its_subtree(store):
+    parent, kids, flat = _plan(store)
+    store.remove(parent, by="human")
+    m = store.load()
+    assert [n.item.id for n in m.tree()] == [flat]
+    assert all(k not in [d["id"] for d in m.checklist] for k in kids)
+
+
+def test_the_agent_cannot_remove_an_item(store):
+    _, _, flat = _plan(store)
+    with pytest.raises(ProtectedFieldError):
+        store.remove(flat, by="agent")
+
+
+def test_removal_is_soft_the_log_still_has_it(store):
+    _, _, flat = _plan(store)
+    store.remove(flat, by="human")
+    assert any(e.get("kind") == "removed" for e in store.events())
+    assert any(e.get("item_id") == flat for e in store.events())
