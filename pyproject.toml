@@ -1,0 +1,16 @@
+[project]
+name = "agent-mission"
+version = "0.1.0"
+description = "The goal, beside the work, that the agent cannot quietly rewrite"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+mission = "agent_mission.__main__:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
