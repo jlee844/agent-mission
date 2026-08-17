@@ -193,7 +193,12 @@ def cmd_show(a) -> int:
             print(f"    · {c}")
     if m.checklist:
         print(f"\n  PLAN  {m.done_count}/{m.total_count}")
-        _print_tree(m.tree())
+        show_all = getattr(a, "all", False)
+        roots = m.tree()
+        _print_tree(roots, show_all=show_all)
+        hidden = sum(1 for n in roots if n.complete)
+        if hidden and not show_all:
+            print(f"    ({hidden} finished, hidden — `mission show --all`)")
         if m.unaccepted:
             print(f"\n    {len(m.unaccepted)} proposed, awaiting your accept")
     if act:
@@ -231,8 +236,15 @@ def cmd_set(a) -> int:
     return cmd_show(a)
 
 
-def _print_tree(nodes, depth: int = 0, prefix: str = "") -> None:
-    """Indented, with a branch's progress rolled up from its leaves."""
+def _print_tree(nodes, depth: int = 0, prefix: str = "",
+                show_all: bool = False) -> None:
+    """Indented, with a branch's progress rolled up from its leaves.
+
+    Finished work is folded away by default — what is left is what you act on
+    — and `--all` brings it back. Nothing is deleted; it is just not printed.
+    """
+    if not show_all:
+        nodes = [n for n in nodes if not n.complete]
     for n, last in ((n, i == len(nodes) - 1) for i, n in enumerate(nodes)):
         item = n.item
         mark = "x" if (n.complete if n.children else item.done) else (
@@ -242,7 +254,8 @@ def _print_tree(nodes, depth: int = 0, prefix: str = "") -> None:
         print(f"    {prefix}{elbow}[{mark}] {item.id}  {item.text}{roll}")
         if n.children:
             _print_tree(n.children, depth + 1,
-                        prefix + ("" if depth == 0 else ("   " if last else "│  ")))
+                        prefix + ("" if depth == 0 else ("   " if last else "│  ")),
+                        show_all=show_all)
 
 
 def cmd_add(a) -> int:
@@ -344,6 +357,8 @@ def main(argv: list[str] | None = None) -> int:
     common.add_argument("--session", default=None,
                         help="session id (default: this one)")
     common.add_argument("--cwd", default=".")
+    common.add_argument("--all", action="store_true",
+                        help="show finished items too (hidden by default)")
 
     ap = argparse.ArgumentParser(prog="mission", description=__doc__,
                                  parents=[common],

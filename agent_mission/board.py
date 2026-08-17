@@ -19,21 +19,30 @@ def _slug(cwd: str) -> str:
 
 
 def _tree(m) -> list[dict]:
-    """The plan as nested rows the page can render without re-deriving it."""
-    def walk(nodes, depth=0, guides=()):
+    """The plan as nested rows the page can render without re-deriving it.
+
+    Rows carry `hid` for finished work — itself done, or under something done.
+    The page folds those away, because a card is only useful at a glance if
+    what is left fits on it; the finished rows stay one click away rather than
+    disappearing, since "what did we already do" is a real question.
+    """
+    def walk(nodes, depth=0, guides=(), hidden=False):
         out = []
         for idx, n in enumerate(nodes):
             last = idx == len(nodes) - 1
+            done = n.complete if n.children else n.item.done
             out.append({
                 "id": n.item.id, "t": n.item.text, "d": depth,
-                "done": n.complete if n.children else n.item.done,
+                "done": done,
                 "ok": n.item.accepted,
                 "branch": bool(n.children),
                 "roll": f"{n.done_count}/{n.total}" if n.children else "",
                 "pct": round(100 * n.done_count / n.total) if n.children and n.total else 0,
                 "guides": list(guides), "last": last,
+                "hid": hidden or done,
             })
-            out.extend(walk(n.children, depth + 1, (*guides, not last)))
+            out.extend(walk(n.children, depth + 1, (*guides, not last),
+                            hidden or done))
         return out
     return walk(m.tree())
 
@@ -179,6 +188,14 @@ padding-left:.6rem;display:flex;align-items:center;gap:.4rem}
 .chk li.done{color:var(--mut);text-decoration:line-through}
 .chk li.done .box{color:var(--ok);text-decoration:none}
 .chk li.prop .box{color:var(--bad)}
+.doneblock{margin-top:.3rem}
+.doneblock summary{font-family:var(--mono);font-size:.66rem;letter-spacing:.06em;
+color:var(--mut);cursor:pointer;list-style:none;padding:.2rem 0;text-transform:uppercase}
+.doneblock summary::-webkit-details-marker{display:none}
+.doneblock summary::before{content:"▸ "}
+.doneblock[open] summary::before{content:"▾ "}
+.doneblock summary:hover{color:var(--ink)}
+.chk.flat li{padding-left:.1rem}
 .bar{height:5px;background:var(--soft);border-radius:3px;overflow:hidden;margin:.55rem 0 .1rem}
 .bar i{display:block;height:100%;background:var(--ok)}
 .meta{font-family:var(--mono);font-size:.7rem;color:var(--mut);margin-top:.75rem;
@@ -194,6 +211,23 @@ background:var(--badw);color:var(--bad)}
 <div class=grid id=g></div>
 <script>
 const esc=t=>(t||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+// One row of the plan. `flat` drops the connectors: inside the finished fold
+// the rows come from different parents, so a guide there would draw a branch
+// that isn't on screen.
+function row(i,flat){
+  // Roots are flush bullets with no connector, so the guide for the root level
+  // refers to a line that is never drawn. Drop it, or children render as "│├"
+  // against nothing.
+  const guides = flat? '' : i.guides.slice(1).map(g=>`<span class=g>${g?'│':' '}</span>`).join('');
+  const elbow  = (!flat && i.d)? `<span class=g>${i.last?'└':'├'}</span>` : '';
+  return `<li class="${i.branch?'branch':''} ${i.done?'done':(i.ok?'':'prop')}">
+    ${guides}${elbow}
+    <span class=box>${i.done?'▪':(i.ok?'▫':'?')}</span>
+    <span class=txt>${esc(i.t)}</span>
+    ${i.roll?`<span class=roll><span class=mini><i style="width:${i.pct}%"></i></span>${i.roll}</span>`:''}
+  </li>`;
+}
+const openFolds=new Set();
 async function tick(){
   let d; try{ d=await (await fetch('/data')).json() }catch(e){ return }
   document.getElementById('age').textContent=new Date().toLocaleTimeString();
@@ -207,18 +241,12 @@ async function tick(){
        ${s.total? `<div class=bar><i style="width:${100*s.done/s.total}%"></i></div>
          <div class=sid><span>${s.done} of ${s.total} done</span>
          ${s.pending_accept?`<span class=warn>${s.pending_accept} awaiting accept</span>`:'<span></span>'}</div>
-         <ul class=chk>${s.tree.map(i=>{
-             // Roots are flush bullets with no connector, so the guide for the
-             // root level refers to a line that is never drawn. Drop it, or
-             // children render as "│├" against nothing.
-             const guides = i.guides.slice(1).map(g=>`<span class=g>${g?'│':' '}</span>`).join('');
-             const elbow  = i.d? `<span class=g>${i.last?'└':'├'}</span>` : '';
-             return `<li class="${i.branch?'branch':''} ${i.done?'done':(i.ok?'':'prop')}">
-               ${guides}${elbow}
-               <span class=box>${i.done?'▪':(i.ok?'▫':'?')}</span>
-               <span class=txt>${esc(i.t)}</span>
-               ${i.roll?`<span class=roll><span class=mini><i style="width:${i.pct}%"></i></span>${i.roll}</span>`:''}
-             </li>`;}).join('')}</ul>`:''}
+         <ul class=chk>${s.tree.filter(i=>!i.hid).map(row).join('')}</ul>
+         ${s.tree.some(i=>i.hid)?`<details class=doneblock data-sid="${s.id}" ${
+             openFolds.has(s.id)?'open':''}><summary>${
+             s.tree.filter(i=>i.hid).length} finished</summary>
+           <ul class="chk flat">${s.tree.filter(i=>i.hid).map(r=>row(r,true)).join('')}</ul>
+         </details>`:''}`:''}
        ${s.criteria.length?`<h3>Done when</h3><ul>${s.criteria.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
        ${s.constraints.length?`<h3>Constraints</h3><ul>${s.constraints.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
        ${s.non_goals.length?`<h3>Not doing</h3><ul>${s.non_goals.map(c=>`<li class=ng>${esc(c)}</li>`).join('')}</ul>`:''}
@@ -241,6 +269,14 @@ async function tick(){
        ${s.topfiles.length?`<br>${s.topfiles.slice(0,3).map(f=>esc(f.f)+' '+f.n+'x').join(' · ')}`:''}</div>
    </div>`).join('') : '<p class=none>No live sessions.</p>';
 }
+// The page re-renders every 4s, so an opened fold would snap shut under the
+// reader. Remember which cards are open. `toggle` does not bubble, hence the
+// capture listener -- and it is bound once, to a container render() never
+// replaces, so it survives every re-render.
+document.getElementById('g').addEventListener('toggle', e=>{
+  const sid = e.target.dataset && e.target.dataset.sid;
+  if (sid) e.target.open? openFolds.add(sid) : openFolds.delete(sid);
+}, true);
 tick(); setInterval(tick,4000);
 </script>"""
 

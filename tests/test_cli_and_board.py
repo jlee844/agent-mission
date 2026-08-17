@@ -206,3 +206,53 @@ def test_child_guides_skip_the_root_level():
 def test_a_branch_carries_its_rolled_up_progress():
     import agent_mission.board as B
     assert "class=mini" in B.PAGE and "i.roll" in B.PAGE
+
+
+def _mission_with_a_finished_branch(tmp_path):
+    from agent_mission.store import MissionStore
+    st = MissionStore(tmp_path / "s")
+    st.create("s", "/tmp", "obj", by="human")
+    top = st.propose("Store", by="human")["item_id"]
+    kid = st.propose("events", by="human", parent=top)["item_id"]
+    left = st.propose("Ship", by="human")["item_id"]
+    for i in (top, kid, left):
+        st.accept(i, by="human")
+    st.complete(kid, by="human")          # the whole branch is now finished
+    return st.load(), top, kid, left
+
+
+def test_finished_rows_are_marked_hidden_and_unfinished_ones_are_not(tmp_path):
+    """A card is only useful at a glance if what is LEFT fits on it."""
+    import agent_mission.board as B
+    m, top, kid, left = _mission_with_a_finished_branch(tmp_path)
+    rows = {r["id"]: r for r in B._tree(m)}
+    assert rows[top]["hid"] and rows[kid]["hid"], "a done branch and its subtree fold"
+    assert not rows[left]["hid"], "unfinished work is never folded"
+
+
+def test_the_fold_is_a_toggle_not_a_deletion(tmp_path):
+    """'What did we already do' is a real question — finished work is one
+    click away, not gone."""
+    import agent_mission.board as B
+    assert "details class=doneblock" in B.PAGE
+    assert "finished</summary>" in B.PAGE
+
+
+def test_an_open_fold_survives_the_four_second_re_render():
+    """The page re-renders on a timer; a fold that snaps shut under the reader
+    is the same failure as the story editor that lost its listeners."""
+    import agent_mission.board as B
+    assert "openFolds" in B.PAGE
+    # `toggle` does not bubble, so the delegated listener must capture
+    assert "'toggle'" in B.PAGE and "}, true)" in B.PAGE
+
+
+def test_the_cli_hides_finished_work_and_says_so(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    _mission_with_a_finished_branch(tmp_path)
+    main(["show", "--session", "s"])
+    out = capsys.readouterr().out
+    assert "Ship" in out and "Store" not in out
+    assert "1 finished, hidden" in out
+    main(["show", "--session", "s", "--all"])
+    assert "Store" in capsys.readouterr().out

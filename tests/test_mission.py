@@ -131,11 +131,15 @@ def test_a_branch_rolls_progress_up_from_its_leaves(store):
     parent, kids, _ = _plan(store)
     store.complete(kids[0], by="human")
     store.complete(kids[1], by="human")
-    branch = store.load().tree()[0]
+    def branch_of(m):
+        return next(n for n in m.tree() if n.item.id == parent)
+
+    branch = branch_of(store.load())
     assert (branch.done_count, branch.total) == (2, 3)
     assert not branch.complete
     store.complete(kids[2], by="human")
-    assert store.load().tree()[0].complete
+    # not tree()[0] any more: a finished branch sinks below unfinished work
+    assert branch_of(store.load()).complete
 
 
 def test_only_leaves_count_as_work(store):
@@ -144,6 +148,28 @@ def test_only_leaves_count_as_work(store):
     _plan(store)
     m = store.load()
     assert m.total_count == 4, "3 children + 1 flat item, not 5 with the parent"
+
+
+def test_finished_work_sinks_below_what_is_left(store):
+    """The remaining work is what you act on. It should not have to be found
+    among ticked boxes -- but inside each group the order you wrote stays."""
+    parent, kids, flat = _plan(store)
+    for k in kids:
+        store.complete(k, by="human")          # the whole branch is now done
+    roots = store.load().tree()
+    assert [n.item.id for n in roots] == [flat, parent], "done branch sinks"
+
+    store.complete(flat, by="human")
+    assert [n.item.id for n in store.load().tree()] == [parent, flat], \
+        "everything done -> back to the order it was written in"
+
+
+def test_a_half_done_branch_does_not_sink(store):
+    parent, kids, flat = _plan(store)
+    store.complete(kids[0], by="human")
+    roots = store.load().tree()
+    assert [n.item.id for n in roots] == [parent, flat]
+    assert [n.item.id for n in roots[0].children] == [kids[1], kids[2], kids[0]]
 
 
 def test_an_orphan_is_shown_as_a_root_not_dropped(store):

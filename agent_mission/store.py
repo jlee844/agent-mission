@@ -86,17 +86,6 @@ class Node:
     children: list["Node"] = field(default_factory=list)
 
     @property
-    def title(self) -> str:
-        """What to call this session. Falls back to the objective, trimmed at a
-        word boundary — a heading cut mid-word reads as a bug."""
-        if self.name:
-            return self.name
-        o = self.objective.strip()
-        if len(o) <= 72:
-            return o
-        return o[:69].rsplit(" ", 1)[0] + "…"
-
-    @property
     def leaves(self) -> list[Item]:
         if not self.children:
             return [self.item]
@@ -138,7 +127,12 @@ class Mission:
         return [Item(**d) for d in self.checklist]
 
     def tree(self) -> list[Node]:
-        """The plan as a forest, in insertion order at every level.
+        """The plan as a forest: what is left first, what is finished below it.
+
+        Within each of those two groups the order is the order you wrote them,
+        so the plan still reads as a sequence — only the completed work sinks.
+        The remaining work is the part you act on, and it should not have to be
+        found among ticked boxes.
 
         An item whose parent is missing is treated as a root rather than
         dropped: losing a task because its parent was deleted is worse than
@@ -153,7 +147,15 @@ class Mission:
                 roots.append(node)
             else:
                 parent.children.append(node)
-        return roots
+
+        def sink_done(nodes: list[Node]) -> list[Node]:
+            for n in nodes:
+                n.children = sink_done(n.children)
+            # sorted() is stable, so insertion order survives inside each group.
+            # A branch counts as done only when every leaf under it is.
+            return sorted(nodes, key=lambda n: n.complete)
+
+        return sink_done(roots)
 
     @property
     def title(self) -> str:
