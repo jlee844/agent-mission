@@ -52,6 +52,36 @@ def running() -> dict | None:
     return None
 
 
+def claim(port: int) -> None:
+    """Called by the board itself once it has bound. Records port and OWN pid."""
+    home = _home()
+    home.mkdir(parents=True, exist_ok=True)
+    _record().write_text(json.dumps(
+        {"port": port, "pid": os.getpid(), "started": time.time()}),
+        encoding="utf-8")
+
+
+def release(port: int) -> None:
+    """Drop the record on the way out, but only if it is still ours."""
+    try:
+        rec = json.loads(_record().read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if rec.get("pid") == os.getpid():
+        _record().unlink(missing_ok=True)
+
+
+def _is_board(pid: int) -> bool:
+    """Is this pid actually our board? A pid is recycled the moment it dies,
+    so signalling one because a file once named it can hit anything."""
+    try:
+        out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=2).stdout
+    except Exception:
+        return False
+    return "agent_mission" in out and "board" in out
+
+
 def _free(port: int) -> bool:
     try:
         with socket.socket() as s:
@@ -90,9 +120,8 @@ def ensure(port: int = DEFAULT_PORT, quiet: bool = False) -> str | None:
 
     for _ in range(40):                      # up to ~4s for it to bind
         if _responding(port):
-            _record().write_text(json.dumps(
-                {"port": port, "pid": proc.pid, "started": time.time()}),
-                encoding="utf-8")
+            # The board writes its own record (daemon.claim) -- see there for
+            # why the launcher must not.
             return f"http://127.0.0.1:{port}"
         time.sleep(0.1)
     return None
@@ -102,8 +131,13 @@ def stop() -> bool:
     rec = running()
     if not rec:
         return False
+    pid = int(rec.get("pid", 0))
+    if not _is_board(pid):
+        # The record names something that is not a board. Do not signal it.
+        _record().unlink(missing_ok=True)
+        return False
     try:
-        os.kill(int(rec["pid"]), 15)
+        os.kill(pid, 15)
     except OSError:
         pass
     _record().unlink(missing_ok=True)

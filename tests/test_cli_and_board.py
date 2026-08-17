@@ -256,3 +256,41 @@ def test_the_cli_hides_finished_work_and_says_so(tmp_path, monkeypatch, capsys):
     assert "1 finished, hidden" in out
     main(["show", "--session", "s", "--all"])
     assert "Store" in capsys.readouterr().out
+
+
+def test_the_board_records_its_own_pid_not_the_launchers(tmp_path, monkeypatch):
+    """A board started any way but through ensure() -- by hand, or after a
+    restart -- used to leave the PREVIOUS pid in the record. `--stop` then
+    signals a pid that has since been recycled to something else."""
+    import os
+    import json as J
+    from agent_mission import daemon as D
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    D.claim(8976)
+    rec = J.loads((tmp_path / "board.json").read_text())
+    assert rec["pid"] == os.getpid() and rec["port"] == 8976
+    D.release(8976)
+    assert not (tmp_path / "board.json").exists()
+
+
+def test_release_leaves_someone_elses_record_alone(tmp_path, monkeypatch):
+    import json as J
+    from agent_mission import daemon as D
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    (tmp_path / "board.json").write_text(J.dumps({"port": 8976, "pid": 1}))
+    D.release(8976)
+    assert (tmp_path / "board.json").exists(), "not ours; not ours to delete"
+
+
+def test_stop_refuses_to_signal_a_pid_that_is_not_a_board(tmp_path, monkeypatch):
+    """pid 1 is launchd. Signalling it because a stale file named it is the
+    failure this guard exists for."""
+    import json as J
+    from agent_mission import daemon as D
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    (tmp_path / "board.json").write_text(J.dumps({"port": 8976, "pid": 1}))
+    monkeypatch.setattr(D, "_responding", lambda *a, **k: True)
+    killed = []
+    monkeypatch.setattr(D.os, "kill", lambda *a: killed.append(a))
+    assert D.stop() is False
+    assert killed == [], "never signalled"

@@ -298,8 +298,17 @@ class _H(BaseHTTPRequestHandler):
 
 def serve(port: int = 8976) -> None:
     srv = HTTPServer(("127.0.0.1", port), _H)
+    # The server writes its own record, because it is the only thing that knows
+    # it is up and which pid it is. Written by the LAUNCHER, a board started any
+    # other way -- by hand, or after a restart -- leaves the previous pid in the
+    # file, and `mission board --stop` then signals a pid that has since been
+    # recycled to something else entirely.
+    from .daemon import claim, release
+    claim(port)
     print(f"\n  mission board -> http://127.0.0.1:{port}\n  ctrl-c to stop\n")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         print("  stopped")
+    finally:
+        release(port)
