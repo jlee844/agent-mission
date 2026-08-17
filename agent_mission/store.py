@@ -32,6 +32,7 @@ class Authority(str, Enum):
 
 
 FIELD_AUTHORITY: dict[str, Authority] = {
+    "name": Authority.PROTECTED,
     "objective": Authority.PROTECTED,
     "success_criteria": Authority.PROTECTED,
     "constraints": Authority.PROTECTED,
@@ -85,6 +86,17 @@ class Node:
     children: list["Node"] = field(default_factory=list)
 
     @property
+    def title(self) -> str:
+        """What to call this session. Falls back to the objective, trimmed at a
+        word boundary — a heading cut mid-word reads as a bug."""
+        if self.name:
+            return self.name
+        o = self.objective.strip()
+        if len(o) <= 72:
+            return o
+        return o[:69].rsplit(" ", 1)[0] + "…"
+
+    @property
     def leaves(self) -> list[Item]:
         if not self.children:
             return [self.item]
@@ -109,6 +121,7 @@ class Mission:
     id: str
     session_id: str = ""
     cwd: str = ""
+    name: str = ""            # a short title; the objective is the sentence
     objective: str = ""
     success_criteria: list[str] = field(default_factory=list)
     constraints: list[str] = field(default_factory=list)
@@ -141,6 +154,17 @@ class Mission:
             else:
                 parent.children.append(node)
         return roots
+
+    @property
+    def title(self) -> str:
+        """What to call this session. Falls back to the objective, trimmed at a
+        word boundary — a heading cut mid-word reads as a bug."""
+        if self.name:
+            return self.name
+        o = self.objective.strip()
+        if len(o) <= 72:
+            return o
+        return o[:69].rsplit(" ", 1)[0] + "…"
 
     @property
     def leaves(self) -> list[Item]:

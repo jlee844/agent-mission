@@ -86,6 +86,25 @@ The command file also tells the agent it may `mission propose "..."` freely —
 proposals are inert until you accept them — and that it must not author the
 mission itself or route around the store's refusal via the CLI.
 
+## Goals move
+
+```bash
+mission set objective "Ship list sharing AND the invite flow"
+mission set name "List sharing + invites"
+mission set success-criteria "lists sync both ways|invites accepted end to end"
+```
+
+A mission you cannot edit is one you abandon and rewrite from scratch. Every
+edit is a new event, so the old value stays in the log and `why` still answers.
+The agent is refused on all of these exactly as before.
+
+## It survives compaction
+
+The mission lives in `~/.agent-mission/<session-id>/`, not in the model's
+context. Compact the conversation and the agent forgets the discussion; the
+objective, the criteria and the tree are still on the board, and `mission` still
+prints them. That is the point of writing it down.
+
 ## Three levels of authority
 
 This is the whole design.
@@ -101,7 +120,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 59 tests and most of them guard exactly this.
+There are 65 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store refuses agent-authored
 missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
@@ -179,7 +198,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 59 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 65 tests, no network
 ```
 
 ## Status

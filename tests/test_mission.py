@@ -192,3 +192,38 @@ def test_removal_is_soft_the_log_still_has_it(store):
     store.remove(flat, by="human")
     assert any(e.get("kind") == "removed" for e in store.events())
     assert any(e.get("item_id") == flat for e in store.events())
+
+
+def test_the_title_falls_back_to_the_objective_at_a_word_boundary(store):
+    """A heading cut mid-word reads as a bug. A real card showed
+    '...building the whole thin' because the seed was pasted verbatim."""
+    long = ("yeah whats important now is to get at least something for every "
+            "subpage we have and building the whole thing live locally together")
+    store.set_protected("objective", long, by="human")
+    t = store.load().title
+    assert len(t) <= 72 and t.endswith("…")
+    assert not t.rstrip("…").endswith(" ")
+    assert long.startswith(t.rstrip("…").rstrip())
+
+
+def test_a_name_wins_over_the_objective(store):
+    store.set_protected("objective", "Ship list sharing to the mobile app", by="human")
+    store.set_protected("name", "List sharing on mobile", by="human")
+    assert store.load().title == "List sharing on mobile"
+
+
+def test_a_short_objective_is_used_whole(store):
+    store.set_protected("objective", "Ship list sharing", by="human")
+    assert store.load().title == "Ship list sharing"
+
+
+def test_the_agent_cannot_set_the_name(store):
+    with pytest.raises(ProtectedFieldError):
+        store.set_protected("name", "renamed by the agent", by="agent")
+
+
+def test_a_protected_field_can_be_changed_later(store):
+    """Goals move. A mission you cannot edit is one you abandon and rewrite."""
+    store.set_protected("objective", "first", by="human")
+    store.set_protected("objective", "second", by="human")
+    assert store.load().objective == "second"

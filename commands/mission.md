@@ -52,6 +52,14 @@ Work through, in order:
    a change in the world, not an activity. *"Ship list sharing to mobile"*, not
    *"work on lists"*. If they give you an activity, ask what it produces.
 
+   Then **name it yourself** — three to six words, the way you would title a
+   pull request. *"List sharing on mobile"*. Show them the name and let them
+   correct it; do not make them invent one. **Never paste their prompt in as
+   the name.** A card reading "yeah whats important now is to get at least
+   something for every subpage we have and building the whole thin…" is a
+   transcript fragment, not a title, and it is what happens when the seed is
+   used verbatim.
+
 2. **Success criteria** — the important one, and the one people skip. "How will
    you know it worked, without asking me?" Push for something checkable: a
    command that passes, a file that exists, a page that loads. *"It should feel
@@ -80,6 +88,7 @@ and when to stop.** Not before. If a question remains, it is not done.
 Write the answers to a temp file in exactly this shape:
 
 ```
+NAME: <three to six words, your wording, their approval>
 OBJECTIVE: <their words>
 SUCCESS:
 - <criterion>
@@ -117,6 +126,10 @@ Show the output, which includes the board URL. Delete the temp file.
 - **`mission init` without `--from-file` opens an editor.** If it seems to hang,
   it is waiting for them. Say so rather than killing it.
 - If `mission: command not found`, tell them to install it. Do not reimplement it.
+- **Goals move.** When they say something that changes the mission, offer
+  `mission set objective "..."` or `mission set success-criteria "a|b"` rather
+  than letting the card go stale. Say what you are about to change and let them
+  confirm — it is still their field.
 - You **may** run `mission propose "<text>"` at any time without asking —
   proposals are inert until accepted. Use it when you notice work the mission
   does not list, and say that you did.

@@ -27,6 +27,9 @@ TEMPLATE = """\
 # Your mission for this session. Lines starting with # are ignored.
 # Everything here is YOURS — the agent can propose and record, never rewrite.
 
+# A short title, three to six words. This is what the board shows.
+NAME: {name}
+
 OBJECTIVE: {objective}
 
 # What has to be true for this to be finished.
@@ -49,7 +52,7 @@ CHECKLIST:
 
 
 def _parse(text: str) -> dict:
-    out: dict[str, list[str] | str] = {"objective": "", "success_criteria": [],
+    out: dict[str, list[str] | str] = {"name": "", "objective": "", "success_criteria": [],
                                        "constraints": [], "non_goals": [],
                                        "checklist": []}
     key = None
@@ -59,7 +62,10 @@ def _parse(text: str) -> dict:
         line = raw.rstrip()
         if not line or line.lstrip().startswith("#"):
             continue
-        if line.startswith("OBJECTIVE:"):
+        if line.startswith("NAME:"):
+            out["name"] = line.split(":", 1)[1].strip()
+            key = None
+        elif line.startswith("OBJECTIVE:"):
             out["objective"] = line.split(":", 1)[1].strip()
             key = None
         elif line.strip() in keys:
@@ -116,7 +122,7 @@ def cmd_init(a) -> int:
         # It is transcription, not authorship: every line came from a reply.
         filled = Path(a.from_file).read_text(encoding="utf-8")
     else:
-        text = TEMPLATE.format(objective=seed_obj, criterion=seed_crit)
+        text = TEMPLATE.format(name="", objective=seed_obj, criterion=seed_crit)
         filled = text if a.no_edit else _edit(text)
     parsed = _parse(filled)
     if not parsed["objective"]:
@@ -125,6 +131,8 @@ def cmd_init(a) -> int:
 
     cwd = str(Path(a.cwd).resolve())
     st.create(sid, cwd, parsed["objective"], by="human")
+    if parsed["name"]:
+        st.set_protected("name", parsed["name"], by="human")
     for f in ("success_criteria", "constraints", "non_goals"):
         if parsed[f]:
             st.set_protected(f, parsed[f], by="human")
@@ -166,7 +174,11 @@ def cmd_show(a) -> int:
     tp = transcript_for(sid)
     act = activity(tp) if tp else None
 
-    print(f"\n  {m.objective}\n")
+    if m.name:
+        print(f"\n  {m.name}")
+        print(f"  {m.objective}\n")
+    else:
+        print(f"\n  {m.objective}\n")
     if m.success_criteria:
         print("  DONE WHEN")
         for c in m.success_criteria:
@@ -198,6 +210,25 @@ def cmd_show(a) -> int:
         print("  board: not running — `mission board` to open it")
     print()
     return 0
+
+
+def cmd_set(a) -> int:
+    """Change a protected field. Goals move; a mission you cannot edit is a
+    mission you abandon and rewrite from scratch."""
+    from .store import PROTECTED_FIELDS
+    sid = a.session or current_session_id()
+    st = _store(sid)
+    if st.load() is None:
+        print("  no mission for this session — `mission init` first")
+        return 1
+    field = a.field.replace("-", "_")
+    if field not in PROTECTED_FIELDS:
+        print(f"  {a.field} is not one of: {', '.join(sorted(PROTECTED_FIELDS))}")
+        return 1
+    value = a.value if field in ("name", "objective") else list(a.value_list or a.value.split("|"))
+    st.set_protected(field, value, by="human")
+    print(f"  {field} updated")
+    return cmd_show(a)
 
 
 def _print_tree(nodes, depth: int = 0, prefix: str = "") -> None:
@@ -346,6 +377,13 @@ def main(argv: list[str] | None = None) -> int:
     su.add_argument("--dest", default=None)
     su.add_argument("--force", action="store_true")
     su.set_defaults(fn=cmd_setup)
+
+    se = sub.add_parser("set", parents=[common],
+                        help="change a protected field (name, objective, ...)")
+    se.add_argument("field")
+    se.add_argument("value", help="for list fields, separate with |")
+    se.add_argument("--value-list", nargs="*", default=None)
+    se.set_defaults(fn=cmd_set)
 
     rm = sub.add_parser("remove", parents=[common], help="drop an item (and its subtree)")
     rm.add_argument("item_id")

@@ -65,7 +65,7 @@ def snapshot() -> list[dict]:
                 "cwd": proc["cwd"].replace(str(Path.home()), "~"),
                 "procs": proc["procs"],
                 "has_mission": m is not None, "ended": False,
-                "objective": m.objective if m else "",
+                "title": m.title if m else "", "objective": m.objective if m else "",
                 "criteria": m.success_criteria if m else [],
                 "constraints": m.constraints if m else [],
                 "non_goals": m.non_goals if m else [],
@@ -106,7 +106,7 @@ def snapshot() -> list[dict]:
                 "id": d.name[:8], "full": d.name,
                 "cwd": (m.cwd or "").replace(str(Path.home()), "~"),
                 "procs": 0, "ended": True,
-                "has_mission": True, "objective": m.objective,
+                "has_mission": True, "title": m.title, "objective": m.objective,
                 "criteria": m.success_criteria, "constraints": m.constraints,
                 "non_goals": m.non_goals,
                 "tree": _tree(m),
@@ -147,7 +147,9 @@ color:var(--mut);font-weight:500;margin:0}
 .card.ended{opacity:.62}
 .sid{font-family:var(--mono);font-size:.68rem;color:var(--mut);display:flex;
 justify-content:space-between;margin-bottom:.5rem}
-.obj{font-size:1.03rem;line-height:1.4;font-weight:600;margin:0 0 .7rem;text-wrap:pretty}
+.obj{font-size:1.05rem;line-height:1.35;font-weight:600;margin:0 0 .25rem;
+text-wrap:pretty;letter-spacing:-.008em}
+.objsub{font-size:.83rem;line-height:1.45;color:var(--mut);margin:0 0 .7rem;text-wrap:pretty}
 .none{color:var(--mut);font-size:.85rem;line-height:1.5}
 .none code{font-family:var(--mono);font-size:.78rem;background:var(--soft);
 padding:.1rem .35rem;border-radius:3px}
@@ -200,7 +202,8 @@ async function tick(){
      <div class=sid><span>${s.id} · ${esc(s.cwd)}</span>
        <span>${s.ended?'ended':s.procs+' live here'}</span></div>
      ${s.has_mission? `
-       <p class=obj>${esc(s.objective)}</p>
+       <p class=obj>${esc(s.title)}</p>
+       ${s.objective && s.objective!==s.title?`<p class=objsub>${esc(s.objective)}</p>`:''}
        ${s.total? `<div class=bar><i style="width:${100*s.done/s.total}%"></i></div>
          <div class=sid><span>${s.done} of ${s.total} done</span>
          ${s.pending_accept?`<span class=warn>${s.pending_accept} awaiting accept</span>`:'<span></span>'}</div>
