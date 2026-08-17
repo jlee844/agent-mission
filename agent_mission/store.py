@@ -105,8 +105,10 @@ class MissionStore:
     """Append-only. Every change is an event; the mission is the fold."""
 
     def __init__(self, root: Path):
+        # The directory is created on the first WRITE, not on construction:
+        # reading a session that has no mission should leave no trace, and an
+        # empty directory reads as "a mission exists" to anything scanning.
         self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
         self.log = self.root / "events.jsonl"
 
     # ── writing ──────────────────────────────────────────────────────────
@@ -116,6 +118,7 @@ class MissionStore:
         # Without the ordering, such a payload overwrites the event's own kind
         # and the event becomes unfindable by the reader.
         ev = {**detail, "kind": kind, "by": by, "at": time.time()}
+        self.root.mkdir(parents=True, exist_ok=True)
         with self.log.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(ev) + "\n")
         return ev

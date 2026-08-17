@@ -17,6 +17,12 @@ def _slug(cwd: str) -> str:
     return "-" + cwd.replace("/", "-").lstrip("-")
 
 
+def _missions_home() -> Path:
+    import os
+    return Path(os.environ.get("AGENT_MISSION_HOME",
+                               Path.home() / ".agent-mission"))
+
+
 def snapshot() -> list[dict]:
     rows, seen = [], set()
     for proc in live():
@@ -36,7 +42,7 @@ def snapshot() -> list[dict]:
                 "id": sid[:8], "full": sid,
                 "cwd": proc["cwd"].replace(str(Path.home()), "~"),
                 "procs": proc["procs"],
-                "has_mission": m is not None,
+                "has_mission": m is not None, "ended": False,
                 "objective": m.objective if m else "",
                 "criteria": m.success_criteria if m else [],
                 "constraints": m.constraints if m else [],
@@ -51,7 +57,39 @@ def snapshot() -> list[dict]:
                 "topfiles": [{"f": k, "n": v} for k, v in list(a.files.items())[:8]],
                 "mtime": tp.stat().st_mtime,
             })
-    return sorted(rows, key=lambda r: (not r["has_mission"], -r["mtime"]))
+    # A mission whose session has ended must not vanish from the board -- the
+    # work happened, and losing sight of it is exactly what this exists to
+    # prevent. Ended sessions are shown, marked, and sorted last.
+    home = _missions_home()
+    if home.exists():
+        for d in home.iterdir():
+            if not d.is_dir() or d.name in seen or not (d / "events.jsonl").exists():
+                continue
+            m = MissionStore(d).load()
+            if m is None:
+                continue
+            tp = transcript_for(d.name)
+            a = activity(tp) if tp else None
+            rows.append({
+                "id": d.name[:8], "full": d.name,
+                "cwd": (m.cwd or "").replace(str(Path.home()), "~"),
+                "procs": 0, "ended": True,
+                "has_mission": True, "objective": m.objective,
+                "criteria": m.success_criteria, "constraints": m.constraints,
+                "non_goals": m.non_goals,
+                "items": [{"id": i.id, "t": i.text, "done": i.done,
+                           "ok": i.accepted} for i in m.items],
+                "done": m.done_count, "total": len(m.checklist),
+                "pending_accept": len(m.unaccepted),
+                "calls": a.calls if a else 0, "files": len(a.files) if a else 0,
+                "tests": a.tests if a else 0, "failures": a.failures if a else 0,
+                "asks": a.last_asks if a else [],
+                "topfiles": [{"f": k, "n": v} for k, v in
+                             list(a.files.items())[:8]] if a else [],
+                "mtime": (d / "events.jsonl").stat().st_mtime,
+            })
+    return sorted(rows, key=lambda r: (r.get("ended", False),
+                                       not r["has_mission"], -r["mtime"]))
 
 
 PAGE = """<!doctype html><meta charset=utf-8><title>Missions</title>
@@ -73,6 +111,7 @@ color:var(--mut);font-weight:500;margin:0}
 #age{font-family:var(--mono);font-size:.66rem;color:var(--mut)}
 .grid{display:grid;gap:1.1rem;grid-template-columns:repeat(auto-fill,minmax(23rem,1fr))}
 .card{background:var(--card);border:1px solid var(--rule);border-radius:5px;padding:1.1rem 1.2rem}
+.card.ended{opacity:.62}
 .sid{font-family:var(--mono);font-size:.68rem;color:var(--mut);display:flex;
 justify-content:space-between;margin-bottom:.5rem}
 .obj{font-size:1.03rem;line-height:1.4;font-weight:600;margin:0 0 .7rem;text-wrap:pretty}
@@ -104,9 +143,9 @@ async function tick(){
   let d; try{ d=await (await fetch('/data')).json() }catch(e){ return }
   document.getElementById('age').textContent=new Date().toLocaleTimeString();
   document.getElementById('g').innerHTML = d.length? d.map(s=>`
-   <div class=card>
+   <div class="card ${s.ended?'ended':''}">
      <div class=sid><span>${s.id} · ${esc(s.cwd)}</span>
-       <span>${s.procs} live here</span></div>
+       <span>${s.ended?'ended':s.procs+' live here'}</span></div>
      ${s.has_mission? `
        <p class=obj>${esc(s.objective)}</p>
        ${s.total? `<div class=bar><i style="width:${100*s.done/s.total}%"></i></div>

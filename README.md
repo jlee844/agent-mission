@@ -14,9 +14,9 @@ has ticked off, and what it has actually done.
 git clone https://github.com/jlee844/agent-mission && cd agent-mission
 pip install -e .
 
-mission init      # write it (opens your editor, takes a minute)
+mission init      # write it — opens your editor, then opens the board
 mission           # show it, with measured activity
-mission board     # every live session on one page
+mission board     # the shared board (starts it, or joins the one running)
 ```
 
 ## What it looks like
@@ -62,7 +62,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 24 tests and most of them guard exactly this.
+There are 30 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store refuses agent-authored
 missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
@@ -89,6 +89,14 @@ together, refreshing:
 - measured activity: calls, files changed, test runs, failed calls
 - sessions with no mission say so, and tell you the command
 
+**One board, not one per session.** `mission init` in a second session joins
+the board already running and appears as another card — same URL, no second
+server. The port is recorded and *probed*, because a recorded port whose
+process died is worse than no record: it sends you to a dead URL.
+
+A mission whose session has ended stays on the board, dimmed and marked
+`ended`. The work happened; losing sight of it is what this exists to prevent.
+
 Localhost only. Reads transcripts and the mission log; writes nothing else.
 
 ## What it will not do
@@ -113,7 +121,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 24 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 30 tests, no network
 ```
 
 ## Status

@@ -18,6 +18,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .daemon import ensure as ensure_board, running as board_running, stop as board_stop
 from .session import activity, current_session_id, transcript_for
 from .store import (FIELD_AUTHORITY, Authority, MissionStore,
                     ProtectedFieldError, root_for)
@@ -70,11 +71,15 @@ def _parse(text: str) -> dict:
 
 
 def _edit(seed: str) -> str:
+    # EDITOR routinely carries arguments -- "code -w", "subl -w", "vim -f".
+    # Treating the whole string as one executable name fails with a confusing
+    # FileNotFoundError naming the flags.
+    import shlex
     editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
     with tempfile.NamedTemporaryFile("w+", suffix=".mission", delete=False) as fh:
         fh.write(seed)
         path = fh.name
-    subprocess.run([editor, path], check=False)
+    subprocess.run([*shlex.split(editor), path], check=False)
     return Path(path).read_text(encoding="utf-8")
 
 
@@ -115,7 +120,23 @@ def cmd_init(a) -> int:
         ev = st.propose(item, by="human")
         st.accept(ev["item_id"], by="human")
     print(f"\n  mission set for {sid[:8]}\n")
+    # Start/join the board BEFORE showing: otherwise the mission prints
+    # "board: not running" and the next line says it just started one.
+    _announce_board(a)
     return cmd_show(a)
+
+
+def _announce_board(a) -> None:
+    """Every session shares one board; joining it is the default."""
+    if getattr(a, "no_board", False):
+        return
+    existing = board_running()
+    url = ensure_board(getattr(a, "port", 8976))
+    if not url:
+        print("  (could not start the board — run `mission board` yourself)\n")
+        return
+    print(f"  board: {url}"
+          f"{'  (joined the one already running)' if existing else '  (started it)'}\n")
 
 
 def cmd_show(a) -> int:
@@ -154,6 +175,11 @@ def cmd_show(a) -> int:
         if act.files:
             top = ", ".join(f"{k} {v}x" for k, v in list(act.files.items())[:4])
             print(f"    {top}")
+    rec = board_running()
+    if rec:
+        print(f"  board: http://127.0.0.1:{rec['port']}")
+    else:
+        print("  board: not running — `mission board` to open it")
     print()
     return 0
 
@@ -191,7 +217,22 @@ def cmd_done(a) -> int:
 
 def cmd_board(a) -> int:
     from .board import serve
-    serve(a.port)
+    if a.stop:
+        print("  stopped" if board_stop() else "  no board running")
+        return 0
+    if a.foreground:
+        serve(a.port)
+        return 0
+    rec = board_running()
+    url = ensure_board(a.port)
+    if not url:
+        print("  could not start the board")
+        return 1
+    print(f"\n  board: {url}"
+          f"{'  (already running)' if rec else '  (started, runs in the background)'}")
+    print("  `mission board --stop` to shut it down\n")
+    if a.open:
+        subprocess.run(["open", url], check=False)
     return 0
 
 
@@ -212,6 +253,8 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("init", parents=[common]); i.add_argument("--force", action="store_true")
     i.add_argument("--blank", action="store_true", help="do not seed from the transcript")
     i.add_argument("--no-edit", action="store_true", help="skip the editor (for scripts)")
+    i.add_argument("--no-board", action="store_true", help="do not open the board")
+    i.add_argument("--port", type=int, default=8976)
     i.set_defaults(fn=cmd_init)
 
     s = sub.add_parser("show", parents=[common]); s.set_defaults(fn=cmd_show)
@@ -219,7 +262,12 @@ def main(argv: list[str] | None = None) -> int:
     pr = sub.add_parser("propose", parents=[common]); pr.add_argument("text"); pr.set_defaults(fn=cmd_propose)
     ac = sub.add_parser("accept", parents=[common]); ac.add_argument("item_id"); ac.set_defaults(fn=cmd_accept)
     dn = sub.add_parser("done", parents=[common]); dn.add_argument("item_id"); dn.set_defaults(fn=cmd_done)
-    bd = sub.add_parser("board", parents=[common]); bd.add_argument("--port", type=int, default=8976)
+    bd = sub.add_parser("board", parents=[common])
+    bd.add_argument("--port", type=int, default=8976)
+    bd.add_argument("--open", action="store_true", help="open it in your browser")
+    bd.add_argument("--stop", action="store_true")
+    bd.add_argument("--foreground", action="store_true",
+                    help=argparse.SUPPRESS)   # used by the spawner
     bd.set_defaults(fn=cmd_board)
 
     a = ap.parse_args(argv)

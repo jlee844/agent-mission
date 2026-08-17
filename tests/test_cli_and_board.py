@@ -68,3 +68,57 @@ def test_board_binds_localhost_only():
 def test_board_tells_you_how_to_start_a_mission_when_there_is_none():
     from agent_mission.board import PAGE
     assert "mission init" in PAGE
+
+
+# ── the shared board ─────────────────────────────────────────────────────────
+
+def test_editor_arguments_are_honoured(tmp_path, monkeypatch):
+    """EDITOR routinely carries flags — "code -w", "subl -w". Treating the whole
+    string as one executable fails with a FileNotFoundError naming the flags."""
+    import agent_mission.__main__ as M
+    seen = {}
+    monkeypatch.setattr(M.subprocess, "run", lambda cmd, **k: seen.setdefault("cmd", cmd))
+    monkeypatch.setenv("EDITOR", "code -w")
+    M._edit("hello")
+    assert seen["cmd"][:2] == ["code", "-w"]
+
+
+def test_a_dead_board_record_is_not_trusted(tmp_path, monkeypatch):
+    """A recorded port whose process died is worse than no record — it sends
+    you to a dead URL."""
+    import json as J
+    from agent_mission import daemon
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    (tmp_path).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "board.json").write_text(J.dumps({"port": 9, "pid": 1}))
+    assert daemon.running() is None
+    assert not (tmp_path / "board.json").exists(), "stale record is cleared"
+
+
+def test_no_board_record_means_no_board(tmp_path, monkeypatch):
+    from agent_mission import daemon
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    assert daemon.running() is None
+
+
+def test_reading_a_missionless_session_leaves_no_directory(tmp_path):
+    """An empty directory reads as 'a mission exists' to anything scanning."""
+    from agent_mission.store import MissionStore
+    root = tmp_path / "sess"
+    assert MissionStore(root).load() is None
+    assert not root.exists()
+
+
+def test_writing_creates_the_directory(tmp_path):
+    from agent_mission.store import MissionStore
+    root = tmp_path / "sess"
+    MissionStore(root).create("s", "/r", "goal", by="human")
+    assert (root / "events.jsonl").exists()
+
+
+def test_an_ended_session_keeps_its_mission_on_the_board():
+    """A mission whose session closed must not vanish — the work happened."""
+    import inspect
+    from agent_mission import board
+    src = inspect.getsource(board.snapshot)
+    assert '"ended": True' in src and "_missions_home" in src
