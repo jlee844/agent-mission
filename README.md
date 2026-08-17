@@ -87,7 +87,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 36 tests and most of them guard exactly this.
+There are 47 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store refuses agent-authored
 missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
@@ -124,6 +124,25 @@ A mission whose session has ended stays on the board, dimmed and marked
 
 Localhost only. Reads transcripts and the mission log; writes nothing else.
 
+## Session health
+
+Three facts about *how* a session ran, shown on each card. None of them is a
+judgement about whether the work was right.
+
+**Which model, and whether it changed.** Behaviour shifting after an update is
+not imagination. In one real session the model went
+`sonnet-4-6 → opus-4-8 → opus-5` mid-flight, and nothing surfaced it.
+
+**Replies repeated verbatim.** The agent answering a turn it already answered.
+Found in a real session at cosine 1.000 — 2,475 characters, byte-identical,
+thirteen replies apart. Median similarity in that session was 0.22, so it is far
+outside the noise. Numbers count as tokens, because "40/62" and "41/62" are
+different answers and a word-only tokenizer calls them a repeat.
+
+**Files two live sessions are both writing.** Nothing inside either session can
+see the other, so this is only visible from a board that watches all of them. On
+the machine this was built on, three sessions were editing the same file.
+
 ## What it will not do
 
 **It does not judge whether the work is the right work.** That needs your
@@ -146,7 +165,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 36 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 47 tests, no network
 ```
 
 ## Status

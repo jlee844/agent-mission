@@ -9,6 +9,7 @@ import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from .health import collisions, inspect as inspect_health
 from .session import PROJECTS, activity, live, transcript_for
 from .store import MissionStore, root_for
 
@@ -38,6 +39,7 @@ def snapshot() -> list[dict]:
             seen.add(sid)
             m = MissionStore(root_for(sid)).load()
             a = activity(tp)
+            h = inspect_health(tp)
             rows.append({
                 "id": sid[:8], "full": sid,
                 "cwd": proc["cwd"].replace(str(Path.home()), "~"),
@@ -55,8 +57,19 @@ def snapshot() -> list[dict]:
                 "calls": a.calls, "files": len(a.files), "tests": a.tests,
                 "failures": a.failures, "asks": a.last_asks,
                 "topfiles": [{"f": k, "n": v} for k, v in list(a.files.items())[:8]],
+                "models": h.model_order, "model_changed": h.model_changed,
+                "repeats": len(h.repeats), "exact_repeats": h.exact_repeats,
+                "worst_repeat": h.repeats[0] if h.repeats else None,
+                "_files": a.files,
                 "mtime": tp.stat().st_mtime,
             })
+    # Files two live sessions have both written. Nothing inside either session
+    # can see the other, so this is only visible from here.
+    clash = collisions({r["id"]: r.pop("_files", {}) for r in rows})
+    for r in rows:
+        r["collisions"] = [c["file"] for c in clash
+                           if r["id"] in c["sessions"]][:6]
+
     # A mission whose session has ended must not vanish from the board -- the
     # work happened, and losing sight of it is exactly what this exists to
     # prevent. Ended sessions are shown, marked, and sorted last.
@@ -86,6 +99,8 @@ def snapshot() -> list[dict]:
                 "asks": a.last_asks if a else [],
                 "topfiles": [{"f": k, "n": v} for k, v in
                              list(a.files.items())[:8]] if a else [],
+                "models": [], "model_changed": False, "repeats": 0,
+                "exact_repeats": 0, "worst_repeat": None, "collisions": [],
                 "mtime": (d / "events.jsonl").stat().st_mtime,
             })
     return sorted(rows, key=lambda r: (r.get("ended", False),
@@ -134,6 +149,11 @@ li.ng{color:var(--mut)}
 .meta{font-family:var(--mono);font-size:.7rem;color:var(--mut);margin-top:.75rem;
 padding-top:.6rem;border-top:1px solid var(--soft);line-height:1.7}
 .warn{color:var(--bad)}
+.flags{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.7rem}
+.flag{font-family:var(--mono);font-size:.66rem;padding:.16rem .45rem;border-radius:3px;
+background:var(--badw);color:var(--bad)}
+.flag.calm{background:var(--soft);color:var(--mut)}
+.flagdet{font-family:var(--mono);font-size:.68rem;color:var(--mut);margin-top:.4rem;line-height:1.6}
 </style>
 <header><h1>Missions</h1><span id=age></span></header>
 <div class=grid id=g></div>
@@ -161,6 +181,17 @@ async function tick(){
      ` : `<p class=none>No mission yet.<br>Run <code>mission init</code> in this
           session to write one — it takes a minute and the agent cannot change it.</p>
           ${s.asks.length?`<h3>Currently asked</h3><p class=none>${esc(s.asks[s.asks.length-1])}</p>`:''}`}
+     <div class=flags>
+       ${s.models.length?`<span class="flag ${s.model_changed?'':'calm'}">${
+          s.models.map(m=>m.replace('claude-','')).join(' → ')}</span>`:''}
+       ${s.exact_repeats?`<span class=flag>${s.exact_repeats} identical reply${s.exact_repeats>1?'s':''}</span>`:''}
+       ${!s.exact_repeats&&s.repeats?`<span class="flag calm">${s.repeats} near-repeat${s.repeats>1?'s':''}</span>`:''}
+       ${s.collisions.length?`<span class=flag>shared file${s.collisions.length>1?'s':''}</span>`:''}
+     </div>
+     ${s.collisions.length?`<div class=flagdet>also being written by another session:<br>${
+        s.collisions.map(f=>esc(f)).join(' · ')}</div>`:''}
+     ${s.worst_repeat&&s.worst_repeat.sim>=0.999?`<div class=flagdet>a reply was repeated
+        verbatim ${s.worst_repeat.gap} replies later</div>`:''}
      <div class=meta>${s.calls.toLocaleString()} calls · ${s.files} files ·
        ${s.tests} test runs · <span class="${s.failures?'warn':''}">${s.failures} failed</span>
        ${s.topfiles.length?`<br>${s.topfiles.slice(0,3).map(f=>esc(f.f)+' '+f.n+'x').join(' · ')}`:''}</div>
