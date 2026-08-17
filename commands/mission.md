@@ -117,6 +117,48 @@ Show the output, which includes the board URL. Delete the temp file.
 
 ---
 
+## Keeping the board current while the work moves
+
+A mission written once and never touched is a wish with a URL. Most of what
+gets asked for arrives *after* `init`, and the board is only worth reading if it
+caught it.
+
+**When they ask for something new, propose it before you start it.**
+
+```bash
+mission propose "Fold finished items away on the board"
+```
+
+It lands as `[?]`, inert until they accept, and it is on the card from the
+moment they asked rather than after you remember. Then do the work.
+
+**What goes on the board, and what does not.** The test is whether the message
+contains something that could be **true or false when you are finished**.
+
+| they said | board? |
+|---|---|
+| "add a way to overwrite the mission" | **yes** — an instruction |
+| "the name should not be a pasted prompt" | **yes** — a state to reach |
+| "what do we have that Kiro does not?" | **no** — a question. Answer it |
+| "is this approach stupid?" | **no** — asking for judgement |
+| "ok so let's do the second one" | **yes** — the answer became an instruction |
+
+A question is not a commitment. Answer it in the conversation; if the reply
+turns into "do that", propose it *then*. Adding every question to the plan
+inflates it with things that were never asked for, and a plan you stop trusting
+is one you stop reading.
+
+When you are unsure, propose it and say you were unsure. A `[?]` they delete
+costs one command; work that never appears costs them the ability to check.
+
+**When you finish one, say which id and let them tick it.**
+
+> Done: the fold, and the goal-editing command. `mission done 4a1c9e02 88ea49fc`
+
+Several ids in one command, because six items is otherwise six commands and the
+plan stops being maintained. **Never tick it yourself** — marking work complete
+is their judgement, and the whole guarantee rests on it.
+
 ## Rules that hold either way
 
 - **The mission is theirs.** Objective, success criteria, constraints and

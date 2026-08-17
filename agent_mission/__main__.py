@@ -278,27 +278,37 @@ def cmd_propose(a) -> int:
     return 0
 
 
+def _apply(a, verb: str, fn) -> int:
+    """Run a per-item action over every id given, and report each one.
+
+    Several ids at once because the alternative is what actually happens: the
+    agent proposes six items, ticking them is six commands, and the plan stops
+    being maintained. An unknown id is reported and the rest still run -- a
+    typo in the fourth id must not silently drop the first three.
+    """
+    st = _store(a.session or current_session_id())
+    bad = 0
+    for iid in a.item_id:
+        try:
+            fn(st, iid)
+        except NoSuchItemError:
+            print(f"  no item {iid!r} in this plan — `mission` to see the ids")
+            bad = 1
+        except ProtectedFieldError as e:
+            print(f"  {e}")
+            bad = 1
+        else:
+            print(f"  {verb} {iid}")
+    return bad
+
+
 def cmd_accept(a) -> int:
-    try:
-        _store(a.session or current_session_id()).accept(a.item_id, by="human")
-    except NoSuchItemError:
-        print(f"  no item {a.item_id!r} in this plan — `mission` to see the ids")
-        return 1
-    print(f"  accepted {a.item_id}")
-    return 0
+    return _apply(a, "accepted", lambda st, i: st.accept(i, by="human"))
 
 
 def cmd_done(a) -> int:
-    try:
-        _store(a.session or current_session_id()).complete(a.item_id, by="human")
-    except NoSuchItemError:
-        print(f"  no item {a.item_id!r} in this plan — `mission` to see the ids")
-        return 1
-    except ProtectedFieldError as e:
-        print(f"  {e}")
-        return 1
-    print(f"  done {a.item_id}")
-    return cmd_show(a)
+    rc = _apply(a, "done", lambda st, i: st.complete(i, by="human"))
+    return rc or cmd_show(a)
 
 
 def cmd_setup(a) -> int:
@@ -388,8 +398,12 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("text")
     pr.add_argument("--under", default=None, metavar="ID")
     pr.set_defaults(fn=cmd_propose)
-    ac = sub.add_parser("accept", parents=[common]); ac.add_argument("item_id"); ac.set_defaults(fn=cmd_accept)
-    dn = sub.add_parser("done", parents=[common]); dn.add_argument("item_id"); dn.set_defaults(fn=cmd_done)
+    ac = sub.add_parser("accept", parents=[common])
+    ac.add_argument("item_id", nargs="+", metavar="ID")
+    ac.set_defaults(fn=cmd_accept)
+    dn = sub.add_parser("done", parents=[common])
+    dn.add_argument("item_id", nargs="+", metavar="ID")
+    dn.set_defaults(fn=cmd_done)
     su = sub.add_parser("setup", parents=[common],
                         help="install the /mission slash command")
     su.add_argument("--dest", default=None)
