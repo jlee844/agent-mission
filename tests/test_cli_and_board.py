@@ -194,3 +194,15 @@ def test_the_slash_command_does_not_let_the_agent_author_the_mission():
     assert "protected" in low
     assert "route around" in low
     assert "traces to something they said" in low
+
+
+def test_child_guides_skip_the_root_level():
+    """Roots are flush bullets with no connector, so a guide for the root level
+    points at a line that is never drawn — children rendered as "│├"."""
+    import agent_mission.board as B
+    assert "i.guides.slice(1)" in B.PAGE
+
+
+def test_a_branch_carries_its_rolled_up_progress():
+    import agent_mission.board as B
+    assert "class=mini" in B.PAGE and "i.roll" in B.PAGE

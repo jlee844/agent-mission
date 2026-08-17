@@ -205,7 +205,10 @@ async function tick(){
          <div class=sid><span>${s.done} of ${s.total} done</span>
          ${s.pending_accept?`<span class=warn>${s.pending_accept} awaiting accept</span>`:'<span></span>'}</div>
          <ul class=chk>${s.tree.map(i=>{
-             const guides = i.guides.map(g=>`<span class=g>${g?'│':' '}</span>`).join('');
+             // Roots are flush bullets with no connector, so the guide for the
+             // root level refers to a line that is never drawn. Drop it, or
+             // children render as "│├" against nothing.
+             const guides = i.guides.slice(1).map(g=>`<span class=g>${g?'│':' '}</span>`).join('');
              const elbow  = i.d? `<span class=g>${i.last?'└':'├'}</span>` : '';
              return `<li class="${i.branch?'branch':''} ${i.done?'done':(i.ok?'':'prop')}">
                ${guides}${elbow}
