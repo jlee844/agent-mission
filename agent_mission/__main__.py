@@ -196,7 +196,10 @@ def cmd_show(a) -> int:
         show_all = getattr(a, "all", False)
         roots = m.tree()
         _print_tree(roots, show_all=show_all)
-        hidden = sum(1 for n in roots if n.complete)
+        # Every finished leaf is folded away -- itself, or under a finished
+        # branch -- so the count is done_count. Counting only the finished
+        # ROOTS said "1 finished" while two were off the screen.
+        hidden = m.done_count
         if hidden and not show_all:
             print(f"    ({hidden} finished, hidden — `mission show --all`)")
         if m.unaccepted:

@@ -35,11 +35,13 @@ mission board     # the shared board (starts it, or joins the one running)
   NOT DOING
     · redesigning the map
 
-  CHECKLIST  1/4
-    [x] 37f1f159  Port SpotList types
-    [ ] f12da176  Wire AddToListSheet
-    [ ] 464ef06c  Regenerate PARITY.md
-    [?] d9e2e249  Add a caching layer
+  PLAN  2/5
+    [ ] 627d52c7  Mobile port   1/2
+    └─ [ ] a91922a1  Wire AddToListSheet
+    [ ] f87a7497  Regenerate PARITY.md
+    [?] 660974c9  Add a caching layer
+    (2 finished, hidden — `mission show --all`)
+
     1 proposed, awaiting your accept
 
   MEASURED SO FAR
@@ -47,6 +49,11 @@ mission board     # the shared board (starts it, or joins the one running)
 ```
 
 `[?]` is an agent proposal. It is inert until you accept it.
+
+**Finished work sinks and then folds away.** What is left is what you act on, so
+it should not have to be found among ticked boxes. Order is unfinished-first at
+every level, and the order you wrote survives inside each group. `--all` brings
+the finished items back; on the board they are one click away under `▸ FINISHED`.
 
 **The plan is a tree.** An objective breaks into subgoals, subgoals into work.
 Only leaves count — a subgoal is a container, so counting it as a task both
@@ -120,7 +127,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 65 tests and most of them guard exactly this.
+There are 71 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store refuses agent-authored
 missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
@@ -198,7 +205,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 65 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 71 tests, no network
 ```
 
 ## Status
