@@ -142,17 +142,46 @@ def test_setup_refuses_to_clobber_without_force(tmp_path):
     assert (tmp_path / "mission.md").read_text() != "mine"
 
 
+def test_init_can_be_written_from_a_file(tmp_path, monkeypatch):
+    """After interviewing the user, the agent transcribes the answers rather
+    than driving an interactive editor."""
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
+    src = tmp_path / "m.txt"
+    src.write_text("OBJECTIVE: Ship it\nSUCCESS:\n- it ships\nCHECKLIST:\n- do the thing\n")
+    from agent_mission.__main__ import main
+    assert main(["init", "--session", "s1", "--blank", "--no-board",
+                 "--from-file", str(src)]) == 0
+    from agent_mission.store import MissionStore, root_for
+    m = MissionStore(root_for("s1")).load()
+    assert m.objective == "Ship it" and m.success_criteria == ["it ships"]
+
+
+def test_the_command_interviews_before_writing():
+    """A mission written in ten seconds is a wish."""
+    src = (Path(__file__).resolve().parents[1] / "commands" / "mission.md").read_text()
+    assert "one question at a time" in src.lower()
+    assert "recommended answer" in src
+    assert "scribe, never the author" in src
+    for topic in ("Objective", "Success criteria", "Constraints", "Non-goals", "Checklist"):
+        assert topic in src
+
+
 def test_the_slash_command_tells_the_agent_to_execute_not_interpret():
     """'mission init' typed into a session was read as 'go re-initialise the
     project' and the agent did something else entirely. The command file has to
     close that off explicitly."""
     src = (Path(__file__).resolve().parents[1] / "commands" / "mission.md").read_text()
-    assert "Do not interpret" in src
+    low = src.lower()
+    assert "do not interpret" in low
     assert "mission $ARGUMENTS" in src
-    assert "print the output verbatim" in src
+    assert "verbatim" in low, "output must be shown as-is, not summarised"
 
 
 def test_the_slash_command_does_not_let_the_agent_author_the_mission():
+    """The store refuses agent writes; the command file must refuse to route
+    around that by inventing answers and passing them through the CLI."""
     src = (Path(__file__).resolve().parents[1] / "commands" / "mission.md").read_text()
-    assert "belong to the user" in src
-    assert "route around it" in src
+    low = src.lower()
+    assert "protected" in low
+    assert "route around" in low
+    assert "traces to something they said" in low

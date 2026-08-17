@@ -104,8 +104,13 @@ def cmd_init(a) -> int:
         asks = activity(tp).last_asks
         if asks:
             seed_obj = asks[0][:160]
-    text = TEMPLATE.format(objective=seed_obj, criterion=seed_crit)
-    filled = text if a.no_edit else _edit(text)
+    if a.from_file:
+        # An agent that has just interviewed the user writes the answers here.
+        # It is transcription, not authorship: every line came from a reply.
+        filled = Path(a.from_file).read_text(encoding="utf-8")
+    else:
+        text = TEMPLATE.format(objective=seed_obj, criterion=seed_crit)
+        filled = text if a.no_edit else _edit(text)
     parsed = _parse(filled)
     if not parsed["objective"]:
         print("  no OBJECTIVE given — nothing saved.")
@@ -273,6 +278,8 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("init", parents=[common]); i.add_argument("--force", action="store_true")
     i.add_argument("--blank", action="store_true", help="do not seed from the transcript")
     i.add_argument("--no-edit", action="store_true", help="skip the editor (for scripts)")
+    i.add_argument("--from-file", default=None,
+                   help="read the filled template from a file instead of an editor")
     i.add_argument("--no-board", action="store_true", help="do not open the board")
     i.add_argument("--port", type=int, default=8976)
     i.set_defaults(fn=cmd_init)

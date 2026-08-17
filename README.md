@@ -56,6 +56,13 @@ mission board     # the shared board (starts it, or joins the one running)
 /mission done 5005d9f8
 ```
 
+`/mission init` **interviews you** — one question at a time, each with a
+recommended answer so you can say "yes" and move on. Objective, then success
+criteria (the one people skip), constraints, non-goals, and a proposed
+checklist. It stops when a competent stranger could pick up the session and know
+what to do and when to stop. The agent is the scribe; every line traces to
+something you said.
+
 **Install the slash command with `mission setup`.** Without it, typing
 `mission init` into a session is read as an *instruction* rather than run as a
 command — in testing, an agent took it as "go re-initialise the project" and
@@ -80,7 +87,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 34 tests and most of them guard exactly this.
+There are 36 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store refuses agent-authored
 missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
@@ -139,7 +146,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 34 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 36 tests, no network
 ```
 
 ## Status
