@@ -169,8 +169,10 @@ def test_the_command_interviews_before_writing():
     assert "one question at a time" in src.lower()
     assert "recommended answer" in src
     assert "scribe, never the author" in src
-    for topic in ("Objective", "Success criteria", "Constraints", "Non-goals", "Checklist"):
-        assert topic in src
+    low = src.lower()
+    for topic in ("objective", "success criteria", "constraints", "non-goals"):
+        assert topic in low, f"the interview must cover {topic}"
+    assert "subgoal" in low, "the plan is elicited as a tree, not a flat list"
 
 
 def test_the_slash_command_tells_the_agent_to_execute_not_interpret():

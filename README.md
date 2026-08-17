@@ -96,7 +96,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 52 tests and most of them guard exactly this.
+There are 53 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store refuses agent-authored
 missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
@@ -174,7 +174,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 52 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 53 tests, no network
 ```
 
 ## Status
