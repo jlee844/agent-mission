@@ -159,6 +159,23 @@ Several ids in one command, because six items is otherwise six commands and the
 plan stops being maintained. **Never tick it yourself** — marking work complete
 is their judgement, and the whole guarantee rests on it.
 
+## Never report the plan from memory
+
+The human accepts, ticks and commits **in their own terminal**, where you cannot
+see it — the CLI refuses those commands to you by design. So anything you know
+about what is done went stale the moment you said it.
+
+Before telling them what is finished or still open, in the same turn:
+
+```bash
+mission show
+```
+
+Restating a status from earlier in the conversation is the one way this tool
+actively misleads: they act on what you say, and you are describing a board that
+has since changed. If a check is genuinely too expensive to repeat, say what it
+was true *as of* rather than stating it flatly.
+
 ## Rules that hold either way
 
 - **The mission is theirs.** Objective, success criteria, constraints and
