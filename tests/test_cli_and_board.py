@@ -324,3 +324,34 @@ def test_a_chosen_session_name_is_not_cut_in_half():
     # correct, and was my test being wrong rather than the code.
     assert short_id("a" * 40) == "aaaaaaaa"
     assert short_id("training-run-" + "x" * 40).endswith("…")
+
+
+def test_an_agent_cannot_write_permission_rules_even_with_force(tmp_path, monkeypatch, capsys):
+    """--force means 'overwrite the command file'. It used to wave through the
+    settings edit too, so the first agent run wrote the very rules meant to
+    constrain it."""
+    import json as J
+    from agent_mission.__main__ import main
+    monkeypatch.delenv("AGENT_MISSION_I_AM_HUMAN", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+    settings = tmp_path / "settings.json"
+    settings.write_text(J.dumps({"permissions": {"deny": []}}))
+
+    main(["setup", "--force", "--dest", str(tmp_path / "cmds"),
+          "--settings", str(settings)])
+    assert J.loads(settings.read_text())["permissions"]["deny"] == []
+    assert "run `mission setup` yourself in a terminal" in capsys.readouterr().out
+
+
+def test_a_person_at_a_terminal_gets_the_rules_written(tmp_path, monkeypatch, capsys):
+    import json as J
+    from agent_mission.__main__ import DENY_RULES, main
+    monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
+    settings = tmp_path / "settings.json"
+    settings.write_text(J.dumps({"permissions": {"deny": ["Bash(rm:*)"]}}))
+
+    main(["setup", "--dest", str(tmp_path / "cmds"), "--settings", str(settings)])
+    deny = J.loads(settings.read_text())["permissions"]["deny"]
+    assert deny[0] == "Bash(rm:*)", "existing rules kept"
+    assert all(r in deny for r in DENY_RULES)
+    assert list(tmp_path.glob("settings.json.bak-mission-*")), "backed up first"

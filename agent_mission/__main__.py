@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 import subprocess
 import sys
 import tempfile
@@ -553,6 +554,71 @@ def cmd_setup(a) -> int:
     print("  type /mission in any Claude Code session\n")
     print("  Without this, typing 'mission init' into a session is read as an")
     print("  instruction and the agent goes and does something else entirely.\n")
+    return _install_deny_rules(a)
+
+
+# The four commands only a person may run. Blocked at the harness, they never
+# reach this code at all -- which is the point: the tty check lives inside the
+# thing being protected, and a rule here is enforced by the thing that already
+# holds the authority.
+DENY_RULES = [f"Bash(mission {c}:*)" for c in ("set", "accept", "done", "remove")]
+
+
+def _install_deny_rules(a) -> int:
+    """Ask Claude Code to refuse the human-only commands, agent-side.
+
+    The tty check is a speed bump an agent can step over with one env var. A
+    deny rule is not: the harness blocks the call before the CLI runs, so there
+    is nothing inside the tool left to talk past.
+
+    Costs the person nothing -- they still type these in their own terminal,
+    and the agent keeps propose, delegate, observe, show and import.
+    """
+    if getattr(a, "no_permissions", False):
+        print("  skipped the permission rules (--no-permissions)\n")
+        return 0
+    path = Path(a.settings).expanduser() if a.settings else \
+        Path.home() / ".claude" / "settings.json"
+    if not path.exists():
+        print(f"  no {path} — add these to your settings yourself:\n")
+        for r in DENY_RULES:
+            print(f"    {r}")
+        print()
+        return 0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:                       # never leave settings broken
+        print(f"  could not read {path} ({e}) — add these yourself:")
+        for r in DENY_RULES:
+            print(f"    {r}")
+        return 0
+    perms = data.setdefault("permissions", {})
+    deny = perms.setdefault("deny", [])
+    missing = [r for r in DENY_RULES if r not in deny]
+    if not missing:
+        print("  permission rules already in place\n")
+        return 0
+    # NOT gated on --force. That flag means "overwrite the command file", and
+    # letting it also wave through a settings edit is how a narrow escape hatch
+    # becomes a wide one: the first run of this as an agent, with --force,
+    # wrote the rules it was supposed to refuse to write.
+    if not _at_a_keyboard():
+        # Editing the human's settings is exactly the kind of change an agent
+        # should not make on its own -- and this file governs what agents may
+        # do at all.
+        print("  these four rules are missing from your settings:\n")
+        for r in missing:
+            print(f"    {r}")
+        print("\n  run `mission setup` yourself in a terminal to add them.\n")
+        return 0
+    backup = path.with_suffix(f".json.bak-mission-{int(time.time())}")
+    backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    deny.extend(missing)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    print(f"  added {len(missing)} deny rule(s) to {path}")
+    print(f"  backup: {backup.name}")
+    print("  the agent can no longer run set/accept/done/remove at all;")
+    print("  you still can, in your own terminal.\n")
     return 0
 
 
@@ -635,6 +701,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="install the /mission slash command")
     su.add_argument("--dest", default=None)
     su.add_argument("--force", action="store_true")
+    su.add_argument("--no-permissions", action="store_true",
+                    help="skip the Claude Code deny rules")
+    su.add_argument("--settings", default=None,
+                    help="settings.json to edit (default ~/.claude/settings.json)")
     su.set_defaults(fn=cmd_setup)
 
     se = sub.add_parser("set", parents=[common],

@@ -180,7 +180,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 95 tests and most of them guard exactly this.
+There are 97 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store has always refused agent
 writes. The *CLI* could not tell who typed the command, so it passed
@@ -201,7 +201,24 @@ An agent's shell has no tty; a person typing in one does. `set`, `accept`,
 `done` and `remove` are gated on it, with `AGENT_MISSION_I_AM_HUMAN=1` for
 pipelines and CI.
 
-> **This is not a security boundary.** An agent can set that variable. What it
+**The rule that actually holds.** `mission setup` also offers to add four deny
+rules to `~/.claude/settings.json`:
+
+```
+Bash(mission set:*)  ·  Bash(mission accept:*)
+Bash(mission done:*) ·  Bash(mission remove:*)
+```
+
+Now the harness refuses the call before this code runs, so there is nothing
+left inside the tool to talk past — and it costs the person nothing, because
+they type those in their own terminal anyway. The agent keeps `propose`,
+`delegate`, `observe`, `show` and `import`.
+
+Writing those rules is itself gated on a terminal, and **not** on `--force`:
+that flag means "overwrite the command file", and letting it also wave through
+a settings edit is how a narrow escape hatch becomes a wide one. It did, once.
+
+> **The tty check alone is not a security boundary.** An agent can set that variable. What it
 > changes is the *default*: impersonation went from what happens on the first
 > try to something that takes a deliberate lie — which is the threat this
 > design actually claims to address. Proving a human is present needs a
@@ -273,7 +290,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 95 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 97 tests, no network
 ```
 
 ## Status
@@ -281,7 +298,7 @@ pip install -e ".[dev]" && python -m pytest tests/ -q     # 95 tests, no network
 Not on PyPI yet — install from source as above. Session discovery is Claude
 Code specific; the store and the board are not.
 
-**Python 3.9 through 3.14**, all 95 tests passing on each. The floor is 3.9
+**Python 3.9 through 3.14**, all 97 tests passing on each. The floor is 3.9
 because that is the Python macOS ships: the package originally declared 3.10+,
 which would have told a user on stock macOS Python that it was unsupported
 while it ran fine.
