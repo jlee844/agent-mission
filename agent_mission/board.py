@@ -6,11 +6,13 @@ Serves on 127.0.0.1. Reads transcripts and the mission log; writes nothing.
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from .actions import Session, Unauthorised, apply as apply_action
 from .health import collisions, inspect as inspect_health
 from .session import PROJECTS, activity, live, short_id, transcript_for
 from .store import MissionStore, root_for
@@ -334,6 +336,26 @@ cursor:pointer}
 .kid .kt{flex:1;text-wrap:pretty}
 .kid .kp{font-family:var(--mono);font-size:.66rem;color:var(--mut);flex:none}
 .spacer{flex:1}
+.act{font-family:var(--mono);font-size:.64rem;padding:.1rem .35rem;border-radius:3px;
+border:1px solid var(--rule);background:none;color:var(--mut);cursor:pointer;
+flex:none;margin-left:.4rem;opacity:0;transition:opacity .12s}
+.chk li:hover .act,.act:focus{opacity:1}
+.act:hover{color:var(--ink);border-color:var(--mut)}
+.act.ok{color:var(--ok);border-color:var(--ok)}
+#code{position:fixed;inset:auto 1.2rem 1.2rem auto;background:var(--card);
+border:1px solid var(--bad);border-radius:7px;padding:.8rem .95rem;max-width:22rem;
+font-size:.82rem;line-height:1.5;z-index:20}
+#code input{font-family:var(--mono);font-size:.85rem;letter-spacing:.15em;width:6.5rem;
+padding:.25rem .4rem;margin-right:.4rem;background:var(--bg);color:var(--ink);
+border:1px solid var(--rule);border-radius:3px}
+#code button{font-family:var(--mono);font-size:.7rem;padding:.28rem .55rem;
+border-radius:3px;border:1px solid var(--rule);background:none;color:var(--ink);cursor:pointer}
+#code .hint{color:var(--mut);font-size:.74rem;margin-top:.45rem}
+.notebox{display:flex;gap:.4rem;margin-top:.6rem}
+.notebox input{flex:1;font-family:var(--sans);font-size:.8rem;padding:.28rem .5rem;
+background:var(--bg);color:var(--ink);border:1px solid var(--rule);border-radius:3px}
+.notebox button{font-family:var(--mono);font-size:.68rem;padding:.28rem .5rem;
+border:1px solid var(--rule);border-radius:3px;background:none;color:var(--mut);cursor:pointer}
 
 /* ONE accent means "this is waiting on you". Red previously meant a pending
    proposal, a failed tool call AND a health warning -- three unrelated facts
@@ -395,6 +417,7 @@ flex:none;width:9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </header>
 <div id=strip></div>
 <div class=grid id=g></div>
+<div id=code hidden></div>
 <p class=none id=empty hidden>Nothing matches that.</p>
 <script>
 const esc=t=>(t||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
@@ -413,7 +436,7 @@ function visible(tree){
 // One row of the plan. `flat` drops the connectors: inside the finished fold
 // the rows come from different parents, so a guide there would draw a branch
 // that isn't on screen.
-function row(i,flat){
+function row(i,flat,sid){
   // Roots are flush bullets with no connector, so the guide for the root level
   // refers to a line that is never drawn. Drop it, or children render as "│├"
   // against nothing.
@@ -424,9 +447,51 @@ function row(i,flat){
     <span class=box>${i.done?'▪':(i.ok?'▫':'?')}</span>
     <span class=txt title="${esc(i.t)}">${esc(i.t)}</span>
     ${i.roll?`<span class=roll><span class=mini><i style="width:${i.pct}%"></i></span>${i.roll}</span>`:''}
+    ${(WRITABLE && CODE() && !i.done && !i.branch)?
+       (!i.ok? `<button class="act ok" data-do=accept data-s="${sid}" data-i="${i.id}">accept</button>`
+             : `<button class=act data-do=done data-s="${sid}" data-i="${i.id}">tick</button>`)
+      :''}
   </li>`;
 }
 const openFolds=new Set();
+let WRITABLE=false;
+// The code lives only in the browser that was told it. It is never fetched
+// from the server, which is the entire point: the board can verify it and
+// nothing else on this machine can obtain it.
+const CODE = () => localStorage.getItem('mission-code') || '';
+
+async function act(action, session, ids, text){
+  const r = await fetch('/', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({code: CODE(), action, session, ids, text: text||''})});
+  if (!r.ok){
+    const e = await r.json().catch(()=>({error:'failed'}));
+    if (r.status === 403) localStorage.removeItem('mission-code');
+    alert(e.error || 'failed');
+  }
+  tick();
+  return r.ok;
+}
+
+function askForCode(){
+  const box = document.getElementById('code');
+  // Only ask when the board can actually accept writes AND we have no code.
+  if (!WRITABLE || CODE()){ box.hidden = true; return; }
+  if (box.dataset.up) return;
+  box.dataset.up = '1'; box.hidden = false;
+  box.innerHTML = `<b>Write code</b><br>Shown in the terminal running
+    <code>mission board</code>.
+    <div style="margin-top:.5rem"><input id=codein maxlength=6 placeholder="······"
+      autocomplete=off spellcheck=false><button id=codego>unlock</button></div>
+    <div class=hint>The agent never sees this, which is why these buttons are
+    yours. Skip it and the board stays read-only.</div>`;
+  document.getElementById('codego').onclick = ()=>{
+    const v = document.getElementById('codein').value.trim();
+    if (v){ localStorage.setItem('mission-code', v); box.hidden = true; box.dataset.up=''; tick(); }
+  };
+  document.getElementById('codein').onkeydown = e=>{
+    if (e.key === 'Enter') document.getElementById('codego').click();
+  };
+}
 let FILTER='all', QUERY='';
 
 // Everything a card is searchable BY: the goal, every task, the folder, and
@@ -446,7 +511,9 @@ const passes = s =>
    || (FILTER === 'todo'  && (s.pending_accept > 0 || !s.has_mission)));
 
 async function tick(){
-  let all; try{ all=await (await fetch('/data')).json() }catch(e){ return }
+  let payload; try{ payload=await (await fetch('/data')).json() }catch(e){ return }
+  const all = payload.rows; WRITABLE = payload.writable;
+  askForCode();
   const d = all.filter(passes);
   document.getElementById('age').textContent =
     (d.length === all.length ? `${all.length} sessions` : `${d.length} of ${all.length}`)
@@ -487,14 +554,16 @@ async function tick(){
      the objective trimmed, and printing both says it twice -->
        ${s.total? `<div class=bar><i style="width:${100*s.done/s.total}%"></i></div>
          <div class=sid><span>${s.done} of ${s.total} done</span>
-         ${s.pending_accept?`<span class="warn ask">${s.pending_accept} awaiting accept</span>`:'<span></span>'}</div>
-         <ul class=chk>${visible(s.tree).map(i=>row(i)).join('')}</ul><!-- map(row) passes the INDEX as row's second argument, so every row
+         ${s.pending_accept?`<span class="warn ask">${s.pending_accept} awaiting accept${
+   (WRITABLE&&CODE())?` <button class="act ok" data-do=acceptall data-s="${s.full}">accept all</button>`:''
+ }</span>`:'<span></span>'}</div>
+         <ul class=chk>${visible(s.tree).map(i=>row(i,false,s.full)).join('')}</ul><!-- map(row) passes the INDEX as row's second argument, so every row
      after the first rendered in flat mode and the tree lost every
      connector. The nesting was in the data the whole time. -->
          ${s.tree.some(i=>i.hid)?`<details class=doneblock data-sid="${s.id}" ${
              openFolds.has(s.id)?'open':''}><summary>${
              s.tree.filter(i=>i.hid).length} finished</summary>
-           <ul class="chk flat">${s.tree.filter(i=>i.hid).map(r=>row(r,true)).join('')}</ul>
+           <ul class="chk flat">${s.tree.filter(i=>i.hid).map(r=>row(r,true,s.full)).join('')}</ul>
          </details>`:''}`:''}
        ${(s.criteria.length+s.constraints.length+s.non_goals.length)?`
          <details class=doneblock data-sid="terms-${s.id}" ${openFolds.has('terms-'+s.id)?'open':''}>
@@ -522,6 +591,9 @@ async function tick(){
         s.children.map(k=>`<div class=kid><span class=kn>${esc(k.id)}</span>
           <span class=kt>${esc(k.title)}</span>
           <span class=kp>${k.total?k.done+'/'+k.total:'—'}</span></div>`).join('')}</div>`:''}
+     ${(WRITABLE && CODE() && s.has_mission)?`<div class=notebox>
+        <input placeholder="note to self — recorded, never judged" data-note="${s.full}">
+        <button data-do=note data-s="${s.full}">save</button></div>`:''}
      <div class=meta>${s.calls.toLocaleString()} calls · ${s.files} files ·
        ${s.tests} test runs · <span class=warn>${s.failures} failed</span>
        ${s.topfiles.length?`<br>${s.topfiles.slice(0,3).map(f=>esc(f.f)+' '+f.n+'x').join(' · ')}`:''}</div>
@@ -537,6 +609,22 @@ document.getElementById('g').addEventListener('toggle', e=>{
 }, true);
 // The strip's buttons are rewritten on every tick, so the listener lives on
 // the container, which is not.
+document.getElementById('g').addEventListener('click', e=>{
+  const b = e.target.closest('[data-do]'); if(!b) return;
+  const sid = b.dataset.s;
+  if (b.dataset.do === 'note'){
+    const inp = document.querySelector(`[data-note="${sid}"]`);
+    if (inp && inp.value.trim()){ act('note', sid, [], inp.value); inp.value=''; }
+    return;
+  }
+  if (b.dataset.do === 'acceptall'){
+    const card = b.closest('.card');
+    const ids = [...card.querySelectorAll('[data-do=accept]')].map(x=>x.dataset.i);
+    if (ids.length) act('accept', sid, ids);
+    return;
+  }
+  act(b.dataset.do, sid, [b.dataset.i]);
+});
 document.getElementById('strip').addEventListener('click', e=>{
   const b = e.target.closest('[data-jump]'); if(!b) return;
   document.querySelector('.chip[data-f=todo]').click();
@@ -595,6 +683,10 @@ class _Cache:
             self._thread = threading.Thread(target=self._refresh, daemon=True)
             self._thread.start()
 
+    def invalidate(self) -> None:
+        """After a write, the next read must not serve the pre-write board."""
+        self.rows, self.at = snapshot(), time.time()
+
     def _refresh(self) -> None:
         try:
             rows = snapshot()
@@ -606,22 +698,57 @@ class _Cache:
 CACHE = _Cache()
 
 
+WRITES = Session(enabled=False)      # replaced by serve() when a person runs it
+
+
 class _H(BaseHTTPRequestHandler):
-    def do_GET(self):                                    # noqa: N802
-        body, ctype = ((json.dumps(CACHE.get()).encode(), "application/json")
-                       if self.path.startswith("/data")
-                       else (PAGE.encode(), "text/html; charset=utf-8"))
-        self.send_response(200)
+    def _send(self, code: int, body: bytes, ctype: str) -> None:
+        self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self):                                    # noqa: N802
+        if self.path.startswith("/data"):
+            # `writable` says a code will be ACCEPTED, never what it is.
+            payload = {"rows": CACHE.get(), "writable": WRITES.enabled}
+            return self._send(200, json.dumps(payload).encode(),
+                              "application/json")
+        self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+
+    def do_POST(self):                                   # noqa: N802
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            req = json.loads(self.rfile.read(n) or b"{}")
+            out = apply_action(WRITES, req.get("code", ""), req.get("action", ""),
+                               req.get("session", ""), req.get("ids", []),
+                               req.get("text", ""))
+            CACHE.invalidate()          # the plan just changed; do not show stale
+            self._send(200, json.dumps(out).encode(), "application/json")
+        except Unauthorised as e:
+            self._send(403, json.dumps({"error": str(e)}).encode(),
+                       "application/json")
+        except Exception as e:
+            self._send(400, json.dumps({"error": str(e)}).encode(),
+                       "application/json")
+
     def log_message(self, *a):                           # noqa: A003
         pass
 
 
-def serve(port: int = 8976) -> None:
+def serve(port: int = 8976, writable: bool | None = None) -> None:
+    # A person running `mission board` has a terminal; the background board that
+    # `mission init` spawns does not, and its stdout goes to a log file the
+    # agent could read. So the tty IS the test, and the code only ever reaches
+    # a real terminal.
+    global WRITES
+    if writable is None:
+        try:
+            writable = sys.stdout.isatty()
+        except Exception:
+            writable = False
+    WRITES = Session(enabled=bool(writable))
     srv = HTTPServer(("127.0.0.1", port), _H)
     # The server writes its own record, because it is the only thing that knows
     # it is up and which pid it is. Written by the LAUNCHER, a board started any
@@ -630,7 +757,16 @@ def serve(port: int = 8976) -> None:
     # recycled to something else entirely.
     from .daemon import claim, release
     claim(port)
-    print(f"\n  mission board -> http://127.0.0.1:{port}\n  ctrl-c to stop\n")
+    print(f"\n  mission board -> http://127.0.0.1:{port}")
+    if WRITES.enabled:
+        print(f"\n  write code: {WRITES.code}"
+              f"\n  type it into the board once to accept and tick from there."
+              f"\n  it is not on disk and no page returns it — only this terminal"
+              f"\n  has it, which is why the agent cannot use these buttons.")
+    else:
+        print("\n  read-only (started in the background). Run `mission board`"
+              "\n  yourself in a terminal to get a write code.")
+    print("\n  ctrl-c to stop\n")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
