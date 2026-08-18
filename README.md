@@ -182,18 +182,33 @@ complete is a judgement, so it stays with you; the agent may record evidence.
 
 There are 92 tests and most of them guard exactly this.
 
-**The honest scope of that guarantee.** The store refuses agent-authored
-missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
-because a person is assumed to be at the keyboard. So:
+**The honest scope of that guarantee.** The store has always refused agent
+writes. The *CLI* could not tell who typed the command, so it passed
+`by="human"` unconditionally — and in a test, a subagent handed the CLI rewrote
+a protected objective on its first try. `mission why` recorded the change as
+mine. It also accepted its own proposal. The README disclosed this as a known
+limit at the time; disclosure stopped nothing.
 
-> An agent calling the library **cannot** set your objective or tick your
-> checklist. An agent with **shell access** can run `mission init` and pretend
-> to be you.
+So human-only commands now require a **controlling terminal**:
 
-This defends against an agent quietly redefining the goal in the course of its
-work, not against one deliberately impersonating you with full local
-privileges. Closing that needs the CLI to prove a human is present — a
-confirmation the agent cannot supply — which is not built.
+```
+$ mission set objective "something else"      # from an agent's shell
+  the objective is yours, and this is not a terminal — refusing.
+  If you are an agent: `mission propose "..."` instead.
+```
+
+An agent's shell has no tty; a person typing in one does. `set`, `accept`,
+`done` and `remove` are gated on it, with `AGENT_MISSION_I_AM_HUMAN=1` for
+pipelines and CI.
+
+> **This is not a security boundary.** An agent can set that variable. What it
+> changes is the *default*: impersonation went from what happens on the first
+> try to something that takes a deliberate lie — which is the threat this
+> design actually claims to address. Proving a human is present needs a
+> confirmation the agent cannot supply, and that is not built.
+
+The refusal always names `propose`, so the agent keeps a way to be useful. A
+guardrail with no path around it gets routed around.
 
 ## Several sessions at once
 
