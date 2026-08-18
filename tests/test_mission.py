@@ -301,3 +301,62 @@ def test_an_agent_can_still_propose_without_asking(tmp_path, monkeypatch):
     _no_tty(monkeypatch)
     assert main(["propose", "an idea", "--session", "s"]) == 0
     assert len(MissionStore(root_for("s")).load().checklist) == 1
+
+
+# ── delegation: one item, its own session ────────────────────────────────────
+
+def _delegated(tmp_path, monkeypatch):
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
+    st = MissionStore(root_for("parent"))
+    st.create("parent", "/repo", "Ship it", by="human")
+    st.set_protected("constraints", ["no network"], by="human")
+    st.set_protected("success_criteria", ["the whole thing ships"], by="human")
+    iid = st.propose("Train the model", by="human")["item_id"]
+    return main, st, iid
+
+
+def test_delegating_gives_the_item_its_own_mission(tmp_path, monkeypatch):
+    from agent_mission.store import children_of
+    main, st, iid = _delegated(tmp_path, monkeypatch)
+    st.accept(iid, by="human")
+    assert main(["delegate", iid, "--to", "train it", "--session", "parent"]) == 0
+
+    kids = children_of("parent")
+    assert list(kids) == [iid]
+    child = kids[iid]
+    assert child.objective == "Train the model", "copied, never authored"
+    assert child.constraints == ["no network"], "limits carry down"
+    assert child.success_criteria == [], \
+        "a slice of the work does not get to decide the whole mission is done"
+
+
+def test_an_unaccepted_proposal_cannot_be_delegated(tmp_path, monkeypatch, capsys):
+    """Otherwise an agent turns its own suggestion into a goal by proposing it
+    and immediately delegating it -- the one move the design exists to stop."""
+    from agent_mission.store import children_of
+    main, st, iid = _delegated(tmp_path, monkeypatch)
+    assert main(["delegate", iid, "--session", "parent"]) == 1
+    assert children_of("parent") == {}
+    assert "still a proposal" in capsys.readouterr().out
+
+
+def test_the_parent_plan_shows_what_was_delegated(tmp_path, monkeypatch, capsys):
+    """Without it the parent shows the item as untouched while a subagent is
+    half way through it."""
+    main, st, iid = _delegated(tmp_path, monkeypatch)
+    st.accept(iid, by="human")
+    main(["delegate", iid, "--to", "train it", "--session", "parent"])
+    capsys.readouterr()
+    main(["show", "--session", "parent"])
+    assert "→ parent.train-it" in capsys.readouterr().out
+
+
+def test_delegating_twice_does_not_start_over(tmp_path, monkeypatch, capsys):
+    main, st, iid = _delegated(tmp_path, monkeypatch)
+    st.accept(iid, by="human")
+    main(["delegate", iid, "--to", "train it", "--session", "parent"])
+    capsys.readouterr()
+    assert main(["delegate", iid, "--to", "train it", "--session", "parent"]) == 1
+    assert "already has a mission" in capsys.readouterr().out

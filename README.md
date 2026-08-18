@@ -120,6 +120,27 @@ makes a replan cheap: change the file, import again, read the difference.
 the file is not you. The count is reported so you can tick them in one command
 if the source was right.
 
+## Hand one item to a subagent
+
+A subagent has no session id of its own — it runs inside its parent's — so its
+work is invisible on the board and it has to be handed an id invented by hand.
+It also does not need the whole mission. It needs one item, and the limits that
+still apply.
+
+```bash
+mission delegate 5a182a09 --to "logreg baseline"
+```
+
+That makes a child mission whose objective is **copied verbatim** from an item
+you already accepted. Constraints and non-goals carry down, because a limit that
+stops applying to a subagent is not a limit. Success criteria stay with the
+parent: a slice of the work does not get to decide the whole mission is
+finished. The parent's plan then shows `→ <child> 2/4` beside that item.
+
+**The agent may run this**, because it authors nothing. It may not delegate an
+*unaccepted* proposal — otherwise it could propose an item and immediately
+delegate it, turning its own suggestion into a goal.
+
 ## Goals move
 
 ```bash
@@ -159,7 +180,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 83 tests and most of them guard exactly this.
+There are 92 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store refuses agent-authored
 missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
@@ -237,7 +258,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 83 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 92 tests, no network
 ```
 
 ## Status

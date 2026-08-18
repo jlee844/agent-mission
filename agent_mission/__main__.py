@@ -20,8 +20,8 @@ from pathlib import Path
 
 from .daemon import ensure as ensure_board, running as board_running, stop as board_stop
 from .session import activity, current_session_id, short_id, transcript_for
-from .store import (FIELD_AUTHORITY, Authority, MissionStore, NoSuchItemError,
-                    ProtectedFieldError, root_for)
+from .store import (FIELD_AUTHORITY, Authority, Item, MissionStore,
+                    NoSuchItemError, ProtectedFieldError, children_of, root_for)
 
 TEMPLATE = """\
 # Your mission for this session. Lines starting with # are ignored.
@@ -230,7 +230,7 @@ def cmd_show(a) -> int:
         print(f"\n  PLAN  {m.done_count}/{m.total_count}")
         show_all = getattr(a, "all", False)
         roots = m.tree()
-        _print_tree(roots, show_all=show_all)
+        _print_tree(roots, show_all=show_all, kids=children_of(sid))
         # Every finished leaf is folded away -- itself, or under a finished
         # branch -- so the count is done_count. Counting only the finished
         # ROOTS said "1 finished" while two were off the screen.
@@ -356,6 +356,69 @@ def cmd_import(a) -> int:
     return 0
 
 
+def _slugify(text: str, limit: int = 24) -> str:
+    import re
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return (s[:limit].rstrip("-") or "task")
+
+
+def cmd_delegate(a) -> int:
+    """Give one accepted item its own small mission, for a subagent to run.
+
+    A subagent has no session id of its own -- it runs inside its parent's --
+    so without this its work is invisible on the board and it has to be handed
+    a session id invented by hand. It also does not need the whole mission: it
+    needs one item, and the limits that still apply.
+
+    The agent is allowed to run this. It authors nothing: the objective is
+    copied verbatim from an item the human already accepted, and constraints
+    and non-goals are inherited unchanged. Refusing would only push a subagent
+    into working with no recorded goal at all.
+    """
+    sid = a.session or current_session_id()
+    st = _store(sid)
+    m = st.load()
+    if m is None:
+        print("  no mission for this session — `mission init` first")
+        return 1
+    item = next((Item(**d) for d in m.checklist if d["id"] == a.item_id), None)
+    if item is None:
+        print(f"  no item {a.item_id!r} in this plan — `mission` to see the ids")
+        return 1
+    if not item.accepted:
+        # Delegating an unaccepted proposal would let the agent turn its own
+        # suggestion into a goal, which is the one move the whole design exists
+        # to prevent.
+        print(f"  {a.item_id} is still a proposal. Accept it first:\n"
+              f"    mission accept {a.item_id}")
+        return 1
+
+    child = f"{short_id(sid)}.{_slugify(a.to or item.text)}"
+    cst = _store(child)
+    if cst.load() is not None:
+        print(f"  {child} already has a mission — `mission show --session {child}`")
+        return 1
+    cst.create(child, m.cwd or str(Path(a.cwd).resolve()), item.text,
+               by="agent" if not _at_a_keyboard() else "human",
+               parent_session=sid, parent_item=item.id)
+    cst.set_protected("name", (a.to or item.text)[:60], by="human")
+    # Criteria are the PARENT's and stay there: a slice of the work does not
+    # get to decide the whole mission is finished. Limits do carry, because a
+    # constraint that stops applying to a subagent is not a constraint.
+    for f in ("constraints", "non_goals"):
+        if getattr(m, f):
+            cst.set_protected(f, getattr(m, f), by="human")
+
+    print(f"\n  delegated {item.id} → session {child}\n"
+          f"  Hand the subagent this, verbatim:\n\n"
+          f"    Your goal is recorded. Read it first:\n"
+          f"      mission show --session {child}\n"
+          f"    Record work you think is missing with:\n"
+          f"      mission propose \"...\" --session {child}\n"
+          f"    You cannot tick items or change the goal; that is the human's.\n")
+    return 0
+
+
 def cmd_why(a) -> int:
     """When did this field change, and to what. The log already knew."""
     import datetime as _dt
@@ -381,7 +444,7 @@ def cmd_why(a) -> int:
 
 
 def _print_tree(nodes, depth: int = 0, prefix: str = "",
-                show_all: bool = False) -> None:
+                show_all: bool = False, kids: dict | None = None) -> None:
     """Indented, with a branch's progress rolled up from its leaves.
 
     Finished work is folded away by default — what is left is what you act on
@@ -395,11 +458,17 @@ def _print_tree(nodes, depth: int = 0, prefix: str = "",
             " " if item.accepted else "?")
         elbow = "" if depth == 0 else ("└─ " if last else "├─ ")
         roll = f"   {n.done_count}/{n.total}" if n.children else ""
-        print(f"    {prefix}{elbow}[{mark}] {item.id}  {item.text}{roll}")
+        # A delegated item is being worked on in another session. Without this
+        # the parent plan shows it as untouched while a subagent is mid-way
+        # through it.
+        child = (kids or {}).get(item.id)
+        tag = (f"   → {child.session_id} {child.done_count}/{child.total_count}"
+               if child else "")
+        print(f"    {prefix}{elbow}[{mark}] {item.id}  {item.text}{roll}{tag}")
         if n.children:
             _print_tree(n.children, depth + 1,
                         prefix + ("" if depth == 0 else ("   " if last else "│  ")),
-                        show_all=show_all)
+                        show_all=show_all, kids=kids)
 
 
 def cmd_add(a) -> int:
@@ -578,6 +647,13 @@ def main(argv: list[str] | None = None) -> int:
     im.add_argument("--strict", action="store_true",
                     help="also report plan items missing from the file")
     im.set_defaults(fn=cmd_import)
+
+    dg = sub.add_parser("delegate", parents=[common],
+                        help="give one accepted item its own mission for a subagent")
+    dg.add_argument("item_id", metavar="ID")
+    dg.add_argument("--to", default=None, metavar="NAME",
+                    help="short name for the child mission")
+    dg.set_defaults(fn=cmd_delegate)
 
     wy = sub.add_parser("why", parents=[common],
                         help="when a protected field changed, and to what")

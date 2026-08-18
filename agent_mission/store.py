@@ -110,6 +110,11 @@ class Mission:
     id: str
     session_id: str = ""
     cwd: str = ""
+    # Where this mission came from, when it is a delegated slice of another.
+    # A subagent has no session id of its own, so without this its work is
+    # invisible from the parent's board and its own card floats unattached.
+    parent_session: str = ""
+    parent_item: str = ""
     name: str = ""            # a short title; the objective is the sentence
     objective: str = ""
     success_criteria: list[str] = field(default_factory=list)
@@ -217,12 +222,23 @@ class MissionStore:
             fh.write(json.dumps(ev) + "\n")
         return ev
 
-    def create(self, session_id: str, cwd: str, objective: str, by: str) -> dict:
-        if by != "human":
+    def create(self, session_id: str, cwd: str, objective: str, by: str,
+               parent_session: str = "", parent_item: str = "") -> dict:
+        """A mission is authored by a person.
+
+        The one exception is a DELEGATED mission, where the objective is not
+        authored at all: it is copied verbatim from an item the human already
+        accepted in the parent plan. The agent chooses nothing, so letting it
+        create one adds no authority -- and refusing would only push it into
+        working with no recorded goal at all, which is the failure this whole
+        tool exists to prevent.
+        """
+        if by != "human" and not parent_item:
             raise ProtectedFieldError(
                 "a mission is created by the person, not the agent")
         return self._append("created", by, session_id=session_id, cwd=cwd,
-                            objective=objective)
+                            objective=objective, parent_session=parent_session,
+                            parent_item=parent_item)
 
     def set_protected(self, fieldname: str, value: Any, by: str) -> dict:
         """Only a human may write a protected field. No agent path exists."""
@@ -288,6 +304,8 @@ class MissionStore:
             if k == "created":
                 m = Mission(id=self.root.name, session_id=ev.get("session_id", ""),
                             cwd=ev.get("cwd", ""), objective=ev.get("objective", ""),
+                            parent_session=ev.get("parent_session", ""),
+                            parent_item=ev.get("parent_item", ""),
                             created=ev.get("at", 0.0))
             elif m is None:
                 continue
@@ -331,3 +349,24 @@ def root_for(session_id: str, base: Path | None = None) -> Path:
     base = base or Path(os.environ.get(
         "AGENT_MISSION_HOME", Path.home() / ".agent-mission"))
     return Path(base) / session_id
+
+
+def children_of(session_id: str, base: Path | None = None) -> dict[str, Mission]:
+    """Delegated missions of this session, keyed by the item they came from.
+
+    Scanning is fine: this is a directory of small files, and the alternative
+    -- an index the parent writes -- would go stale the moment a child is
+    created from anywhere else.
+    """
+    home = Path(base or os.environ.get(
+        "AGENT_MISSION_HOME", Path.home() / ".agent-mission"))
+    out: dict[str, Mission] = {}
+    if not home.exists():
+        return out
+    for d in sorted(home.iterdir()):
+        if not d.is_dir() or not (d / "events.jsonl").exists():
+            continue
+        m = MissionStore(d).load()
+        if m and m.parent_session == session_id and m.parent_item:
+            out[m.parent_item] = m
+    return out
