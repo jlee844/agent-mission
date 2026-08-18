@@ -369,3 +369,18 @@ def test_a_delegated_session_name_is_not_cut_in_half():
         "generate-a-seeded-two"
     assert _slugify("short one") == "short-one"
     assert _slugify("!!!") == "task"
+
+
+def test_an_agent_cannot_add_an_already_accepted_item(tmp_path, monkeypatch, capsys):
+    """`add` is propose+accept in one step, both as the human. Ungated it was
+    the entire authority model in one command: an agent could write an accepted
+    item that `mission why` then reported as Jonathan's."""
+    from agent_mission.__main__ import DENY_RULES, main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    MissionStore(root_for("s")).create("s", "/tmp", "goal", by="human")
+    _no_tty(monkeypatch)
+
+    assert main(["add", "a thing I decided myself", "--session", "s"]) == 1
+    assert MissionStore(root_for("s")).load().checklist == []
+    assert "not a terminal" in capsys.readouterr().out
+    assert "Bash(mission add:*)" in DENY_RULES, "and the harness blocks it too"

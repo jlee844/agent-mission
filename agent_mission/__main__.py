@@ -485,6 +485,13 @@ def _print_tree(nodes, depth: int = 0, prefix: str = "",
 
 
 def cmd_add(a) -> int:
+    # `add` = propose + accept in one step, both as the human. Ungated, it was
+    # the whole authority model in one command: an agent could write an
+    # ACCEPTED item that `mission why` then attributed to Jonathan. The tty
+    # gate closed set/accept/done/remove and missed the one that does two of
+    # them at once.
+    if not _human_gate("adding an agreed item"):
+        return 1
     sid = resolve_session(a.session, getattr(a, 'cwd', None))
     st = _store(sid)
     ev = st.propose(a.text, by="human", parent=a.under)
@@ -562,7 +569,8 @@ def cmd_setup(a) -> int:
 # reach this code at all -- which is the point: the tty check lives inside the
 # thing being protected, and a rule here is enforced by the thing that already
 # holds the authority.
-DENY_RULES = [f"Bash(mission {c}:*)" for c in ("set", "accept", "done", "remove")]
+DENY_RULES = [f"Bash(mission {c}:*)" for c in
+              ("set", "accept", "done", "remove", "add")]
 
 
 def _install_deny_rules(a) -> int:
