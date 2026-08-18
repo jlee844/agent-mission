@@ -2,7 +2,7 @@
 
 **The goal, beside the work, that the agent cannot quietly rewrite.**
 
-[![tests](https://img.shields.io/badge/tests-103%20passing-0E6E68)](tests/)
+[![tests](https://img.shields.io/badge/tests-106%20passing-0E6E68)](tests/)
 [![python](https://img.shields.io/badge/python-3.9%20–%203.14-0E6E68)](pyproject.toml)
 [![context cost](https://img.shields.io/badge/always--on%20context-47%20tokens-0E6E68)](commands/mission.md)
 [![deps](https://img.shields.io/badge/dependencies-none-0E6E68)](pyproject.toml)
@@ -19,9 +19,19 @@ has ticked off, and what it has actually done.
 ![The mission board: three sessions, their goals, their plans, and what each has actually done](docs/board.png)
 
 Three sessions above. `▪` is done, `▫` is agreed work, `?` is something the
-agent proposed and you have not accepted. Finished items fold away. The numbers
-at the bottom of each card are **measured from the transcript**, not reported by
-the agent.
+agent proposed and you have not accepted. Finished items and the fixed terms
+both fold away. The numbers at the bottom of each card are **measured from the
+transcript**, not reported by the agent.
+
+**The strip at the top is the whole point of the page.** *3 proposals awaiting
+you in 2 sessions* — the question you actually arrive with is "is anything
+waiting on me", and it should not cost six cards to answer. A coloured dot per
+card says which state it is in (**working · waiting on you · idle · no mission ·
+ended**), cards needing you sort first, and `compact` collapses the board to one
+line per session for when three sessions becomes eight.
+
+Colour means one thing here: **this is waiting on you.** Failed calls and health
+notes are grey. An alarm that fires for three unrelated reasons is not an alarm.
 
 ```bash
 git clone https://github.com/jlee844/agent-mission && cd agent-mission
@@ -193,7 +203,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 103 tests and most of them guard exactly this.
+There are 106 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store has always refused agent
 writes. The *CLI* could not tell who typed the command, so it passed
@@ -321,7 +331,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 103 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 106 tests, no network
 ```
 
 ## Status
@@ -329,7 +339,7 @@ pip install -e ".[dev]" && python -m pytest tests/ -q     # 103 tests, no networ
 Not on PyPI yet — install from source as above. Session discovery is Claude
 Code specific; the store and the board are not.
 
-**Python 3.9 through 3.14**, all 103 tests passing on each. The floor is 3.9
+**Python 3.9 through 3.14**, all 106 tests passing on each. The floor is 3.9
 because that is the Python macOS ships: the package originally declared 3.10+,
 which would have told a user on stock macOS Python that it was unsupported
 while it ran fine.

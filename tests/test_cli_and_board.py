@@ -455,3 +455,47 @@ def test_an_orphaned_child_is_still_shown(tmp_path, monkeypatch):
     MissionStore(root_for("c")).create("c", "/repo", "orphan slice", by="human",
                                        parent_session="gone", parent_item="i")
     assert [r["full"] for r in board.snapshot()] == ["c"]
+
+
+def _row(**kw):
+    base = dict(ended=False, has_mission=True, pending_accept=0, mtime=0.0)
+    base.update(kw)
+    return base
+
+
+def test_a_state_says_what_a_card_is_in_one_word():
+    import time
+    from agent_mission.board import IDLE_AFTER, _state
+    now = time.time()
+    assert _state(_row(mtime=now), now) == "working"
+    assert _state(_row(mtime=now - IDLE_AFTER - 1), now) == "idle"
+    assert _state(_row(has_mission=False, mtime=now), now) == "nomission"
+    assert _state(_row(pending_accept=2, mtime=now), now) == "waiting"
+    assert _state(_row(ended=True, mtime=now), now) == "ended"
+
+
+def test_a_finished_session_still_reports_what_it_is_waiting_on():
+    """'ended' used to shadow 'waiting', so the strip read 'nothing is waiting
+    on you' directly above two cards saying 'awaiting accept'. Proposals in a
+    session that has stopped are exactly the ones that get lost."""
+    import time
+    from agent_mission.board import _state
+    now = time.time()
+    assert _state(_row(ended=True, pending_accept=3, mtime=now), now) == "waiting"
+
+
+def test_sessions_needing_you_sort_first_but_finished_ones_stay_last(
+        tmp_path, monkeypatch):
+    import time
+    from agent_mission import board
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setattr(board, "live", lambda: [])
+    for name in ("quiet", "asking"):
+        st = MissionStore(root_for(name))
+        st.create(name, "/repo", f"goal {name}", by="human")
+    MissionStore(root_for("asking")).propose("an idea", by="agent")
+
+    order = [r["full"] for r in board.snapshot()]
+    assert order.index("asking") < order.index("quiet"), "the ask comes first"
+    assert all(r["ended"] for r in board.snapshot()), "both are ended sessions"

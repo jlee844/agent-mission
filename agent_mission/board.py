@@ -6,6 +6,7 @@ Serves on 127.0.0.1. Reads transcripts and the mission log; writes nothing.
 from __future__ import annotations
 
 import json
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -150,8 +151,42 @@ def snapshot() -> list[dict]:
     rows = [r for r in rows if r not in kids]
     for r in rows:
         r.setdefault("children", [])
+    # One state per session, so the page never re-derives it and the sort,
+    # the icon and the filters cannot disagree about what a card is.
+    now = time.time()
+    for r in rows:
+        r["state"] = _state(r, now)
+        r["needs_you"] = r["state"] in ("waiting", "nomission")
+    # Sorted by who needs you, not by what you touched last: a session with
+    # proposals waiting outranks one that is merely more recent.
+    order = {"waiting": 0, "nomission": 1, "working": 2, "idle": 3, "ended": 4}
+    # Ended sessions still sort last even when they are waiting on you: the
+    # ask is worth surfacing, not worth putting above live work.
     return sorted(rows, key=lambda r: (r.get("ended", False),
-                                       not r["has_mission"], -r["mtime"]))
+                                       order[r["state"]], -r["mtime"]))
+
+
+IDLE_AFTER = 15 * 60          # no transcript write for this long = parked
+
+
+def _state(r: dict, now: float) -> str:
+    """What this card IS, in one word.
+
+    Deliberately not "how far along": that is the progress bar's job. This
+    answers the only question you ask while scanning six cards at once --
+    which of these is waiting on me.
+    """
+    # "waiting" outranks "ended": a finished session whose proposals you never
+    # ruled on is precisely the thing that gets lost, and hiding it from the
+    # count was the first thing the strip got wrong -- it read "nothing is
+    # waiting on you" above two cards saying "awaiting accept".
+    if r["has_mission"] and r["pending_accept"]:
+        return "waiting"
+    if r.get("ended"):
+        return "ended"
+    if not r["has_mission"]:
+        return "nomission"
+    return "working" if now - r["mtime"] < IDLE_AFTER else "idle"
 
 
 PAGE = """<!doctype html><meta charset=utf-8><title>Missions</title>
@@ -291,6 +326,48 @@ cursor:pointer}
 .kid .kt{flex:1;text-wrap:pretty}
 .kid .kp{font-family:var(--mono);font-size:.66rem;color:var(--mut);flex:none}
 .spacer{flex:1}
+
+/* ONE accent means "this is waiting on you". Red previously meant a pending
+   proposal, a failed tool call AND a health warning -- three unrelated facts
+   competing for the same alarm, so none of them read as urgent. Failures and
+   health notes are grey now; only the ask is coloured. */
+.flag{background:var(--soft);color:var(--mut)}
+.flag.ask{background:var(--badw);color:var(--bad)}
+.warn{color:var(--mut)}
+.warn.ask{color:var(--bad)}
+
+/* The strip answers "is anything waiting on me" without reading a single
+   card, which is the question you actually arrive with. */
+#strip{border:1px solid var(--rule);background:var(--card);border-radius:7px;
+padding:.6rem .9rem;margin-bottom:1.1rem;font-size:.85rem;display:flex;
+gap:1.1rem;align-items:center;flex-wrap:wrap}
+#strip.clear{color:var(--mut);border-style:dashed;background:transparent}
+#strip b{font-weight:600}
+#strip .go{font-family:var(--mono);font-size:.7rem;color:var(--mut);cursor:pointer;
+border:1px solid var(--rule);border-radius:3px;padding:.16rem .45rem;background:none}
+#strip .go:hover{color:var(--ink);border-color:var(--mut)}
+
+/* A status is a shape you can read peripherally, not a word you must parse. */
+.dot{width:.5rem;height:.5rem;border-radius:50%;flex:none;display:inline-block}
+.dot.working{background:var(--ok)}
+.dot.waiting{background:var(--bad)}
+.dot.nomission{background:var(--bad);opacity:.45}
+.dot.idle{background:var(--mut);opacity:.5}
+.dot.ended{background:var(--rule)}
+.st{display:flex;align-items:center;gap:.4rem}
+.card.waiting{border-color:var(--bad)}
+
+/* Compact mode: cards are right for three sessions and wrong for eight. */
+.grid.compact{grid-template-columns:1fr;gap:.35rem}
+.grid.compact .card{display:flex;align-items:baseline;gap:.7rem;padding:.5rem .8rem}
+.grid.compact .card>*:not(.rowline){display:none}
+.rowline{display:none}
+.grid.compact .rowline{display:flex;align-items:center;gap:.7rem;width:100%;
+font-size:.85rem}
+.grid.compact .rowline .rid{font-family:var(--mono);font-size:.68rem;color:var(--mut);
+flex:none;width:9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grid.compact .rowline .rt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grid.compact .rowline .rp{font-family:var(--mono);font-size:.7rem;color:var(--mut);flex:none}
 </style>
 <header>
   <h1>Missions</h1>
@@ -301,8 +378,11 @@ cursor:pointer}
     <button class=chip data-f=todo aria-pressed=false>needs you</button>
     <button class=chip data-f=ended aria-pressed=false>ended</button>
   </div>
-  <span class=spacer></span><span id=age></span>
+  <span class=spacer></span>
+  <button class=chip id=dense aria-pressed=false>compact</button>
+  <span id=age></span>
 </header>
+<div id=strip></div>
 <div class=grid id=g></div>
 <p class=none id=empty hidden>Nothing matches that.</p>
 <script>
@@ -360,17 +440,42 @@ async function tick(){
   document.getElementById('age').textContent =
     (d.length === all.length ? `${all.length} sessions` : `${d.length} of ${all.length}`)
     + ' · ' + new Date().toLocaleTimeString();
+  // Exactly one empty state. "No live sessions" and "Nothing matches that"
+  // are different facts and were rendering on top of each other.
   document.getElementById('empty').hidden = d.length > 0 || all.length === 0;
+
+  // What is waiting on you, across every session -- so the answer to "is
+  // anything waiting on me" costs one glance, not six cards.
+  const asks   = all.filter(s=>s.state === 'waiting');
+  const blank  = all.filter(s=>s.state === 'nomission');
+  const strip  = document.getElementById('strip');
+  const n = asks.reduce((t,s)=>t + s.pending_accept, 0);
+  const bits = [];
+  if (n) bits.push(`<span><b>${n}</b> proposal${n>1?'s':''} awaiting you`
+    + ` in ${asks.length} session${asks.length>1?'s':''}</span>`
+    + `<button class=go data-jump=todo>show</button>`);
+  if (blank.length) bits.push(`<span><b>${blank.length}</b> session${
+    blank.length>1?'s':''} with no mission</span>`
+    + `<button class=go data-jump=todo>show</button>`);
+  strip.className = bits.length? '' : 'clear';
+  strip.innerHTML = bits.length? bits.join('')
+    : '<span>Nothing is waiting on you.</span>';
   document.getElementById('g').innerHTML = d.length? d.map(s=>`
-   <div class="card ${s.ended?'ended':''}">
-     <div class=sid><span>${s.id} · ${esc(s.cwd)}</span>
+   <div class="card ${s.ended?'ended':''} ${s.state}">
+     <div class=rowline><span class="dot ${s.state}" title="${s.state}"></span>
+       <span class=rid>${esc(s.id)}</span>
+       <span class=rt>${esc(s.title||'no mission yet')}</span>
+       <span class=rp>${s.total?s.done+'/'+s.total:'—'}</span>
+       <span class=rp>${s.pending_accept?s.pending_accept+' waiting':''}</span></div>
+     <div class=sid><span class=st><span class="dot ${s.state}" title="${s.state}"></span>
+       ${s.id} · ${esc(s.cwd)}</span>
        <span>${s.ended?'ended':s.procs+' live here'}</span></div>
      ${s.has_mission? `
        <p class=obj>${esc(s.title)}</p>
        ${s.objective && s.objective!==s.title?`<p class=objsub>${esc(s.objective)}</p>`:''}
        ${s.total? `<div class=bar><i style="width:${100*s.done/s.total}%"></i></div>
          <div class=sid><span>${s.done} of ${s.total} done</span>
-         ${s.pending_accept?`<span class=warn>${s.pending_accept} awaiting accept</span>`:'<span></span>'}</div>
+         ${s.pending_accept?`<span class="warn ask">${s.pending_accept} awaiting accept</span>`:'<span></span>'}</div>
          <ul class=chk>${visible(s.tree).map(i=>row(i)).join('')}</ul><!-- map(row) passes the INDEX as row's second argument, so every row
      after the first rendered in flat mode and the tree lost every
      connector. The nesting was in the data the whole time. -->
@@ -379,9 +484,14 @@ async function tick(){
              s.tree.filter(i=>i.hid).length} finished</summary>
            <ul class="chk flat">${s.tree.filter(i=>i.hid).map(r=>row(r,true)).join('')}</ul>
          </details>`:''}`:''}
-       ${s.criteria.length?`<h3>Done when</h3><ul>${s.criteria.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
-       ${s.constraints.length?`<h3>Constraints</h3><ul>${s.constraints.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
-       ${s.non_goals.length?`<h3>Not doing</h3><ul>${s.non_goals.map(c=>`<li class=ng>${esc(c)}</li>`).join('')}</ul>`:''}
+       ${(s.criteria.length+s.constraints.length+s.non_goals.length)?`
+         <details class=doneblock data-sid="terms-${s.id}" ${openFolds.has('terms-'+s.id)?'open':''}>
+           <summary>the deal — ${s.criteria.length} done-when · ${
+             s.constraints.length+s.non_goals.length} limits</summary>
+           ${s.criteria.length?`<h3>Done when</h3><ul>${s.criteria.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
+           ${s.constraints.length?`<h3>Constraints</h3><ul>${s.constraints.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:''}
+           ${s.non_goals.length?`<h3>Not doing</h3><ul>${s.non_goals.map(c=>`<li class=ng>${esc(c)}</li>`).join('')}</ul>`:''}
+         </details>`:''}
      ` : `<p class=none>No mission yet.<br>Run <code>mission init</code> in this
           session to write one — it takes a minute and the agent cannot change it.</p>
           ${s.asks.length?`<h3>Currently asked</h3><p class=none>${esc(s.asks[s.asks.length-1])}</p>`:''}`}
@@ -401,9 +511,9 @@ async function tick(){
           <span class=kt>${esc(k.title)}</span>
           <span class=kp>${k.total?k.done+'/'+k.total:'—'}</span></div>`).join('')}</div>`:''}
      <div class=meta>${s.calls.toLocaleString()} calls · ${s.files} files ·
-       ${s.tests} test runs · <span class="${s.failures?'warn':''}">${s.failures} failed</span>
+       ${s.tests} test runs · <span class=warn>${s.failures} failed</span>
        ${s.topfiles.length?`<br>${s.topfiles.slice(0,3).map(f=>esc(f.f)+' '+f.n+'x').join(' · ')}`:''}</div>
-   </div>`).join('') : '<p class=none>No live sessions.</p>';
+   </div>`).join('') : (all.length? '' : '<p class=none>No live sessions.</p>');
 }
 // The page re-renders every 4s, so an opened fold would snap shut under the
 // reader. Remember which cards are open. `toggle` does not bubble, hence the
@@ -413,12 +523,25 @@ document.getElementById('g').addEventListener('toggle', e=>{
   const sid = e.target.dataset && e.target.dataset.sid;
   if (sid) e.target.open? openFolds.add(sid) : openFolds.delete(sid);
 }, true);
+// The strip's buttons are rewritten on every tick, so the listener lives on
+// the container, which is not.
+document.getElementById('strip').addEventListener('click', e=>{
+  const b = e.target.closest('[data-jump]'); if(!b) return;
+  document.querySelector('.chip[data-f=todo]').click();
+});
+document.getElementById('dense').addEventListener('click', ()=>{
+  const on = document.getElementById('g').classList.toggle('compact');
+  document.getElementById('dense').setAttribute('aria-pressed', String(on));
+});
 document.getElementById('q').addEventListener('input', e=>{
   QUERY = e.target.value.trim().toLowerCase(); tick();
 });
-document.querySelectorAll('.chip').forEach(b=>b.addEventListener('click', ()=>{
+// [data-f] and not .chip: the density button borrows .chip for its styling,
+// and binding on the class alone set FILTER to undefined and emptied the
+// board -- while also clearing every filter's pressed state.
+document.querySelectorAll('.chip[data-f]').forEach(b=>b.addEventListener('click', ()=>{
   FILTER = b.dataset.f;
-  document.querySelectorAll('.chip').forEach(
+  document.querySelectorAll('.chip[data-f]').forEach(
     o=>o.setAttribute('aria-pressed', String(o===b)));
   tick();
 }));
