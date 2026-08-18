@@ -320,4 +320,7 @@ def test_a_chosen_session_name_is_not_cut_in_half():
     assert short_id("be17144b-d3be-41dd-a02a-c6ef71292e3f") == "be17144b"
     assert short_id("mltest-subagent") == "mltest-subagent"
     assert short_id("short") == "short"
-    assert short_id("a" * 40).endswith("…")
+    # "aaaa..." is all hex characters, so it takes the uuid path -- which is
+    # correct, and was my test being wrong rather than the code.
+    assert short_id("a" * 40) == "aaaaaaaa"
+    assert short_id("training-run-" + "x" * 40).endswith("…")
