@@ -20,7 +20,8 @@ import tempfile
 from pathlib import Path
 
 from .daemon import ensure as ensure_board, running as board_running, stop as board_stop
-from .session import activity, current_session_id, short_id, transcript_for
+from .session import (NoSessionError, activity, current_session_id,
+                      resolve_session, short_id, transcript_for)
 from .store import (FIELD_AUTHORITY, Authority, Item, MissionStore,
                     NoSuchItemError, ProtectedFieldError, children_of, root_for)
 
@@ -137,7 +138,7 @@ def _human_gate(what: str) -> bool:
 
 
 def cmd_init(a) -> int:
-    sid = a.session or current_session_id()
+    sid = resolve_session(a.session, getattr(a, 'cwd', None))
     if not sid:
         print("  no session id. Run inside Claude Code, or pass --session.")
         return 1
@@ -202,7 +203,7 @@ def _announce_board(a) -> None:
 
 
 def cmd_show(a) -> int:
-    sid = a.session or current_session_id()
+    sid = resolve_session(a.session, getattr(a, 'cwd', None))
     m = _store(sid).load() if sid else None
     if not m:
         print("  no mission for this session. `mission init` to write one.")
@@ -260,7 +261,7 @@ def cmd_set(a) -> int:
     """Change a protected field. Goals move; a mission you cannot edit is a
     mission you abandon and rewrite from scratch."""
     from .store import PROTECTED_FIELDS
-    sid = a.session or current_session_id()
+    sid = resolve_session(a.session, getattr(a, 'cwd', None))
     st = _store(sid)
     if st.load() is None:
         print("  no mission for this session — `mission init` first")
@@ -286,7 +287,7 @@ def cmd_import(a) -> int:
     changed is one you stop trusting with the plan.
     """
     from .importer import norm, parse
-    sid = a.session or current_session_id()
+    sid = resolve_session(a.session, getattr(a, 'cwd', None))
     st = _store(sid)
     m = st.load()
     if m is None:
@@ -387,7 +388,7 @@ def cmd_delegate(a) -> int:
     and non-goals are inherited unchanged. Refusing would only push a subagent
     into working with no recorded goal at all.
     """
-    sid = a.session or current_session_id()
+    sid = resolve_session(a.session, getattr(a, 'cwd', None))
     st = _store(sid)
     m = st.load()
     if m is None:
@@ -434,7 +435,7 @@ def cmd_delegate(a) -> int:
 def cmd_why(a) -> int:
     """When did this field change, and to what. The log already knew."""
     import datetime as _dt
-    sid = a.session or current_session_id()
+    sid = resolve_session(a.session, getattr(a, 'cwd', None))
     st = _store(sid)
     if st.load() is None:
         print("  no mission for this session")
@@ -484,7 +485,7 @@ def _print_tree(nodes, depth: int = 0, prefix: str = "",
 
 
 def cmd_add(a) -> int:
-    sid = a.session or current_session_id()
+    sid = resolve_session(a.session, getattr(a, 'cwd', None))
     st = _store(sid)
     ev = st.propose(a.text, by="human", parent=a.under)
     st.accept(ev["item_id"], by="human")
@@ -494,7 +495,7 @@ def cmd_add(a) -> int:
 
 
 def cmd_propose(a) -> int:
-    ev = _store(a.session or current_session_id()).propose(
+    ev = _store(resolve_session(a.session, getattr(a, 'cwd', None))).propose(
         a.text, by="agent", parent=a.under)
     print(f"  proposed {ev['item_id']} — inert until you `mission accept {ev['item_id']}`")
     return 0
@@ -508,7 +509,7 @@ def _apply(a, verb: str, fn) -> int:
     being maintained. An unknown id is reported and the rest still run -- a
     typo in the fourth id must not silently drop the first three.
     """
-    st = _store(a.session or current_session_id())
+    st = _store(resolve_session(a.session, getattr(a, 'cwd', None)))
     bad = 0
     for iid in a.item_id:
         try:
@@ -626,7 +627,7 @@ def cmd_remove(a) -> int:
     if not _human_gate("removing an item"):
         return 1
     try:
-        _store(a.session or current_session_id()).remove(a.item_id, by="human")
+        _store(resolve_session(a.session, getattr(a, 'cwd', None))).remove(a.item_id, by="human")
     except NoSuchItemError:
         print(f"  no item {a.item_id!r} in this plan")
         return 1
@@ -750,7 +751,16 @@ def main(argv: list[str] | None = None) -> int:
     bd.set_defaults(fn=cmd_board)
 
     a = ap.parse_args(argv)
-    return (a.fn if getattr(a, "fn", None) else cmd_show)(a)
+    try:
+        return (a.fn if getattr(a, "fn", None) else cmd_show)(a)
+    except NoSessionError as e:
+        # A person in their own terminal is the NORMAL caller of the human-only
+        # commands, and they used to get a pathlib TypeError.
+        print(f"\n  {e}")
+        for sid, title in e.candidates:
+            print(f"    --session {sid:<24} {title}")
+        print()
+        return 1
 
 
 if __name__ == "__main__":

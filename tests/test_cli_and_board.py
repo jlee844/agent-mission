@@ -1,4 +1,5 @@
 """Parsing, session identity, and the board's rendering guarantees."""
+import pytest
 import sys
 from pathlib import Path
 
@@ -355,3 +356,72 @@ def test_a_person_at_a_terminal_gets_the_rules_written(tmp_path, monkeypatch, ca
     assert deny[0] == "Bash(rm:*)", "existing rules kept"
     assert all(r in deny for r in DENY_RULES)
     assert list(tmp_path.glob("settings.json.bak-mission-*")), "backed up first"
+
+
+def _mission_at(tmp_path, sid, cwd, name):
+    from agent_mission.store import MissionStore, root_for
+    st = MissionStore(root_for(sid))
+    st.create(sid, cwd, f"objective for {name}", by="human")
+    st.set_protected("name", name, by="human")
+    return st
+
+
+def test_a_person_in_their_own_terminal_gets_a_message_not_a_traceback(
+        tmp_path, monkeypatch, capsys):
+    """Outside Claude Code there is no CLAUDE_CODE_SESSION_ID -- and the design
+    sends the person to their own terminal for every human-only command, so
+    this is the NORMAL path. It used to raise a pathlib TypeError."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["accept", "abc12345"]) == 1
+    out = capsys.readouterr().out
+    assert "no session id" in out and "--session" in out
+    assert "Traceback" not in out
+
+
+def test_the_mission_for_this_directory_is_found_without_an_id(
+        tmp_path, monkeypatch):
+    from agent_mission.session import resolve_session
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    repo = tmp_path / "repo"
+    (repo / "deep" / "nested").mkdir(parents=True)
+    _mission_at(tmp_path, "sess-a", str(repo), "The repo mission")
+
+    # From the root, and from three directories down: a session opened at the
+    # repo root owns the work you are doing inside it.
+    assert resolve_session(None, str(repo)) == "sess-a"
+    assert resolve_session(None, str(repo / "deep" / "nested")) == "sess-a"
+
+
+def test_the_deepest_mission_wins(tmp_path, monkeypatch):
+    from agent_mission.session import resolve_session
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    repo = tmp_path / "repo"
+    sub = repo / "sub"
+    sub.mkdir(parents=True)
+    _mission_at(tmp_path, "sess-root", str(repo), "Root")
+    _mission_at(tmp_path, "sess-sub", str(sub), "Subproject")
+
+    assert resolve_session(None, str(sub)) == "sess-sub", "the specific one"
+    assert resolve_session(None, str(repo)) == "sess-root"
+
+
+def test_ambiguity_asks_instead_of_guessing(tmp_path, monkeypatch):
+    """Two sessions open on the same directory is the normal case this tool
+    exists for. Picking one silently would tick the wrong plan."""
+    from agent_mission.session import NoSessionError, resolve_session
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _mission_at(tmp_path, "sess-a", str(repo), "First")
+    _mission_at(tmp_path, "sess-b", str(repo), "Second")
+
+    with pytest.raises(NoSessionError) as e:
+        resolve_session(None, str(repo))
+    assert {c[0] for c in e.value.candidates} == {"sess-a", "sess-b"}

@@ -120,3 +120,71 @@ def short_id(sid: str) -> str:
     if len(sid) > 8 and all(c in "0123456789abcdefABCDEF" for c in head):
         return head
     return sid if len(sid) <= 24 else sid[:23] + "…"
+
+
+class NoSessionError(Exception):
+    """Raised when we cannot tell which mission a command means.
+
+    Carries the candidates so the caller can print them instead of a
+    traceback: the person is at a keyboard being asked to choose.
+    """
+
+    def __init__(self, message: str, candidates: list[tuple[str, str]] | None = None):
+        super().__init__(message)
+        self.candidates = candidates or []
+
+
+def resolve_session(explicit: str | None, cwd: str | None = None) -> str:
+    """Which mission does this command mean?
+
+    Inside Claude Code the session id is in the environment. In a person's own
+    terminal it is NOT -- and the design sends them there for every human-only
+    command, so "no session id" is the normal case, not the edge case. It used
+    to be a TypeError from pathlib.
+
+    So: fall back to the missions recorded for THIS directory, newest first.
+    One match is unambiguous. Several means asking, with the ids to hand.
+    """
+    from .store import MissionStore, root_for            # circular at import time
+
+    if explicit:
+        return explicit
+    env = current_session_id()
+    if env:
+        return env
+
+    here = str(Path(cwd or Path.cwd()).resolve())
+    home = root_for("x").parent
+    found: list[tuple[int, float, str, str]] = []
+    if home.exists():
+        for d in home.iterdir():
+            log = d / "events.jsonl"
+            if not d.is_dir() or not log.exists():
+                continue
+            m = MissionStore(d).load()
+            if not m or not m.cwd:
+                continue
+            # An ancestor counts. A session opened at the repo root is the one
+            # that owns the work you are doing three directories down, and
+            # requiring an exact match means the person standing in the
+            # subdirectory -- which is where they always are -- finds nothing.
+            if here == m.cwd or here.startswith(m.cwd.rstrip("/") + "/"):
+                found.append((len(m.cwd), log.stat().st_mtime, d.name, m.title))
+    if not found:
+        raise NoSessionError(
+            "no session id, and no mission recorded for this directory.\n"
+            "  Inside Claude Code the id is automatic. In your own terminal,\n"
+            "  pass --session <id>, or cd to the project the mission is for.")
+    # Deepest match first: a mission opened IN this directory beats one
+    # opened at the repo root. Then most recently touched.
+    found.sort(reverse=True)
+    # A mission opened IN this directory beats one opened at the repo root, so
+    # only a TIE at the deepest level is genuinely ambiguous. Two sessions on
+    # the same directory is the normal case this tool exists for, and guessing
+    # between them would tick the wrong plan.
+    deepest = [f for f in found if f[0] == found[0][0]]
+    if len(deepest) == 1:
+        return deepest[0][2]
+    raise NoSessionError(
+        "several missions cover this directory — say which:",
+        [(sid, title) for _, _, sid, title in deepest])
