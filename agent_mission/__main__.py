@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 from .daemon import ensure as ensure_board, running as board_running, stop as board_stop
-from .session import activity, current_session_id, transcript_for
+from .session import activity, current_session_id, short_id, transcript_for
 from .store import (FIELD_AUTHORITY, Authority, MissionStore, NoSuchItemError,
                     ProtectedFieldError, root_for)
 
@@ -107,7 +107,7 @@ def cmd_init(a) -> int:
         return 1
     st = _store(sid)
     if st.load() and not a.force:
-        print(f"  a mission already exists for {sid[:8]}. `mission` to see it, "
+        print(f"  a mission already exists for {short_id(sid)}. `mission` to see it, "
               f"`mission init --force` to start over.")
         return 1
 
@@ -145,7 +145,7 @@ def cmd_init(a) -> int:
         ev = st.propose(text, by="human", parent=parent)
         st.accept(ev["item_id"], by="human")
         stack.append((indent, ev["item_id"]))
-    print(f"\n  mission set for {sid[:8]}\n")
+    print(f"\n  mission set for {short_id(sid)}\n")
     # Start/join the board BEFORE showing: otherwise the mission prints
     # "board: not running" and the next line says it just started one.
     _announce_board(a)

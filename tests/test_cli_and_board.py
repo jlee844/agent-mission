@@ -311,3 +311,13 @@ def test_the_always_on_context_cost_stays_small():
     assert len(front) < 400, (
         f"frontmatter is {len(front)} chars — every session pays this. "
         "Put the detail in the body, which loads only on invoke.")
+
+
+def test_a_chosen_session_name_is_not_cut_in_half():
+    """uuids shorten to 8 hex fine. An id a person chose does not: the board
+    labelled the session "mltest-subagent" as "mltest-s"."""
+    from agent_mission.session import short_id
+    assert short_id("be17144b-d3be-41dd-a02a-c6ef71292e3f") == "be17144b"
+    assert short_id("mltest-subagent") == "mltest-subagent"
+    assert short_id("short") == "short"
+    assert short_id("a" * 40).endswith("…")

@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from .health import collisions, inspect as inspect_health
-from .session import PROJECTS, activity, live, transcript_for
+from .session import PROJECTS, activity, live, short_id, transcript_for
 from .store import MissionStore, root_for
 
 
@@ -70,7 +70,7 @@ def snapshot() -> list[dict]:
             a = activity(tp)
             h = inspect_health(tp)
             rows.append({
-                "id": sid[:8], "full": sid,
+                "id": short_id(sid), "full": sid,
                 "cwd": proc["cwd"].replace(str(Path.home()), "~"),
                 "procs": proc["procs"],
                 "has_mission": m is not None, "ended": False,
@@ -112,7 +112,7 @@ def snapshot() -> list[dict]:
             tp = transcript_for(d.name)
             a = activity(tp) if tp else None
             rows.append({
-                "id": d.name[:8], "full": d.name,
+                "id": short_id(d.name), "full": d.name,
                 "cwd": (m.cwd or "").replace(str(Path.home()), "~"),
                 "procs": 0, "ended": True,
                 "has_mission": True, "title": m.title, "objective": m.objective,

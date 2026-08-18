@@ -107,3 +107,16 @@ def activity(path: Path, since_ts: float = 0.0) -> Activity:
     a.last_asks = a.last_asks[-3:]
     a.files = dict(sorted(a.files.items(), key=lambda kv: -kv[1]))
     return a
+
+
+def short_id(sid: str) -> str:
+    """A session id short enough to read, without cutting a word in half.
+
+    Claude Code ids are uuids, where the first 8 hex characters identify a
+    session fine. Any other id is something a person chose, and "mltest-s" is
+    a worse label than the name they picked.
+    """
+    head = sid[:8]
+    if len(sid) > 8 and all(c in "0123456789abcdefABCDEF" for c in head):
+        return head
+    return sid if len(sid) <= 24 else sid[:23] + "…"
