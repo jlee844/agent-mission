@@ -2,6 +2,12 @@
 
 **The goal, beside the work, that the agent cannot quietly rewrite.**
 
+[![tests](https://img.shields.io/badge/tests-103%20passing-0E6E68)](tests/)
+[![python](https://img.shields.io/badge/python-3.9%20–%203.14-0E6E68)](pyproject.toml)
+[![context cost](https://img.shields.io/badge/always--on%20context-47%20tokens-0E6E68)](commands/mission.md)
+[![deps](https://img.shields.io/badge/dependencies-none-0E6E68)](pyproject.toml)
+[![license](https://img.shields.io/badge/license-MIT-666)](LICENSE)
+
 You start a session with something in mind. Two hours later there are 800 tool
 calls, a summary written by the thing being summarised, and no easy answer to
 *what was this for, and is it done?*
@@ -9,6 +15,13 @@ calls, a summary written by the thing being summarised, and no easy answer to
 `mission` puts the goal next to the work: one command at the start, a checklist
 you own, and one page showing every running session — what each is for, what it
 has ticked off, and what it has actually done.
+
+![The mission board: three sessions, their goals, their plans, and what each has actually done](docs/board.png)
+
+Three sessions above. `▪` is done, `▫` is agreed work, `?` is something the
+agent proposed and you have not accepted. Finished items fold away. The numbers
+at the bottom of each card are **measured from the transcript**, not reported by
+the agent.
 
 ```bash
 git clone https://github.com/jlee844/agent-mission && cd agent-mission

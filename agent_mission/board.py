@@ -171,7 +171,10 @@ header{display:flex;gap:1rem;align-items:baseline;margin-bottom:1rem}
 h1{font-family:var(--mono);font-size:.7rem;letter-spacing:.15em;text-transform:uppercase;
 color:var(--mut);font-weight:500;margin:0}
 #age{font-family:var(--mono);font-size:.66rem;color:var(--mut)}
-.grid{display:grid;gap:1.1rem;grid-template-columns:repeat(auto-fill,minmax(23rem,1fr))}
+/* align-items:start, or every card stretches to the tallest in its row and
+   short missions render as a title floating above a field of empty card. */
+.grid{display:grid;gap:1.1rem;align-items:start;
+grid-template-columns:repeat(auto-fill,minmax(23rem,1fr))}
 .card{background:var(--card);border:1px solid var(--rule);border-radius:5px;padding:1.1rem 1.2rem}
 .card.ended{opacity:.62}
 .sid{font-family:var(--mono);font-size:.68rem;color:var(--mut);display:flex;
@@ -190,8 +193,11 @@ li.ng{color:var(--mut)}
 .chk{list-style:none;padding:0}
 .chk li{display:flex;gap:0;align-items:flex-start;font-size:.87rem;padding:.12rem 0;
 line-height:1.45}
-.chk .g{flex:none;width:1.05rem;font-family:var(--mono);color:var(--rule);
-white-space:pre;-webkit-user-select:none;user-select:none}
+/* Tree connectors were drawn in --rule, which on the dark theme is within a
+   few points of the card background: the nesting the tree exists to show was
+   invisible. Muted, not hidden. */
+.chk .g{flex:none;width:1.05rem;font-family:var(--mono);color:var(--mut);
+opacity:.55;white-space:pre;-webkit-user-select:none;user-select:none}
 .chk .box{flex:none;font-family:var(--mono);color:var(--mut);padding-right:.42rem}
 .chk li.done{color:var(--mut)}
 .chk li.done .txt{text-decoration:line-through;text-decoration-color:var(--rule)}
@@ -199,7 +205,11 @@ white-space:pre;-webkit-user-select:none;user-select:none}
 .chk li.prop .box{color:var(--bad)}
 .chk li.branch{font-weight:600;margin-top:.42rem}
 .chk li.branch .txt{letter-spacing:-.005em}
-.chk .txt{flex:1}
+/* A proposal can be a paragraph -- an agent explaining a blocker writes one.
+   Unclamped, one item owns the card and the plan under it is pushed off the
+   screen. Three lines, full text on hover. */
+.chk .txt{flex:1;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+overflow:hidden}
 .chk .roll{flex:none;font-family:var(--mono);font-size:.68rem;color:var(--mut);
 padding-left:.6rem;display:flex;align-items:center;gap:.4rem}
 .chk .mini{width:2.4rem;height:3px;background:var(--soft);border-radius:2px;overflow:hidden}
@@ -269,6 +279,18 @@ cursor:pointer}
 <p class=none id=empty hidden>Nothing matches that.</p>
 <script>
 const esc=t=>(t||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+// Which rows survive the fold, with `last` recomputed over the SURVIVORS.
+// `last` decides between "├" and "└", and it was computed over every sibling
+// including the finished ones now hidden -- so the last visible child drew a
+// "├" with nothing beneath it, a branch line into empty space.
+function visible(tree){
+  const rows = tree.filter(i=>!i.hid).map(i=>({...i}));
+  rows.forEach((r,n)=>{
+    const next = rows.slice(n+1).find(o=>o.d <= r.d);
+    r.last = !next || next.d < r.d;
+  });
+  return rows;
+}
 // One row of the plan. `flat` drops the connectors: inside the finished fold
 // the rows come from different parents, so a guide there would draw a branch
 // that isn't on screen.
@@ -281,7 +303,7 @@ function row(i,flat){
   return `<li class="${i.branch?'branch':''} ${i.done?'done':(i.ok?'':'prop')}">
     ${guides}${elbow}
     <span class=box>${i.done?'▪':(i.ok?'▫':'?')}</span>
-    <span class=txt>${esc(i.t)}</span>
+    <span class=txt title="${esc(i.t)}">${esc(i.t)}</span>
     ${i.roll?`<span class=roll><span class=mini><i style="width:${i.pct}%"></i></span>${i.roll}</span>`:''}
   </li>`;
 }
@@ -321,7 +343,9 @@ async function tick(){
        ${s.total? `<div class=bar><i style="width:${100*s.done/s.total}%"></i></div>
          <div class=sid><span>${s.done} of ${s.total} done</span>
          ${s.pending_accept?`<span class=warn>${s.pending_accept} awaiting accept</span>`:'<span></span>'}</div>
-         <ul class=chk>${s.tree.filter(i=>!i.hid).map(row).join('')}</ul>
+         <ul class=chk>${visible(s.tree).map(i=>row(i)).join('')}</ul><!-- map(row) passes the INDEX as row's second argument, so every row
+     after the first rendered in flat mode and the tree lost every
+     connector. The nesting was in the data the whole time. -->
          ${s.tree.some(i=>i.hid)?`<details class=doneblock data-sid="${s.id}" ${
              openFolds.has(s.id)?'open':''}><summary>${
              s.tree.filter(i=>i.hid).length} finished</summary>
