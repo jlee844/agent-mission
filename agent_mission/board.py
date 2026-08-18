@@ -6,6 +6,7 @@ Serves on 127.0.0.1. Reads transcripts and the mission log; writes nothing.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -78,6 +79,7 @@ def snapshot() -> list[dict]:
                 "procs": proc["procs"],
                 "has_mission": m is not None, "ended": False,
                 "title": m.title if m else "", "objective": m.objective if m else "",
+                "named": bool(m.name) if m else False,
                 "criteria": m.success_criteria if m else [],
                 "constraints": m.constraints if m else [],
                 "non_goals": m.non_goals if m else [],
@@ -120,6 +122,7 @@ def snapshot() -> list[dict]:
                 "cwd": (m.cwd or "").replace(str(Path.home()), "~"),
                 "procs": 0, "ended": True,
                 "has_mission": True, "title": m.title, "objective": m.objective,
+                "named": bool(m.name),
                 "criteria": m.success_criteria, "constraints": m.constraints,
                 "non_goals": m.non_goals,
                 "tree": _tree(m),
@@ -223,8 +226,13 @@ padding:1.1rem 1.2rem;transition:border-color .15s ease,transform .15s ease}
 justify-content:space-between;gap:.75rem;margin-bottom:.5rem}
 .sid>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sid>span:last-child{flex:none}
+/* Two lines maximum. A session named from a pasted prompt ran to four and
+   pushed the plan under the fold. */
 .obj{font-size:1.05rem;line-height:1.35;font-weight:600;margin:0 0 .25rem;
-text-wrap:pretty;letter-spacing:-.008em}
+text-wrap:pretty;letter-spacing:-.008em;display:-webkit-box;-webkit-line-clamp:2;
+-webkit-box-orient:vertical;overflow:hidden}
+.objsub{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+overflow:hidden}
 .objsub{font-size:.83rem;line-height:1.45;color:var(--mut);margin:0 0 .7rem;text-wrap:pretty}
 .none{color:var(--mut);font-size:.85rem;line-height:1.5}
 .none code{font-family:var(--mono);font-size:.78rem;background:var(--soft);
@@ -355,7 +363,10 @@ border:1px solid var(--rule);border-radius:3px;padding:.16rem .45rem;background:
 .dot.idle{background:var(--mut);opacity:.5}
 .dot.ended{background:var(--rule)}
 .st{display:flex;align-items:center;gap:.4rem}
-.card.waiting{border-color:var(--bad)}
+/* No border tint for "waiting". On a real board five of six sessions had
+   proposals outstanding, so every card lit up and the accent meant nothing
+   again -- the same mistake as red meaning three things. The dot and the
+   count carry it; the strip carries the total. */
 
 /* Compact mode: cards are right for three sessions and wrong for eight. */
 .grid.compact{grid-template-columns:1fr;gap:.35rem}
@@ -472,7 +483,8 @@ async function tick(){
        <span>${s.ended?'ended':s.procs+' live here'}</span></div>
      ${s.has_mission? `
        <p class=obj>${esc(s.title)}</p>
-       ${s.objective && s.objective!==s.title?`<p class=objsub>${esc(s.objective)}</p>`:''}
+       ${s.named && s.objective?`<p class=objsub>${esc(s.objective)}</p>`:''}<!-- only when the mission has a real NAME: otherwise the title is
+     the objective trimmed, and printing both says it twice -->
        ${s.total? `<div class=bar><i style="width:${100*s.done/s.total}%"></i></div>
          <div class=sid><span>${s.done} of ${s.total} done</span>
          ${s.pending_accept?`<span class="warn ask">${s.pending_accept} awaiting accept</span>`:'<span></span>'}</div>
@@ -549,9 +561,54 @@ tick(); setInterval(tick,4000);
 </script>"""
 
 
+class _Cache:
+    """Serve the last snapshot immediately; refresh it off the request path.
+
+    Reading every live transcript takes ~4s on a real board -- 130 MB of JSONL,
+    and the files being written are exactly the ones whose cache key changes
+    every poll, so memoising by mtime bought nothing. The browser polls every
+    4s, so requests overlapped permanently and the page sat blank waiting.
+
+    Nothing here needs to be to-the-second: it is a board you glance at. So a
+    reader never blocks, and the data is at most one refresh old.
+    """
+
+    def __init__(self, every: float = 6.0):
+        self.every = every
+        self.rows: list[dict] = []
+        self.at = 0.0
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def get(self) -> list[dict]:
+        if not self.rows and not self.at:
+            self.rows, self.at = snapshot(), time.time()   # first call only
+        if time.time() - self.at > self.every:
+            self._refresh_async()
+        return self.rows
+
+    def _refresh_async(self) -> None:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self.at = time.time()        # claim the slot before starting
+            self._thread = threading.Thread(target=self._refresh, daemon=True)
+            self._thread.start()
+
+    def _refresh(self) -> None:
+        try:
+            rows = snapshot()
+        except Exception:
+            return                        # keep the last good board
+        self.rows, self.at = rows, time.time()
+
+
+CACHE = _Cache()
+
+
 class _H(BaseHTTPRequestHandler):
     def do_GET(self):                                    # noqa: N802
-        body, ctype = ((json.dumps(snapshot()).encode(), "application/json")
+        body, ctype = ((json.dumps(CACHE.get()).encode(), "application/json")
                        if self.path.startswith("/data")
                        else (PAGE.encode(), "text/html; charset=utf-8"))
         self.send_response(200)

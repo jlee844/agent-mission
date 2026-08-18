@@ -9,6 +9,7 @@ whichever session typed last.
 from __future__ import annotations
 
 import json
+import functools
 import os
 import re
 import subprocess
@@ -67,6 +68,39 @@ class Activity:
     since: dict[str, int] = field(default_factory=dict)
 
 
+def _fingerprint(path):
+    """A transcript is append-only, so (size, mtime) identifies its content."""
+    try:
+        st = Path(path).stat()
+        return (str(path), st.st_size, st.st_mtime)
+    except OSError:
+        return (str(path), 0, 0.0)
+
+
+def memo_by_file(fn):
+    """Cache a whole-file parse against the file's size and mtime.
+
+    The board polls every 4 seconds and re-parsed every transcript each time.
+    On a real board that meant ~4 seconds of work per poll over 130 MB of
+    JSONL -- so requests overlapped permanently and the page went blank while
+    it waited. Transcripts only ever grow, so the fingerprint is exact rather
+    than a guess with a TTL.
+    """
+    cache: dict = {}
+
+    @functools.wraps(fn)
+    def wrapper(path, *a, **kw):
+        key = (_fingerprint(path), a, tuple(sorted(kw.items())))
+        if key not in cache:
+            cache.clear()          # one entry per file is enough; never grows
+            cache[key] = fn(path, *a, **kw)
+        return cache[key]
+
+    wrapper.cache = cache
+    return wrapper
+
+
+@memo_by_file
 def activity(path: Path, since_ts: float = 0.0) -> Activity:
     a = Activity()
     try:

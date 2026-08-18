@@ -17,6 +17,8 @@ and that is fine — the interesting cases sit far above the noise.
 
 from __future__ import annotations
 
+from .session import memo_by_file
+
 import json
 import math
 import re
@@ -70,6 +72,7 @@ def _cos(a: dict[str, float], b: dict[str, float]) -> float:
     return sum(x * b.get(w, 0.0) for w, x in a.items())
 
 
+@memo_by_file
 def inspect(path: Path, cap: int = 400) -> Health:
     h = Health()
     texts: list[str] = []

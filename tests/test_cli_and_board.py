@@ -499,3 +499,42 @@ def test_sessions_needing_you_sort_first_but_finished_ones_stay_last(
     order = [r["full"] for r in board.snapshot()]
     assert order.index("asking") < order.index("quiet"), "the ask comes first"
     assert all(r["ended"] for r in board.snapshot()), "both are ended sessions"
+
+
+def test_the_board_serves_the_last_snapshot_instead_of_blocking(monkeypatch):
+    """Reading every live transcript takes ~4s on a real board, and the browser
+    polls every 4s -- requests overlapped permanently and the page sat blank.
+    A reader must never wait for the parse."""
+    import time
+    from agent_mission import board
+    calls = []
+
+    def slow():
+        calls.append(1)
+        return [{"full": f"snap-{len(calls)}"}]
+
+    monkeypatch.setattr(board, "snapshot", slow)
+    c = board._Cache(every=60)
+    assert c.get()[0]["full"] == "snap-1"
+    for _ in range(20):
+        c.get()
+    assert len(calls) == 1, "20 reads, one parse"
+
+
+def test_a_failed_refresh_keeps_the_last_good_board(monkeypatch):
+    """A board that empties itself because one transcript was mid-write is
+    worse than one that is six seconds stale."""
+    from agent_mission import board
+    state = {"n": 0}
+
+    def flaky():
+        state["n"] += 1
+        if state["n"] > 1:
+            raise OSError("transcript vanished")
+        return [{"full": "good"}]
+
+    monkeypatch.setattr(board, "snapshot", flaky)
+    c = board._Cache(every=0)
+    assert c.get()[0]["full"] == "good"
+    c._refresh()
+    assert c.get()[0]["full"] == "good", "the last good board survives"
