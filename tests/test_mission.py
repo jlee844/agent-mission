@@ -253,3 +253,51 @@ def test_a_protected_field_can_be_changed_later(store):
     store.set_protected("objective", "first", by="human")
     store.set_protected("objective", "second", by="human")
     assert store.load().objective == "second"
+
+
+def _no_tty(monkeypatch):
+    """Exactly what a subagent's shell looks like: no controlling terminal."""
+    monkeypatch.delenv("AGENT_MISSION_I_AM_HUMAN", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+
+
+def test_an_agents_shell_cannot_rewrite_a_protected_field(tmp_path, monkeypatch, capsys):
+    """A subagent rewrote the objective on its first try, and `why` logged the
+    change as the human. The store always refused; the CLI could not tell who
+    was typing, so the guarantee was advisory."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    st = MissionStore(root_for("s"))
+    st.create("s", "/tmp", "the real goal", by="human")
+    _no_tty(monkeypatch)
+
+    assert main(["set", "objective", "something else", "--session", "s"]) == 1
+    assert MissionStore(root_for("s")).load().objective == "the real goal"
+    out = capsys.readouterr().out
+    assert "not a terminal" in out and "propose" in out
+
+
+def test_an_agents_shell_cannot_accept_its_own_proposal(tmp_path, monkeypatch):
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    st = MissionStore(root_for("s"))
+    st.create("s", "/tmp", "goal", by="human")
+    iid = st.propose("do a thing", by="agent")["item_id"]
+    _no_tty(monkeypatch)
+
+    assert main(["accept", iid, "--session", "s"]) == 1
+    assert main(["done", iid, "--session", "s"]) == 1
+    assert main(["remove", iid, "--session", "s"]) == 1
+    m = MissionStore(root_for("s")).load()
+    assert not m.items[0].accepted and not m.items[0].done
+
+
+def test_an_agent_can_still_propose_without_asking(tmp_path, monkeypatch):
+    """The refusal must leave the agent a way to be useful, or it routes
+    around it."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    MissionStore(root_for("s")).create("s", "/tmp", "goal", by="human")
+    _no_tty(monkeypatch)
+    assert main(["propose", "an idea", "--session", "s"]) == 0
+    assert len(MissionStore(root_for("s")).load().checklist) == 1

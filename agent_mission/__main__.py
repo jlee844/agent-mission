@@ -100,6 +100,41 @@ def _store(sid: str) -> MissionStore:
     return MissionStore(root_for(sid))
 
 
+HUMAN_ENV = "AGENT_MISSION_I_AM_HUMAN"
+
+
+def _at_a_keyboard() -> bool:
+    """Is a person actually typing this?
+
+    The store refuses agent writes, but the CLI could not tell who ran it, so
+    it passed by="human" and the guarantee was advisory. In a test, a subagent
+    rewrote a protected objective on its first try -- and `why` recorded the
+    change as mine. Disclosure in the README did not stop it; nothing did.
+
+    An agent's shell has no controlling terminal. A person typing in one does.
+    That is not a security boundary -- an agent can set the override below --
+    but it moves impersonation from "what happens by default" to "a deliberate
+    lie", which is exactly the threat the design claims to address.
+    """
+    if os.environ.get(HUMAN_ENV) == "1":
+        return True
+    try:
+        return sys.stdin.isatty()
+    except Exception:
+        return False
+
+
+def _human_gate(what: str) -> bool:
+    if _at_a_keyboard():
+        return True
+    print(f"  {what} is yours, and this is not a terminal — refusing.\n"
+          f"  If you are an agent: `mission propose \"...\"` instead; it needs\n"
+          f"  no permission and stays inert until a person accepts it.\n"
+          f"  If you are a person in a pipeline: {HUMAN_ENV}=1 ahead of the "
+          f"command.")
+    return False
+
+
 def cmd_init(a) -> int:
     sid = a.session or current_session_id()
     if not sid:
@@ -228,6 +263,8 @@ def cmd_set(a) -> int:
     st = _store(sid)
     if st.load() is None:
         print("  no mission for this session — `mission init` first")
+        return 1
+    if not _human_gate(f"the {a.field}"):
         return 1
     field = a.field.replace("-", "_")
     if field not in PROTECTED_FIELDS:
@@ -407,10 +444,14 @@ def _apply(a, verb: str, fn) -> int:
 
 
 def cmd_accept(a) -> int:
+    if not _human_gate("accepting a proposal"):
+        return 1
     return _apply(a, "accepted", lambda st, i: st.accept(i, by="human"))
 
 
 def cmd_done(a) -> int:
+    if not _human_gate("marking work done"):
+        return 1
     rc = _apply(a, "done", lambda st, i: st.complete(i, by="human"))
     return rc or cmd_show(a)
 
@@ -436,6 +477,8 @@ def cmd_setup(a) -> int:
 
 
 def cmd_remove(a) -> int:
+    if not _human_gate("removing an item"):
+        return 1
     try:
         _store(a.session or current_session_id()).remove(a.item_id, by="human")
     except NoSuchItemError:
