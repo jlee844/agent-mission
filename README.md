@@ -252,6 +252,12 @@ together, refreshing:
 - measured activity: calls, files changed, test runs, failed calls
 - sessions with no mission say so, and tell you the command
 
+**Long lists scroll inside their own block.** The plan caps at about ten rows
+and the finished fold at ten more, each scrolling in place rather than growing
+the card — one session here finished eleven items with four proposals behind
+them, and unbounded the card ran past the fold and pushed the goal off the top
+of the screen, which is the one thing the board must never do.
+
 **Search and filter.** The header carries a search box — matching the goal,
 every task in the plan, the criteria, the folder and the session id, because
 the case that matters is looking for a task you half remember across a board of

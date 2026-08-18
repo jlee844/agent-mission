@@ -174,11 +174,20 @@ color:var(--mut);font-weight:500;margin:0}
 /* align-items:start, or every card stretches to the tallest in its row and
    short missions render as a title floating above a field of empty card. */
 .grid{display:grid;gap:1.1rem;align-items:start;
-grid-template-columns:repeat(auto-fill,minmax(23rem,1fr))}
-.card{background:var(--card);border:1px solid var(--rule);border-radius:5px;padding:1.1rem 1.2rem}
+/* min(23rem,100%): a bare 23rem minimum is wider than a 375px phone, so the
+   whole page scrolled sideways. */
+grid-template-columns:repeat(auto-fill,minmax(min(23rem,100%),1fr))}
+.card{background:var(--card);border:1px solid var(--rule);border-radius:7px;
+padding:1.1rem 1.2rem;transition:border-color .15s ease,transform .15s ease}
+.card:hover{border-color:var(--mut)}
 .card.ended{opacity:.62}
+/* A long cwd used to run straight into "1 live here" at narrow widths --
+   they are separate facts and read as one string. Gap, and the path is the
+   half that truncates. */
 .sid{font-family:var(--mono);font-size:.68rem;color:var(--mut);display:flex;
-justify-content:space-between;margin-bottom:.5rem}
+justify-content:space-between;gap:.75rem;margin-bottom:.5rem}
+.sid>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sid>span:last-child{flex:none}
 .obj{font-size:1.05rem;line-height:1.35;font-weight:600;margin:0 0 .25rem;
 text-wrap:pretty;letter-spacing:-.008em}
 .objsub{font-size:.83rem;line-height:1.45;color:var(--mut);margin:0 0 .7rem;text-wrap:pretty}
@@ -200,7 +209,8 @@ line-height:1.45}
 opacity:.55;white-space:pre;-webkit-user-select:none;user-select:none}
 .chk .box{flex:none;font-family:var(--mono);color:var(--mut);padding-right:.42rem}
 .chk li.done{color:var(--mut)}
-.chk li.done .txt{text-decoration:line-through;text-decoration-color:var(--rule)}
+.chk li.done .txt{text-decoration:line-through;
+text-decoration-color:var(--rule);text-decoration-thickness:1px}
 .chk li.done .box{color:var(--ok)}
 .chk li.prop .box{color:var(--bad)}
 .chk li.branch{font-weight:600;margin-top:.42rem}
@@ -215,9 +225,15 @@ padding-left:.6rem;display:flex;align-items:center;gap:.4rem}
 .chk .mini{width:2.4rem;height:3px;background:var(--soft);border-radius:2px;overflow:hidden}
 .chk .mini i{display:block;height:100%;background:var(--ok)}
 .box{font-family:var(--mono);color:var(--mut);flex:none}
-.chk li.done{color:var(--mut);text-decoration:line-through}
-.chk li.done .box{color:var(--ok);text-decoration:none}
+/* Strike the TEXT, never the row: a row-level rule also struck the progress
+   badge, so a finished branch read as "1/1" with a line through the number. */
+.chk li.done{color:var(--mut)}
+.chk li.done .box{color:var(--ok)}
 .chk li.prop .box{color:var(--bad)}
+/* A proposal is the one row asking something of the reader, so it gets the
+   only accent in the list. */
+.chk li.prop{color:var(--ink)}
+.chk li:not(.branch):hover{background:var(--soft);border-radius:3px}
 .doneblock{margin-top:.3rem}
 .doneblock summary{font-family:var(--mono);font-size:.66rem;letter-spacing:.06em;
 color:var(--mut);cursor:pointer;list-style:none;padding:.2rem 0;text-transform:uppercase}
@@ -227,7 +243,8 @@ color:var(--mut);cursor:pointer;list-style:none;padding:.2rem 0;text-transform:u
 .doneblock summary:hover{color:var(--ink)}
 .chk.flat li{padding-left:.1rem}
 .bar{height:5px;background:var(--soft);border-radius:3px;overflow:hidden;margin:.55rem 0 .1rem}
-.bar i{display:block;height:100%;background:var(--ok)}
+.bar i{display:block;height:100%;background:var(--ok);border-radius:3px;
+transition:width .4s cubic-bezier(.4,0,.2,1)}
 .meta{font-family:var(--mono);font-size:.7rem;color:var(--mut);margin-top:.75rem;
 padding-top:.6rem;border-top:1px solid var(--soft);line-height:1.7}
 .warn{color:var(--bad)}
@@ -244,6 +261,17 @@ padding:.2rem 0;-webkit-user-select:none;user-select:none}
 .doneblock[open] summary::before{content:"▾ "}
 .doneblock summary:hover{color:var(--ink)}
 .chk.flat{padding-left:.1rem;opacity:.85}
+/* Both lists scroll inside their own block rather than growing the card.
+   One session here finished 11 items and proposed 4 more; unbounded, the
+   card ran past the fold and the goal at the top scrolled out of sight —
+   which is the one thing the board must never do. ~10 rows, then scroll. */
+.chk{max-height:15.5rem;overflow-y:auto;overscroll-behavior:contain}
+.doneblock .chk{max-height:14rem}
+.chk::-webkit-scrollbar{width:7px}
+.chk::-webkit-scrollbar-thumb{background:var(--rule);border-radius:4px}
+.chk::-webkit-scrollbar-thumb:hover{background:var(--mut)}
+.chk::-webkit-scrollbar-track{background:transparent}
+.chk{scrollbar-width:thin;scrollbar-color:var(--rule) transparent}
 /* Header stays put; only the board scrolls, so search and the counts are
    reachable however far down you are. */
 header{position:sticky;top:0;z-index:5;background:var(--bg);padding-bottom:.7rem;
