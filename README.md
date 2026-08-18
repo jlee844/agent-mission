@@ -343,3 +343,18 @@ Code specific; the store and the board are not.
 because that is the Python macOS ships: the package originally declared 3.10+,
 which would have told a user on stock macOS Python that it was unsupported
 while it ran fine.
+
+---
+
+## Part of a set
+
+Four small tools that read what an AI coding session actually did, rather than
+what it said it did. Each stands alone; together they cover a session end to
+end.
+
+| | |
+|---|---|
+| **mission** *(you are here)* | the goal, beside the work, that the agent cannot quietly rewrite — plus one live board for every running session |
+| [**receipt**](https://github.com/jlee844/receipt) | what a session did, what it cost, and which of its claims are backed by the filesystem |
+| [**blindspot**](https://github.com/jlee844/blindspot) | which lines in a change a test would actually catch a bug in — coverage says a line ran, not that anything asserted on it |
+| [**transcript-audit**](https://github.com/jlee844/transcript-audit) | profile a corpus of agent transcripts before computing any statistic over it |
