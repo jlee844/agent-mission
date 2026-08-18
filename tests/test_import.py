@@ -127,3 +127,24 @@ def test_why_shows_when_a_protected_field_changed(tmp_path, monkeypatch, capsys)
     main(["why", "objective", "--session", "s"])
     out = capsys.readouterr().out
     assert "first" in out and "second" in out and out.index("first") < out.index("second")
+
+
+def test_a_bullet_that_wraps_is_rejoined():
+    """Found by importing a real plan instead of one written for this parser:
+    prose wrapped at 90 characters and every long task arrived cut mid
+    sentence. Half a task is worse than none, because it looks complete."""
+    rows = parse("""\
+## Plan
+- A Stop hook that runs the verifier over the session file
+  and prints only the unbacked claims.
+- Second item
+""")
+    assert rows[1].text == ("A Stop hook that runs the verifier over the "
+                           "session file and prints only the unbacked claims.")
+    assert rows[2].text == "Second item"
+
+
+def test_a_wrapped_line_does_not_swallow_the_next_heading():
+    rows = parse("## One\n- a task\n  continued here\n## Two\n- another\n")
+    assert [r.text for r in rows] == ["One", "a task continued here",
+                                      "Two", "another"]

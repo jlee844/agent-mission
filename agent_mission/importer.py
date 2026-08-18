@@ -56,6 +56,31 @@ def norm(s: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", "", _clean(s).lower()).strip()
 
 
+def _unwrap(lines: list[str]) -> list[str]:
+    """Rejoin bullets that wrap across lines.
+
+    Found by importing a real plan file rather than one written for this
+    parser: prose wrapped at 90 characters, and every long task arrived cut
+    mid-sentence — "A Stop hook that runs the verifier over". Half a task is
+    worse than no task, because it looks complete.
+
+    A continuation is a non-blank line that is not itself a bullet, a heading
+    or a fence. Anything else ends the bullet.
+    """
+    out: list[str] = []
+    open_bullet = False
+    for raw in lines:
+        stripped = raw.strip()
+        starts_block = (not stripped or _FENCE.match(raw) or _HEADING.match(raw)
+                        or _BULLET.match(raw))
+        if open_bullet and not starts_block:
+            out[-1] = out[-1].rstrip() + " " + stripped
+            continue
+        out.append(raw)
+        open_bullet = bool(_BULLET.match(raw))
+    return out
+
+
 def parse(text: str) -> list[Row]:
     """Headings and nested bullets, as a flat list of (depth, text, checked).
 
@@ -66,7 +91,7 @@ def parse(text: str) -> list[Row]:
     fence = False
     head_levels: list[int] = []      # heading levels seen, as a stack
     bullet_indents: list[int] = []   # bullet indents under the current heading
-    for raw in text.splitlines():
+    for raw in _unwrap(text.splitlines()):
         if _FENCE.match(raw):
             fence = not fence
             continue
