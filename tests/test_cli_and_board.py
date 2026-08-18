@@ -294,3 +294,20 @@ def test_stop_refuses_to_signal_a_pid_that_is_not_a_board(tmp_path, monkeypatch)
     monkeypatch.setattr(D.os, "kill", lambda *a: killed.append(a))
     assert D.stop() is False
     assert killed == [], "never signalled"
+
+
+def test_the_always_on_context_cost_stays_small():
+    """The package's cost in every session is its slash-command FRONTMATTER --
+    the body loads only when invoked, and the CLI costs nothing until called.
+
+    This is the differentiator against putting the plan in the prompt: there,
+    planning depth and context cost rise together. Here they do not, and this
+    test is what keeps that true as the command file grows.
+    """
+    md = (Path(__file__).resolve().parents[1] / "commands" / "mission.md")
+    text = md.read_text(encoding="utf-8")
+    assert text.startswith("---"), "frontmatter is what gets preloaded"
+    front = text.split("---", 2)[1]
+    assert len(front) < 400, (
+        f"frontmatter is {len(front)} chars — every session pays this. "
+        "Put the detail in the body, which loads only on invoke.")
