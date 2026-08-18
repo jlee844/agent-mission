@@ -239,6 +239,110 @@ def cmd_set(a) -> int:
     return cmd_show(a)
 
 
+def cmd_import(a) -> int:
+    """Land a plan somebody else's planner wrote, as proposals.
+
+    Diffs on re-import: what is new goes up, what already exists is left alone,
+    and what has vanished from the file is REPORTED, never removed. Removing is
+    the human's call, and a tool that silently prunes a plan because a file
+    changed is one you stop trusting with the plan.
+    """
+    from .importer import norm, parse
+    sid = a.session or current_session_id()
+    st = _store(sid)
+    m = st.load()
+    if m is None:
+        print("  no mission for this session — `mission init` first")
+        return 1
+    p = Path(a.file)
+    if not p.exists():
+        print(f"  no such file: {a.file}")
+        return 1
+    rows = parse(p.read_text(encoding="utf-8", errors="replace"))
+    if not rows:
+        print(f"  nothing plan-shaped in {a.file} — headings and `- [ ]` bullets")
+        return 1
+    if len(rows) > a.max:
+        print(f"  {len(rows)} items in {a.file}; the cap is {a.max}. "
+              f"Import a section of it, or raise --max.")
+        return 1
+
+    have = {norm(d["text"]): d["id"] for d in m.checklist}
+    stack: list[tuple[int, str | None]] = []      # (depth, item_id)
+    added, skipped = [], 0
+    for r in rows:
+        while stack and stack[-1][0] >= r.depth:
+            stack.pop()
+        parent = stack[-1][1] if stack else a.under
+        key = norm(r.text)
+        if key in have:
+            skipped += 1
+            stack.append((r.depth, have[key]))
+            continue
+        ev = st.propose(r.text, by="agent", parent=parent)
+        have[key] = ev["item_id"]
+        added.append((ev["item_id"], r))
+        stack.append((r.depth, ev["item_id"]))
+
+    # What the file no longer mentions -- but only within the subtree this
+    # import targets. Compared against the WHOLE plan, `--under` reported every
+    # unrelated item in the mission as missing from a file that was never
+    # supposed to contain them.
+    scope = {d["id"] for d in m.checklist}
+    if a.under:
+        scope, growing = set(), {a.under}
+        while growing:
+            scope |= growing
+            growing = {d["id"] for d in m.checklist
+                       if d.get("parent") in scope and d["id"] not in scope}
+    seen = {norm(r.text) for r in rows}
+    gone = [d["text"] for d in m.checklist
+            if d["id"] in scope and not d["done"]
+            and norm(d["text"]) not in seen] if a.strict else []
+
+    print(f"\n  {p.name}: {len(added)} proposed, {skipped} already in the plan")
+    for iid, r in added:
+        print(f"    [?] {iid}  {'  ' * r.depth}{r.text}")
+    ticked = [iid for iid, r in added if r.checked]
+    if ticked:
+        # The file says these are finished. The file is not you.
+        was = "was" if len(ticked) == 1 else "were"
+        print(f"\n  {len(ticked)} {was} ticked in the source but imported "
+              f"unticked — ticking is yours:\n    mission done {' '.join(ticked)}")
+    if gone:
+        print(f"\n  in the plan but not in {p.name} (not removed):")
+        for t in gone[:8]:
+            print(f"    · {t}")
+    if added:
+        print(f"\n  accept them with:\n    mission accept "
+              f"{' '.join(i for i, _ in added)}\n")
+    return 0
+
+
+def cmd_why(a) -> int:
+    """When did this field change, and to what. The log already knew."""
+    import datetime as _dt
+    sid = a.session or current_session_id()
+    st = _store(sid)
+    if st.load() is None:
+        print("  no mission for this session")
+        return 1
+    field = a.field.replace("-", "_")
+    events = [e for e in st.why(field) if e.get("kind") != "created"
+              or field == "objective"]
+    if not events:
+        print(f"  nothing has ever set {a.field}")
+        return 1
+    print()
+    for e in events:
+        when = _dt.datetime.fromtimestamp(e["at"]).strftime("%Y-%m-%d %H:%M")
+        v = e.get("value", e.get("objective", ""))
+        v = " | ".join(v) if isinstance(v, list) else str(v)
+        print(f"  {when}  {e['by']:<6} {v}")
+    print()
+    return 0
+
+
 def _print_tree(nodes, depth: int = 0, prefix: str = "",
                 show_all: bool = False) -> None:
     """Indented, with a branch's progress rolled up from its leaves.
@@ -420,6 +524,22 @@ def main(argv: list[str] | None = None) -> int:
     rm = sub.add_parser("remove", parents=[common], help="drop an item (and its subtree)")
     rm.add_argument("item_id")
     rm.set_defaults(fn=cmd_remove)
+
+    im = sub.add_parser("import", parents=[common],
+                        help="land a plan file as proposals (diffs on re-import)")
+    im.add_argument("file")
+    im.add_argument("--under", default=None, metavar="ID",
+                    help="hang the imported tree under an existing item")
+    im.add_argument("--max", type=int, default=60,
+                    help="refuse a file with more items than this (default 60)")
+    im.add_argument("--strict", action="store_true",
+                    help="also report plan items missing from the file")
+    im.set_defaults(fn=cmd_import)
+
+    wy = sub.add_parser("why", parents=[common],
+                        help="when a protected field changed, and to what")
+    wy.add_argument("field")
+    wy.set_defaults(fn=cmd_why)
 
     bd = sub.add_parser("board", parents=[common])
     bd.add_argument("--port", type=int, default=8976)

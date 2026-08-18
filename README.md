@@ -93,6 +93,33 @@ The command file also tells the agent it may `mission propose "..."` freely —
 proposals are inert until you accept them — and that it must not author the
 mission itself or route around the store's refusal via the CLI.
 
+## Bring a plan you already have
+
+Every planner in this space ends at a markdown file — `writing-plans` writes to
+`docs/superpowers/plans/`, GSD to `.planning/ROADMAP.md`, Kiro to
+`.kiro/specs/<feature>/tasks.md`. They are good at decomposition and they all
+stop at a file nothing reads back.
+
+```bash
+mission import docs/superpowers/plans/2026-08-17-list-sharing.md
+mission import .kiro/specs/lists/tasks.md --under 56fa8644
+```
+
+Headings and nested checkboxes become the tree, and it lands as **proposals**.
+Fenced code is skipped, links flatten to their text, and the numbering the
+source carries (`2.1`, `Task 3:`) is dropped — renumber a plan and every item
+would otherwise look new.
+
+**Re-importing diffs.** New rows go up, rows already in the plan are left alone,
+and rows that vanished from the file are reported with `--strict` and **never
+removed** — removing is your call, and a tool that silently prunes the plan
+because a file changed is one you stop trusting with the plan. That is what
+makes a replan cheap: change the file, import again, read the difference.
+
+**A `[x]` in the source is imported unticked.** The file says it is finished;
+the file is not you. The count is reported so you can tick them in one command
+if the source was right.
+
 ## Goals move
 
 ```bash
@@ -102,7 +129,12 @@ mission set success-criteria "lists sync both ways|invites accepted end to end"
 ```
 
 A mission you cannot edit is one you abandon and rewrite from scratch. Every
-edit is a new event, so the old value stays in the log and `why` still answers.
+edit is a new event, so the old value stays in the log:
+
+```bash
+mission why objective        # when it changed, and to what
+```
+
 The agent is refused on all of these exactly as before.
 
 ## It survives compaction
@@ -127,7 +159,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 71 tests and most of them guard exactly this.
+There are 83 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store refuses agent-authored
 missions. The *CLI* cannot tell who typed the command — it passes `by="human"`
@@ -205,7 +237,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 71 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 83 tests, no network
 ```
 
 ## Status
