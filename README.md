@@ -2,7 +2,7 @@
 
 **The goal, beside the work, that the agent cannot quietly rewrite.**
 
-[![tests](https://img.shields.io/badge/tests-106%20passing-0E6E68)](tests/)
+[![tests](https://img.shields.io/badge/tests-117%20passing-0E6E68)](tests/)
 [![python](https://img.shields.io/badge/python-3.9%20–%203.14-0E6E68)](pyproject.toml)
 [![context cost](https://img.shields.io/badge/always--on%20context-47%20tokens-0E6E68)](commands/mission.md)
 [![deps](https://img.shields.io/badge/dependencies-none-0E6E68)](pyproject.toml)
@@ -203,7 +203,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 106 tests and most of them guard exactly this.
+There are 117 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store has always refused agent
 writes. The *CLI* could not tell who typed the command, so it passed
@@ -331,7 +331,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 106 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 117 tests, no network
 ```
 
 ## Status
@@ -339,7 +339,7 @@ pip install -e ".[dev]" && python -m pytest tests/ -q     # 106 tests, no networ
 Not on PyPI yet — install from source as above. Session discovery is Claude
 Code specific; the store and the board are not.
 
-**Python 3.9 through 3.14**, all 106 tests passing on each. The floor is 3.9
+**Python 3.9 through 3.14**, all 117 tests passing on each. The floor is 3.9
 because that is the Python macOS ships: the package originally declared 3.10+,
 which would have told a user on stock macOS Python that it was unsupported
 while it ran fine.
