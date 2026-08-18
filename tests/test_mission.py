@@ -360,3 +360,12 @@ def test_delegating_twice_does_not_start_over(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     assert main(["delegate", iid, "--to", "train it", "--session", "parent"]) == 1
     assert "already has a mission" in capsys.readouterr().out
+
+
+def test_a_delegated_session_name_is_not_cut_in_half():
+    """Third instance of the same slip: 'generate-a-seeded-two-mo'."""
+    from agent_mission.__main__ import _slugify
+    assert _slugify("Generate a seeded two-moons dataset in numpy") == \
+        "generate-a-seeded-two"
+    assert _slugify("short one") == "short-one"
+    assert _slugify("!!!") == "task"

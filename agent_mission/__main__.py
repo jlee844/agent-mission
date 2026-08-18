@@ -357,9 +357,20 @@ def cmd_import(a) -> int:
 
 
 def _slugify(text: str, limit: int = 24) -> str:
+    """A short, readable id fragment -- cut at a word boundary.
+
+    Third time in this codebase that a plain slice cut a word in half
+    ("generate-a-seeded-two-mo"), after the mission title and the session id.
+    A truncated word reads as corruption; a shorter whole word does not.
+    """
     import re
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return (s[:limit].rstrip("-") or "task")
+    if len(s) <= limit:
+        return s or "task"
+    cut = s[:limit]
+    if "-" in cut:
+        cut = cut.rsplit("-", 1)[0]
+    return cut.strip("-") or "task"
 
 
 def cmd_delegate(a) -> int:

@@ -180,7 +180,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 92 tests and most of them guard exactly this.
+There are 95 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store has always refused agent
 writes. The *CLI* could not tell who typed the command, so it passed
@@ -273,10 +273,15 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 92 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 95 tests, no network
 ```
 
 ## Status
 
-Not on PyPI yet — install from source as above. Python 3.10+. Session discovery
-is Claude Code specific; the store and the board are not.
+Not on PyPI yet — install from source as above. Session discovery is Claude
+Code specific; the store and the board are not.
+
+**Python 3.9 through 3.14**, all 95 tests passing on each. The floor is 3.9
+because that is the Python macOS ships: the package originally declared 3.10+,
+which would have told a user on stock macOS Python that it was unsupported
+while it ran fine.
