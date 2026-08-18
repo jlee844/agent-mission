@@ -288,7 +288,39 @@ process died is worse than no record: it sends you to a dead URL.
 A mission whose session has ended stays on the board, dimmed and marked
 `ended`. The work happened; losing sight of it is what this exists to prevent.
 
-Localhost only. Reads transcripts and the mission log; writes nothing else.
+Localhost only. Reads transcripts and the mission log.
+
+### Accepting and ticking from the board
+
+Run `mission board` **yourself in a terminal** and it prints a short write code:
+
+```
+mission board -> http://127.0.0.1:8976
+
+write code: 4f2a91
+type it into the board once to accept and tick from there.
+it is not on disk and no page returns it — only this terminal
+has it, which is why the agent cannot use these buttons.
+```
+
+Type it in once and every card grows buttons: **accept** on a proposal, **tick**
+on agreed work, **accept all** per session, and a note box. No more copying
+eight-character ids into a shell.
+
+**Why a code, and why the terminal.** A plain Accept button would be a POST any
+local process can make — including the agent's own shell, with one `curl` — and
+the deny rules would never see it, because they match shell commands and not
+HTTP. The naive version does not merely fail to help; it removes the protection
+the tty gate and the deny rules provide.
+
+What the agent cannot reach is your terminal. So the code exists only when the
+board's own stdout is a tty, which means **you** started it. The board that
+`mission init` spawns in the background is read-only and has no code at all —
+its output goes to a log file the agent could read.
+
+An agent can still get the code if you paste your terminal into the chat. That
+is you choosing to share it — the same shape as the `AGENT_MISSION_I_AM_HUMAN`
+override: a decision, not an accident.
 
 ## Session health
 
