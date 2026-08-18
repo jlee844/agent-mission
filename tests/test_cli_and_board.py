@@ -425,3 +425,33 @@ def test_ambiguity_asks_instead_of_guessing(tmp_path, monkeypatch):
     with pytest.raises(NoSessionError) as e:
         resolve_session(None, str(repo))
     assert {c[0] for c in e.value.candidates} == {"sess-a", "sess-b"}
+
+
+def test_a_delegated_mission_attaches_to_its_parent(tmp_path, monkeypatch):
+    """One real session produced five cards in testing, four of them its own
+    delegated children. A slice of the work is not a peer of the whole."""
+    from agent_mission import board
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setattr(board, "live", lambda: [])
+    parent = MissionStore(root_for("p"))
+    parent.create("p", "/repo", "the whole thing", by="human")
+    child = MissionStore(root_for("p.slice"))
+    child.create("p.slice", "/repo", "one slice", by="human",
+                 parent_session="p", parent_item="item1")
+
+    rows = board.snapshot()
+    assert [r["full"] for r in rows] == ["p"], "the child is not a top-level card"
+    assert [k["title"] for k in rows[0]["children"]] == ["one slice"]
+
+
+def test_an_orphaned_child_is_still_shown(tmp_path, monkeypatch):
+    """If the parent is not on the board, hiding the child loses the work
+    entirely -- which is the failure this whole tool exists to prevent."""
+    from agent_mission import board
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setattr(board, "live", lambda: [])
+    MissionStore(root_for("c")).create("c", "/repo", "orphan slice", by="human",
+                                       parent_session="gone", parent_item="i")
+    assert [r["full"] for r in board.snapshot()] == ["c"]

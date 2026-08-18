@@ -71,6 +71,8 @@ def snapshot() -> list[dict]:
             h = inspect_health(tp)
             rows.append({
                 "id": short_id(sid), "full": sid,
+                "parent": m.parent_session if m else "",
+                "parent_item": m.parent_item if m else "",
                 "cwd": proc["cwd"].replace(str(Path.home()), "~"),
                 "procs": proc["procs"],
                 "has_mission": m is not None, "ended": False,
@@ -113,6 +115,7 @@ def snapshot() -> list[dict]:
             a = activity(tp) if tp else None
             rows.append({
                 "id": short_id(d.name), "full": d.name,
+                "parent": m.parent_session, "parent_item": m.parent_item,
                 "cwd": (m.cwd or "").replace(str(Path.home()), "~"),
                 "procs": 0, "ended": True,
                 "has_mission": True, "title": m.title, "objective": m.objective,
@@ -130,6 +133,23 @@ def snapshot() -> list[dict]:
                 "exact_repeats": 0, "worst_repeat": None, "collisions": [],
                 "mtime": (d / "events.jsonl").stat().st_mtime,
             })
+    # A delegated mission is a slice of its parent's work, not a peer. Left as
+    # its own card it triples the board: one real session produced five cards
+    # in testing, four of them children. Attach it to the parent instead, and
+    # only promote it if the parent is not on the board at all.
+    by_full = {r["full"]: r for r in rows}
+    kids: list[dict] = []
+    for r in rows:
+        parent = by_full.get(r.get("parent") or "")
+        if parent is not None and parent is not r:
+            parent.setdefault("children", []).append({
+                "id": r["id"], "title": r["title"], "item": r["parent_item"],
+                "done": r["done"], "total": r["total"], "calls": r["calls"],
+            })
+            kids.append(r)
+    rows = [r for r in rows if r not in kids]
+    for r in rows:
+        r.setdefault("children", [])
     return sorted(rows, key=lambda r: (r.get("ended", False),
                                        not r["has_mission"], -r["mtime"]))
 
@@ -206,9 +226,47 @@ padding-top:.6rem;border-top:1px solid var(--soft);line-height:1.7}
 background:var(--badw);color:var(--bad)}
 .flag.calm{background:var(--soft);color:var(--mut)}
 .flagdet{font-family:var(--mono);font-size:.68rem;color:var(--mut);margin-top:.4rem;line-height:1.6}
+.doneblock{margin-top:.5rem}
+.doneblock summary{font-family:var(--mono);font-size:.66rem;letter-spacing:.08em;
+text-transform:uppercase;color:var(--mut);cursor:pointer;list-style:none;
+padding:.2rem 0;-webkit-user-select:none;user-select:none}
+.doneblock summary::before{content:"▸ ";font-size:.7rem}
+.doneblock[open] summary::before{content:"▾ "}
+.doneblock summary:hover{color:var(--ink)}
+.chk.flat{padding-left:.1rem;opacity:.85}
+/* Header stays put; only the board scrolls, so search and the counts are
+   reachable however far down you are. */
+header{position:sticky;top:0;z-index:5;background:var(--bg);padding-bottom:.7rem;
+flex-wrap:wrap;row-gap:.55rem}
+#q{font-family:var(--sans);font-size:.8rem;color:var(--ink);background:var(--card);
+border:1px solid var(--rule);border-radius:4px;padding:.32rem .6rem;width:15rem;
+outline:none}
+#q:focus{border-color:var(--ok)}
+.chips{display:flex;gap:.3rem}
+.chip{font-family:var(--mono);font-size:.66rem;letter-spacing:.04em;padding:.26rem .55rem;
+border-radius:3px;border:1px solid var(--rule);background:var(--card);color:var(--mut);
+cursor:pointer}
+.chip[aria-pressed=true]{background:var(--ok);border-color:var(--ok);color:var(--bg)}
+.kids{margin-top:.75rem;padding-top:.6rem;border-top:1px solid var(--soft)}
+.kid{display:flex;gap:.5rem;align-items:baseline;font-size:.8rem;padding:.14rem 0}
+.kid .kn{font-family:var(--mono);font-size:.66rem;color:var(--mut);flex:none}
+.kid .kt{flex:1;text-wrap:pretty}
+.kid .kp{font-family:var(--mono);font-size:.66rem;color:var(--mut);flex:none}
+.spacer{flex:1}
 </style>
-<header><h1>Missions</h1><span id=age></span></header>
+<header>
+  <h1>Missions</h1>
+  <input id=q type=search placeholder="filter by goal, task, folder…" autocomplete=off>
+  <div class=chips>
+    <button class=chip data-f=all aria-pressed=true>all</button>
+    <button class=chip data-f=live aria-pressed=false>live</button>
+    <button class=chip data-f=todo aria-pressed=false>needs you</button>
+    <button class=chip data-f=ended aria-pressed=false>ended</button>
+  </div>
+  <span class=spacer></span><span id=age></span>
+</header>
 <div class=grid id=g></div>
+<p class=none id=empty hidden>Nothing matches that.</p>
 <script>
 const esc=t=>(t||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
 // One row of the plan. `flat` drops the connectors: inside the finished fold
@@ -228,9 +286,31 @@ function row(i,flat){
   </li>`;
 }
 const openFolds=new Set();
+let FILTER='all', QUERY='';
+
+// Everything a card is searchable BY: the goal, every task, the folder, and
+// the ids -- searching a board of goals for a task you half remember is the
+// case that matters, and matching only the title fails it.
+const haystack = s => [s.title, s.objective, s.cwd, s.id,
+  ...(s.tree||[]).map(i=>i.t), ...(s.criteria||[]),
+  ...(s.children||[]).map(k=>k.title)].join(' ').toLowerCase();
+
+const passes = s =>
+  (QUERY === '' || haystack(s).includes(QUERY)) &&
+  (FILTER === 'all'
+   || (FILTER === 'live'  && !s.ended)
+   || (FILTER === 'ended' && s.ended)
+   // "needs you" is the only filter that is about YOUR attention rather than
+   // the session's state: proposals waiting, or no mission written at all.
+   || (FILTER === 'todo'  && (s.pending_accept > 0 || !s.has_mission)));
+
 async function tick(){
-  let d; try{ d=await (await fetch('/data')).json() }catch(e){ return }
-  document.getElementById('age').textContent=new Date().toLocaleTimeString();
+  let all; try{ all=await (await fetch('/data')).json() }catch(e){ return }
+  const d = all.filter(passes);
+  document.getElementById('age').textContent =
+    (d.length === all.length ? `${all.length} sessions` : `${d.length} of ${all.length}`)
+    + ' · ' + new Date().toLocaleTimeString();
+  document.getElementById('empty').hidden = d.length > 0 || all.length === 0;
   document.getElementById('g').innerHTML = d.length? d.map(s=>`
    <div class="card ${s.ended?'ended':''}">
      <div class=sid><span>${s.id} · ${esc(s.cwd)}</span>
@@ -264,6 +344,10 @@ async function tick(){
         s.collisions.map(f=>esc(f)).join(' · ')}</div>`:''}
      ${s.worst_repeat&&s.worst_repeat.sim>=0.999?`<div class=flagdet>a reply was repeated
         verbatim ${s.worst_repeat.gap} replies later</div>`:''}
+     ${(s.children||[]).length?`<div class=kids><h3>Delegated</h3>${
+        s.children.map(k=>`<div class=kid><span class=kn>${esc(k.id)}</span>
+          <span class=kt>${esc(k.title)}</span>
+          <span class=kp>${k.total?k.done+'/'+k.total:'—'}</span></div>`).join('')}</div>`:''}
      <div class=meta>${s.calls.toLocaleString()} calls · ${s.files} files ·
        ${s.tests} test runs · <span class="${s.failures?'warn':''}">${s.failures} failed</span>
        ${s.topfiles.length?`<br>${s.topfiles.slice(0,3).map(f=>esc(f.f)+' '+f.n+'x').join(' · ')}`:''}</div>
@@ -277,6 +361,15 @@ document.getElementById('g').addEventListener('toggle', e=>{
   const sid = e.target.dataset && e.target.dataset.sid;
   if (sid) e.target.open? openFolds.add(sid) : openFolds.delete(sid);
 }, true);
+document.getElementById('q').addEventListener('input', e=>{
+  QUERY = e.target.value.trim().toLowerCase(); tick();
+});
+document.querySelectorAll('.chip').forEach(b=>b.addEventListener('click', ()=>{
+  FILTER = b.dataset.f;
+  document.querySelectorAll('.chip').forEach(
+    o=>o.setAttribute('aria-pressed', String(o===b)));
+  tick();
+}));
 tick(); setInterval(tick,4000);
 </script>"""
 

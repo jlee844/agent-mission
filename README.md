@@ -180,7 +180,7 @@ route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
-There are 97 tests and most of them guard exactly this.
+There are 103 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store has always refused agent
 writes. The *CLI* could not tell who typed the command, so it passed
@@ -239,6 +239,18 @@ together, refreshing:
 - measured activity: calls, files changed, test runs, failed calls
 - sessions with no mission say so, and tell you the command
 
+**Search and filter.** The header carries a search box — matching the goal,
+every task in the plan, the criteria, the folder and the session id, because
+the case that matters is looking for a task you half remember across a board of
+goals — and four filters: `all`, `live`, `needs you` (proposals awaiting your
+accept, or a session with no mission at all) and `ended`. The header stays put
+while the board scrolls.
+
+**Delegated missions attach to their parent** rather than standing as their own
+cards. One session under test produced five cards, four of them its own
+children. A child whose parent is not on the board is still shown — hiding it
+would lose the work entirely.
+
 **One board, not one per session.** `mission init` in a second session joins
 the board already running and appears as another card — same URL, no second
 server. The port is recorded and *probed*, because a recorded port whose
@@ -290,7 +302,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 97 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 103 tests, no network
 ```
 
 ## Status
@@ -298,7 +310,7 @@ pip install -e ".[dev]" && python -m pytest tests/ -q     # 97 tests, no network
 Not on PyPI yet — install from source as above. Session discovery is Claude
 Code specific; the store and the board are not.
 
-**Python 3.9 through 3.14**, all 97 tests passing on each. The floor is 3.9
+**Python 3.9 through 3.14**, all 103 tests passing on each. The floor is 3.9
 because that is the Python macOS ships: the package originally declared 3.10+,
 which would have told a user on stock macOS Python that it was unsupported
 while it ran fine.
