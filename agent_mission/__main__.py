@@ -870,6 +870,11 @@ def cmd_version(a) -> int:
     return 0
 
 
+def _surfaces_shared(a):
+    from . import setup_surfaces as S
+    return S.status(getattr(a, "settings", None), getattr(a, "dest", None))
+
+
 def _surfaces(a) -> list[tuple[str, bool, str]]:
     """Each surface, and whether it is actually installed on THIS machine."""
     p, data = _read_settings(a)
@@ -901,11 +906,12 @@ def cmd_check(a) -> int:
     The contract this exists to make true: re-running `mission setup` is always
     the complete fix, and there is never a second instruction to follow.
     """
-    rows = _surfaces(a)
+    rows = _surfaces_shared(a)
     print()
-    for name, ok, detail in rows:
-        print(f"  {'✓' if ok else '·'} {name:<16} {'installed' if ok else 'missing':<10} {detail}")
-    missing = [n for n, ok, _ in rows if not ok]
+    for r in rows:
+        print(f"  {'✓' if r['ok'] else '·'} {r['name']:<16} "
+              f"{'installed' if r['ok'] else 'missing':<10} {r['detail']}")
+    missing = [r["name"] for r in rows if not r["ok"]]
     if missing:
         print(f"\n  {len(missing)} missing — `mission setup` in a terminal "
               f"installs everything.\n")

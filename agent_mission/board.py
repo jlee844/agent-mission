@@ -349,6 +349,16 @@ cursor:pointer}
 .kid .kt{flex:1;text-wrap:pretty}
 .kid .kp{font-family:var(--mono);font-size:.66rem;color:var(--mut);flex:none}
 .spacer{flex:1}
+#setup{border:1px solid var(--rule);background:var(--card);border-radius:7px;
+padding:.75rem .95rem;margin-bottom:1.1rem;font-size:.85rem}
+#setup h4{margin:0 0 .5rem;font-family:var(--mono);font-size:.66rem;
+letter-spacing:.1em;text-transform:uppercase;color:var(--mut);font-weight:500}
+#setup .srow{display:flex;align-items:baseline;gap:.6rem;padding:.22rem 0}
+#setup .sname{width:9rem;flex:none}
+#setup .sdet{flex:1;color:var(--mut);font-family:var(--mono);font-size:.7rem;
+overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#setup .diff{font-family:var(--mono);font-size:.7rem;color:var(--mut);
+padding:.2rem 0 .4rem 9.6rem;line-height:1.6}
 .act{font-family:var(--mono);font-size:.64rem;padding:.1rem .35rem;border-radius:3px;
 border:1px solid var(--rule);background:none;color:var(--mut);cursor:pointer;
 flex:none;margin-left:.4rem;opacity:0;transition:opacity .12s}
@@ -429,6 +439,7 @@ flex:none;width:9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   <span id=age></span>
 </header>
 <div id=strip></div>
+<div id=setup hidden></div>
 <div class=grid id=g></div>
 <div id=code hidden></div>
 <p class=none id=empty hidden>Nothing matches that.</p>
@@ -483,6 +494,27 @@ async function act(action, session, ids, text){
   }
   tick();
   return r.ok;
+}
+
+// The Setup panel: same five surfaces as `mission setup --check`, same
+// functions behind them. It only exists on a board a person started, because
+// the endpoint itself does not exist on a read-only one.
+async function renderSetup(){
+  const box = document.getElementById('setup');
+  if (!WRITABLE || !CODE()){ box.hidden = true; return; }
+  let d; try{ d = await (await fetch('/api/setup')).json() }catch(e){ box.hidden = true; return }
+  const missing = d.surfaces.filter(s=>!s.ok);
+  if (!missing.length){ box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `<h4>Setup — ${missing.length} of ${d.surfaces.length} not installed</h4>` +
+    d.surfaces.map(s=>`
+      <div class=srow>
+        <span class=sname>${s.ok?'✓':'·'} ${esc(s.name)}</span>
+        <span class=sdet>${esc(s.detail)}</span>
+        ${s.ok?'':`<button class="act ok" data-setup="${esc(s.name)}">install</button>`}
+      </div>
+      ${s.ok?'':`<div class=diff>${s.plan.map(c=>'→ '+esc(c)).join('<br>') ||
+                                    'nothing to change'}</div>`}`).join('');
 }
 
 function askForCode(){
@@ -560,6 +592,7 @@ async function tick(){
   strip.className = bits.length? '' : 'clear';
   strip.innerHTML = bits.length? bits.join('')
     : '<span>Nothing is waiting on you.</span>';
+  renderSetup();
   document.getElementById('g').innerHTML = d.length? d.map(s=>`
    <div class="card ${s.ended?'ended':''} ${s.state}">
      <div class=rowline><span class="dot ${s.state}" title="${s.state}"></span>
@@ -631,6 +664,20 @@ document.getElementById('g').addEventListener('toggle', e=>{
 }, true);
 // The strip's buttons are rewritten on every tick, so the listener lives on
 // the container, which is not.
+document.getElementById('setup').addEventListener('click', async e=>{
+  const b = e.target.closest('[data-setup]'); if(!b) return;
+  const name = b.dataset.setup;
+  const diff = b.closest('.srow').nextElementSibling.textContent.trim();
+  // The diff is on screen already; confirming means you read it.
+  if (!confirm(`Install "${name}"?\n\n${diff}\n\nsettings.json is backed up first.`)) return;
+  b.disabled = true; b.textContent = '…';
+  const r = await fetch('/', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({code: CODE(), action:'setup', session:'', ids:[], text:name})});
+  const out = await r.json().catch(()=>({}));
+  if (!r.ok) alert(out.error || 'failed');
+  else if (out.backup) console.log('backup:', out.backup);
+  renderSetup();
+});
 document.getElementById('g').addEventListener('click', e=>{
   const b = e.target.closest('[data-do]'); if(!b) return;
   const sid = b.dataset.s;
@@ -743,6 +790,21 @@ class _H(BaseHTTPRequestHandler):
                 "mission_board": True, "pid": os.getpid(),
                 "home": str(_missions_home()), "version": __version__,
             }).encode(), "application/json")
+        if self.path.startswith("/api/setup"):
+            # C10c: a read-only board serves NO setup route at all. Hiding the
+            # buttons while leaving the endpoint live is the classic version of
+            # this bug -- the background board that `mission init` spawns writes
+            # its output to a log the agent can read, so it must not be able to
+            # reach settings.json by any path, not merely be discouraged from
+            # showing the option.
+            if not WRITES.enabled:
+                return self._send(404, b'{"error":"read-only board"}',
+                                  "application/json")
+            from . import setup_surfaces as S
+            return self._send(200, json.dumps(
+                {"surfaces": [dict(r, plan=S.plan(r["name"])["changes"])
+                              for r in S.status()]}).encode(),
+                "application/json")
         if self.path.startswith("/data"):
             # `writable` says a code will be ACCEPTED, never what it is.
             home = str(_missions_home())
@@ -765,6 +827,11 @@ class _H(BaseHTTPRequestHandler):
 
     def do_POST(self):                                   # noqa: N802
         try:
+            if not WRITES.enabled:
+                # Same rule as the GET: no route, not a hidden button.
+                return self._send(403, json.dumps(
+                    {"error": "this board is read-only"}).encode(),
+                    "application/json")
             n = int(self.headers.get("Content-Length") or 0)
             if n > self.MAX_BODY:
                 return self._send(413, json.dumps(

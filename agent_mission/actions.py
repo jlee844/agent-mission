@@ -28,7 +28,7 @@ import secrets
 
 from .store import MissionStore, root_for
 
-ACTIONS = ("accept", "done", "remove", "note")
+ACTIONS = ("accept", "done", "remove", "note", "setup")
 
 
 class Unauthorised(PermissionError):
@@ -74,6 +74,14 @@ def apply(session: Session, code: str, action: str, sid: str,
     session.check(code)
     if action not in ACTIONS:
         raise ValueError(f"unknown action: {action}")
+    if action == "setup":
+        # SETUP TIER. Config work reaches a button because it is idempotent,
+        # shown as a diff before it applies, and backed up -- not because it is
+        # unimportant. Protected fields and judgement (set/accept/done/remove)
+        # stay terminal-only however convenient a button would be.
+        from . import setup_surfaces as S
+        return S.install(text)
+
     st = MissionStore(root_for(sid))
     if st.load() is None:
         raise ValueError(f"no mission for {sid}")

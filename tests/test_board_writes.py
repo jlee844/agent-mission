@@ -174,3 +174,81 @@ def test_a_second_board_for_the_same_store_refuses_to_start(monkeypatch, tmp_pat
                         lambda self, addr, h: started.append(addr[1]))
     board.serve(8977, writable=False)
     assert started == [], "it pointed at the running one instead of binding"
+
+
+# ── C10: setup from the board, same implementation as the CLI ────────────────
+
+def test_a_readonly_board_serves_no_setup_route_at_all(tmp_path, monkeypatch):
+    """The classic version of this bug is hiding the button while leaving the
+    POST live. The background board `mission init` spawns writes to a log the
+    agent can read, so it must not be able to reach settings.json by ANY path
+    -- not merely be discouraged from offering it."""
+    import threading
+    import urllib.error
+    import urllib.request
+    from agent_mission import board
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    board.WRITES = Session(enabled=False)
+    srv = board.ThreadingHTTPServer(("127.0.0.1", 0), board._H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as get:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/setup", timeout=3)
+        assert get.value.code == 404, "no route, not an empty one"
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/",
+            data=json.dumps({"action": "setup", "text": "deny rules",
+                             "code": "whatever"}).encode(),
+            headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as post:
+            urllib.request.urlopen(req, timeout=3)
+        assert post.value.code == 403
+    finally:
+        srv.shutdown()
+
+
+def test_the_board_and_the_cli_install_through_the_same_functions(tmp_path,
+                                                                  monkeypatch):
+    """One implementation, two front-ends. If the board had its own copy it
+    would drift from what the terminal does, and you would have two answers to
+    'is this installed'."""
+    from agent_mission import actions, setup_surfaces as S
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}")
+    monkeypatch.setattr(S, "settings_path", lambda e=None: settings)
+    monkeypatch.setattr(S, "commands_dir", lambda e=None: tmp_path / "c")
+
+    before = S.status()
+    assert not any(r["ok"] for r in before if r["name"] == "deny rules")
+
+    s = Session(enabled=True)
+    out = actions.apply(s, s.code, "setup", "", [], "deny rules")
+    assert out["applied"] and out["backup"], "applied, and backed up first"
+    assert all(r["ok"] for r in S.status() if r["name"] == "deny rules")
+
+    again = actions.apply(s, s.code, "setup", "", [], "deny rules")
+    assert again["applied"] == [] and again["why"] == "already current"
+
+
+def test_a_plan_is_shown_before_anything_is_written(tmp_path, monkeypatch):
+    from agent_mission import setup_surfaces as S
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}")
+    monkeypatch.setattr(S, "settings_path", lambda e=None: settings)
+
+    p = S.plan("deny rules")
+    assert len(p["changes"]) == len(S.DENY_RULES)
+    assert settings.read_text() == "{}", "plan() writes nothing"
+
+
+def test_setup_from_the_board_needs_the_code_like_everything_else(tmp_path,
+                                                                  monkeypatch):
+    from agent_mission import actions
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    s = Session(enabled=True)
+    with pytest.raises(Unauthorised):
+        actions.apply(s, "000000", "setup", "", [], "deny rules")

@@ -47,6 +47,42 @@ Six hex characters is 16.7 million values, and on loopback a full sweep is hours
 rather than years — so **five wrong codes lock writes** until the board is
 restarted.
 
+## Which tier a command belongs in
+
+A rule, not a list, so the next command has an obvious home:
+
+**Terminal only** — anything that writes a protected field or exercises
+judgement: `set`, `accept`, `done`, `remove`, `add`. No button, however
+convenient, because the point of the gate is that convenience does not move it.
+
+**Setup tier — may reach a button** — configuration that is *idempotent*, shown
+as a *diff before it applies*, and *backed up*. Installing the statusline is
+recoverable and repeatable; ticking an item is neither.
+
+Those three properties are the whole test. A future command that has them can
+have a button; one that does not, cannot.
+
+## The board's Setup panel, and what it costs
+
+The board a person starts shows the same five surfaces as `mission setup
+--check`, with an Install button each, behind the same write code. Both front
+ends call the same functions — if the board had its own copy it would drift
+from what the terminal does, and you would have two answers to "is this
+installed".
+
+Two honest costs:
+
+**The code amortizes the terminal; it does not eliminate it.** You still start
+the board yourself to get the code. That is the design, not an oversight.
+
+**Widening the board's write surface to `settings.json` makes the code the only
+barrier for that file.** Mitigated by the code never touching disk — and, more
+importantly, by the read-only board serving **no setup route at all**. Not a
+hidden button: `GET /api/setup` returns 404 and every POST returns 403 on a
+board that was started in the background. Hiding the UI while leaving the
+endpoint live is the classic version of this bug, and a test demands the
+route's absence rather than the button's.
+
 ## The limits, stated plainly
 
 **The `AGENT_MISSION_I_AM_HUMAN=1` override exists.** An agent can set it. It

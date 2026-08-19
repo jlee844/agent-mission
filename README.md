@@ -36,6 +36,12 @@ the keyboard.
 mission setup --check     # which surfaces are live here; exits 1 if any is missing
 ```
 
+Or install them from the board: run `mission board` yourself, enter the write
+code, and a **Setup panel** lists the same five surfaces with an Install button
+each — showing the exact settings change before it applies, and backing the file
+up first. Both front ends call the same functions, so the board can never drift
+from what the terminal would have done.
+
 Re-running `mission setup` is always the complete fix. There is never a second
 instruction to follow.
 
@@ -89,6 +95,7 @@ rules. See [SECURITY.md](docs/SECURITY.md) for how, and for what that does
 | `observe <field> <text>` | record evidence, a decision, or a note |
 | `board` | the shared board (`--stop`; run it yourself for write buttons) |
 | `setup --check` | which surfaces are installed, missing, or outdated |
+| — | the board's Setup panel installs the same five, behind the write code |
 | `setup` | slash command, deny rules, statusline, hooks |
 | `version` | the build, and every command that exists right now |
 

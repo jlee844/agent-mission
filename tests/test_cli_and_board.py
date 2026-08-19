@@ -990,3 +990,14 @@ def test_session_accepts_a_name_not_only_a_uuid(tmp_path, monkeypatch, capsys):
     assert main(["pending", "--session", "Career hub"]) == 0
     assert "1 awaiting you" in capsys.readouterr().out
     assert main(["pending", "--session", "abc123"]) == 0, "prefix works too"
+
+
+def test_the_tier_rule_is_stated_as_a_rule_not_a_list():
+    """A list needs a per-command argument every time something new is added.
+    A rule -- idempotent, diff-shown, backed up -- gives the next command an
+    obvious home."""
+    sec = (Path(__file__).resolve().parents[1] / "docs" / "SECURITY.md").read_text()
+    assert "Which tier a command belongs in" in sec
+    for prop in ("idempotent", "diff before it applies", "backed up"):
+        assert prop in sec
+    assert "no setup route at all" in sec, "and the read-only guarantee"
