@@ -1077,3 +1077,13 @@ def test_every_actionable_state_shows_how_to_act_on_it():
     assert "scrollIntoView" in PAGE and "flash" in PAGE, \
         "`show` takes you to the card instead of only re-filtering"
     assert "user-select:all" in PAGE, "the command is one click to select"
+
+
+def test_proposals_render_above_the_agreed_plan():
+    """Mixed into the plan, a proposal reads as a task you already signed up
+    for. The one thing on a card that asks something of you should not have to
+    be hunted for among the things that do not."""
+    from agent_mission.board import PAGE
+    assert "waiting on you</h3>" in PAGE
+    assert PAGE.index("class=asks") < PAGE.index("<ul class=chk>${agreed"), \
+        "the asking block is emitted before the agreed list"

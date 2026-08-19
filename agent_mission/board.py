@@ -538,6 +538,10 @@ cursor:copy;overflow-x:auto;white-space:nowrap}
 .howto:hover{border-color:var(--mut)}
 .why{color:var(--mut);font-size:.74rem;margin:.3rem 0 .1rem;line-height:1.5}
 .card.flash{border-color:var(--ok)}
+.asks{border:1px solid var(--bad);background:var(--badw);border-radius:5px;
+padding:.3rem .55rem .45rem;margin:.5rem 0 .6rem}
+.asks h3{margin:.15rem 0 .1rem;color:var(--bad)}
+.asks .chk{max-height:11rem}
 .st{display:flex;align-items:center;gap:.4rem}
 /* No border tint for "waiting". On a real board five of six sessions had
    proposals outstanding, so every card lit up and the accent meant nothing
@@ -762,7 +766,15 @@ async function tick(){
          ${(s.pending_accept && !(WRITABLE&&CODE()))?`
            <div class=why>To accept them, in your own terminal:</div>
            <div class=howto>mission accept --pending --on ${esc(s.id)}</div>`:''}
-         <ul class=chk>${visible(s.tree).map(i=>row(i,false,s.full)).join('')}</ul><!-- map(row) passes the INDEX as row's second argument, so every row
+         ${(()=>{const v=visible(s.tree), ask=v.filter(i=>!i.ok&&!i.branch),
+                  agreed=v.filter(i=>i.ok||i.branch);
+            // Waiting-on-you sits ABOVE the agreed work. Mixed into the plan a
+            // proposal reads as a task you have already signed up for, and the
+            // one thing on a card that asks something of you should not have to
+            // be hunted for among the things that do not.
+            return (ask.length? `<div class=asks><h3>${ask.length} waiting on you</h3>
+                     <ul class="chk flat">${ask.map(i=>row(i,true,s.full)).join('')}</ul></div>`:'')
+                 + `<ul class=chk>${agreed.map(i=>row(i,false,s.full)).join('')}</ul>`;})()}<!-- map(row) passes the INDEX as row's second argument, so every row
      after the first rendered in flat mode and the tree lost every
      connector. The nesting was in the data the whole time. -->
          ${s.tree.some(i=>i.hid)?`<details class=doneblock data-sid="${s.id}" ${
