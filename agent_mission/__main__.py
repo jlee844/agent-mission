@@ -23,7 +23,8 @@ from .daemon import ensure as ensure_board, running as board_running, stop as bo
 from .session import (NoSessionError, activity, current_session_id,
                       resolve_session, short_id, transcript_for)
 from .store import (FIELD_AUTHORITY, Authority, Item, MissionStore,
-                    NoSuchItemError, ProtectedFieldError, children_of, root_for)
+                    NoMissionError, NoSuchItemError, ProtectedFieldError,
+                    children_of, root_for)
 
 TEMPLATE = """\
 # Your mission for this session. Lines starting with # are ignored.
@@ -761,6 +762,14 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     try:
         return (a.fn if getattr(a, "fn", None) else cmd_show)(a)
+    except NoMissionError:
+        # Reported from another session: `mission add` on an empty store raised
+        # NoSuchItemError on the id it had just written, and `propose` was
+        # worse -- it appended an event nothing could ever read back, silently.
+        print("\n  no mission for this session yet."
+              "\n  `mission init` writes one — it takes a minute, and the agent"
+              "\n  cannot change it afterwards.\n")
+        return 1
     except NoSessionError as e:
         # A person in their own terminal is the NORMAL caller of the human-only
         # commands, and they used to get a pathlib TypeError.

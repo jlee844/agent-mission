@@ -52,6 +52,17 @@ class ProtectedFieldError(PermissionError):
     """Raised when an agent tries to write a field the human owns."""
 
 
+class NoMissionError(LookupError):
+    """Raised when a write is attempted on a session that has no mission.
+
+    Every write except `create` folds over a log that begins with a `created`
+    event. Without one, `propose` used to append happily and the item was then
+    unreadable forever -- load() returns None, so the event was on disk and
+    invisible. `add`, which proposes and accepts in one step, turned the same
+    bug into a NoSuchItemError traceback on the id it had just written.
+    """
+
+
 class NoSuchItemError(KeyError):
     """Raised for an item id that is not in the plan.
 
@@ -242,6 +253,7 @@ class MissionStore:
 
     def set_protected(self, fieldname: str, value: Any, by: str) -> dict:
         """Only a human may write a protected field. No agent path exists."""
+        self._require_mission()
         if fieldname not in PROTECTED_FIELDS:
             raise ValueError(f"{fieldname} is not protected")
         if by != "human":
@@ -249,9 +261,14 @@ class MissionStore:
                 f"{fieldname} is yours; the agent cannot set it")
         return self._append("set", by, field=fieldname, value=value)
 
+    def _require_mission(self) -> None:
+        if self.load() is None:
+            raise NoMissionError(self.root.name)
+
     def propose(self, text: str, by: str = "agent",
                 parent: str | None = None) -> dict:
         """Suggest a node. Inert until accepted. `parent` nests it under another."""
+        self._require_mission()
         return self._append("proposed", by, item_id=uuid.uuid4().hex[:8],
                             text=text, parent=parent)
 
@@ -288,6 +305,7 @@ class MissionStore:
     def observe(self, fieldname: str, text: str, by: str = "agent") -> dict:
         if FIELD_AUTHORITY.get(fieldname) is not Authority.OBSERVABLE:
             raise ValueError(f"{fieldname} is not observable")
+        self._require_mission()
         return self._append("observed", by, field=fieldname, value=text)
 
     # ── reading ──────────────────────────────────────────────────────────

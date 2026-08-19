@@ -384,3 +384,37 @@ def test_an_agent_cannot_add_an_already_accepted_item(tmp_path, monkeypatch, cap
     assert MissionStore(root_for("s")).load().checklist == []
     assert "not a terminal" in capsys.readouterr().out
     assert "Bash(mission add:*)" in DENY_RULES, "and the harness blocks it too"
+
+
+# ── writing to a session that has no mission ─────────────────────────────────
+
+def test_proposing_without_a_mission_is_refused_not_silently_written(tmp_path):
+    """The worse half of a bug reported from another session. `add` crashed
+    with NoSuchItemError on the id it had just written; `propose` did NOT
+    crash -- it appended an event to disk that load() can never fold, because
+    there is no `created` event to start from. No error, no item, and a stray
+    directory left behind."""
+    from agent_mission.store import NoMissionError
+    st = MissionStore(tmp_path / "ghost")
+    with pytest.raises(NoMissionError):
+        st.propose("an idea", by="agent")
+    assert not (tmp_path / "ghost").exists(), "nothing written at all"
+
+
+def test_observing_and_setting_without_a_mission_are_refused_too(tmp_path):
+    from agent_mission.store import NoMissionError
+    st = MissionStore(tmp_path / "ghost")
+    with pytest.raises(NoMissionError):
+        st.observe("notes", "a note")
+    with pytest.raises(NoMissionError):
+        st.set_protected("objective", "a goal", by="human")
+
+
+def test_add_on_an_empty_store_explains_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
+    assert main(["add", "Backend", "--session", "ghost"]) == 1
+    out = capsys.readouterr().out
+    assert "no mission for this session yet" in out
+    assert "Traceback" not in out and "NoSuchItemError" not in out
