@@ -104,6 +104,24 @@ def _store(sid: str) -> MissionStore:
     return MissionStore(root_for(sid))
 
 
+def _resolve(a):
+    """One resolver for --session and --into: exact id, prefix, or name.
+
+    Nobody types a uuid. --into accepted a name from the day it shipped while
+    --session, the flag every human-only command needs, took only the full id.
+    """
+    given = getattr(a, "session", None)
+    if given and not (root_for(given) / "events.jsonl").exists():
+        try:
+            return find_session(given)
+        except NoSessionError:
+            # No mission matches it -- so treat it as a literal id. `init` is
+            # exactly this case: the session it is about to create has no
+            # events yet, so name resolution has nothing to match.
+            return given
+    return resolve_session(given, getattr(a, "cwd", None))
+
+
 HUMAN_ENV = "AGENT_MISSION_I_AM_HUMAN"
 _SUBCOMMANDS: set[str] = set()
 
@@ -135,13 +153,14 @@ def _human_gate(what: str) -> bool:
     print(f"  {what} is yours, and this is not a terminal — refusing.\n"
           f"  If you are an agent: `mission propose \"...\"` instead; it needs\n"
           f"  no permission and stays inert until a person accepts it.\n"
+          f"  To compose the command for them: `mission help <command>`.\n"
           f"  If you are a person in a pipeline: {HUMAN_ENV}=1 ahead of the "
           f"command.")
     return False
 
 
 def cmd_init(a) -> int:
-    sid = resolve_session(a.session, getattr(a, 'cwd', None))
+    sid = _resolve(a)
     if not sid:
         print("  no session id. Run inside Claude Code, or pass --session.")
         return 1
@@ -228,7 +247,7 @@ def _announce_board(a) -> None:
 
 
 def cmd_show(a) -> int:
-    sid = resolve_session(a.session, getattr(a, 'cwd', None))
+    sid = _resolve(a)
     m = _store(sid).load() if sid else None
     if not m:
         print("  no mission for this session. `mission init` to write one.")
@@ -290,7 +309,7 @@ def cmd_set(a) -> int:
     """Change a protected field. Goals move; a mission you cannot edit is a
     mission you abandon and rewrite from scratch."""
     from .store import PROTECTED_FIELDS
-    sid = resolve_session(a.session, getattr(a, 'cwd', None))
+    sid = _resolve(a)
     st = _store(sid)
     if st.load() is None:
         print("  no mission for this session — `mission init` first")
@@ -317,7 +336,7 @@ def cmd_import(a) -> int:
     changed is one you stop trusting with the plan.
     """
     from .importer import norm, parse
-    sid = resolve_session(a.session, getattr(a, 'cwd', None))
+    sid = _resolve(a)
     st = _store(sid)
     m = st.load()
     if m is None:
@@ -418,7 +437,7 @@ def cmd_delegate(a) -> int:
     and non-goals are inherited unchanged. Refusing would only push a subagent
     into working with no recorded goal at all.
     """
-    sid = resolve_session(a.session, getattr(a, 'cwd', None))
+    sid = _resolve(a)
     st = _store(sid)
     m = st.load()
     if m is None:
@@ -476,7 +495,7 @@ def cmd_detour(a) -> int:
     drift all failed (F34), and the honest residue is that going off is
     something you say, not something a detector infers.
     """
-    sid = resolve_session(a.session, getattr(a, "cwd", None))
+    sid = _resolve(a)
     st = _store(sid)
     st.detour(a.label, by="human" if _at_a_keyboard() else "agent")
     depth = len(st.load().detours)
@@ -487,7 +506,7 @@ def cmd_detour(a) -> int:
 
 def cmd_return(a) -> int:
     """Close the innermost detour, and replay the goal you left behind."""
-    sid = resolve_session(a.session, getattr(a, "cwd", None))
+    sid = _resolve(a)
     st = _store(sid)
     m = st.load()
     if m is None:
@@ -532,7 +551,7 @@ def cmd_whereami(a) -> int:
     that can fail is a statusline that gets removed.
     """
     try:
-        sid = resolve_session(a.session, getattr(a, "cwd", None))
+        sid = _resolve(a)
         m = _store(sid).load()
     except Exception:
         print("")                       # silent rather than noisy or broken
@@ -585,7 +604,7 @@ def cmd_observe(a) -> int:
     agent it could observe, and there was no subcommand. So the level the
     design most encourages the agent to use went nowhere.
     """
-    sid = resolve_session(a.session, getattr(a, "cwd", None))
+    sid = _resolve(a)
     st = _store(sid)
     st.observe(a.field, a.text, by="human" if _at_a_keyboard() else "agent")
     print(f"  recorded under {a.field}")
@@ -595,7 +614,7 @@ def cmd_observe(a) -> int:
 
 def cmd_pending(a) -> int:
     """Everything waiting on you, with the command to clear it."""
-    sid = resolve_session(a.session, getattr(a, "cwd", None))
+    sid = _resolve(a)
     m = _store(sid).load()
     if m is None:
         raise NoMissionError(sid)
@@ -614,7 +633,7 @@ def cmd_pending(a) -> int:
 def cmd_why(a) -> int:
     """When did this field change, and to what. The log already knew."""
     import datetime as _dt
-    sid = resolve_session(a.session, getattr(a, 'cwd', None))
+    sid = _resolve(a)
     st = _store(sid)
     if st.load() is None:
         print("  no mission for this session")
@@ -679,7 +698,7 @@ def cmd_add(a) -> int:
     # them at once.
     if not _human_gate("adding an agreed item"):
         return 1
-    sid = resolve_session(a.session, getattr(a, 'cwd', None))
+    sid = _resolve(a)
     st = _store(sid)
     ev = st.propose(a.text, by="human", parent=a.under)
     st.accept(ev["item_id"], by="human")
@@ -702,7 +721,7 @@ def cmd_propose(a) -> int:
     if getattr(a, "into", None):
         sid = find_session(a.into)
     else:
-        sid = resolve_session(a.session, getattr(a, "cwd", None))
+        sid = _resolve(a)
     ev = _store(sid).propose(a.text, by="agent", parent=a.under,
                              from_session=current_session_id() or "")
     print(f"  proposed {ev['item_id']} — inert until you `mission accept {ev['item_id']}`")
@@ -758,7 +777,7 @@ def _apply(a, verb: str, fn, want: str = "") -> int:
     being maintained. An unknown id is reported and the rest still run -- a
     typo in the fourth id must not silently drop the first three.
     """
-    st = _store(resolve_session(a.session, getattr(a, "cwd", None)))
+    st = _store(_resolve(a))
     m = st.load()
     if m is None:
         raise NoMissionError("")
@@ -796,6 +815,31 @@ def cmd_done(a) -> int:
     rc = _apply(a, "done", lambda st, i: st.complete(i, by="human"),
                 want="done")
     return rc or cmd_show(a)
+
+
+def cmd_help(a) -> int:
+    """Usage for one command, without running it.
+
+    Claude Code permission patterns are prefix matches with no negation, so
+    `Bash(mission accept:*)` also blocks `mission accept --help`. An agent
+    composing a paste-ready command for the human therefore cannot read the
+    flags of the commands it is most likely to be composing. Carving a hole in
+    the deny rule would weaken the one gate that is a real boundary, so this
+    is a separate read-only command that writes nothing.
+    """
+    parser = _build()
+    sub = next(x for x in parser._actions
+               if isinstance(x, argparse._SubParsersAction))
+    if not a.command:
+        parser.print_help()
+        return 0
+    target = sub.choices.get(a.command)
+    if target is None:
+        print(f"  no command {a.command!r}. Known: "
+              f"{', '.join(sorted(sub.choices))}")
+        return 1
+    target.print_help()
+    return 0
 
 
 def cmd_version(a) -> int:
@@ -1123,7 +1167,7 @@ def cmd_board(a) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build() -> argparse.ArgumentParser:
     # Shared flags live on a parent so they work AFTER the subcommand too --
     # `mission show --session X` is what anyone actually types, and a
     # top-level-only flag rejects it.
@@ -1259,13 +1303,22 @@ def main(argv: list[str] | None = None) -> int:
                     help=argparse.SUPPRESS)   # used by the spawner
     bd.set_defaults(fn=cmd_board)
 
+    hp = sub.add_parser("help", parents=[common],
+                        help="usage for one command, without running it")
+    hp.add_argument("command", nargs="?")
+    hp.set_defaults(fn=cmd_help)
+
     vs = sub.add_parser("version", parents=[common],
                         help="which build of mission is this, and what can it do")
     vs.set_defaults(fn=cmd_version)
 
     global _SUBCOMMANDS
     _SUBCOMMANDS = set(sub.choices)
+    return ap
 
+
+def main(argv: list[str] | None = None) -> int:
+    ap = _build()
     a = ap.parse_args(argv)
     try:
         return (a.fn if getattr(a, "fn", None) else cmd_show)(a)
@@ -1280,10 +1333,22 @@ def main(argv: list[str] | None = None) -> int:
     except NoSessionError as e:
         # A person in their own terminal is the NORMAL caller of the human-only
         # commands, and they used to get a pathlib TypeError.
-        print(f"\n  {e}")
+        #
+        # Refusing to guess stays -- tie-breaking on recency would be guessing
+        # with extra steps. But the refusal rebuilds the command THEY ran, once
+        # per candidate, so resolving it is a paste rather than a retype. A
+        # correct refusal that costs three minutes of typing is one you learn
+        # to route around.
+        import shlex
+        ran = list(argv if argv is not None else sys.argv[1:])
+        ran = [x for x in ran if not x.startswith("--session")]
+        print(f"\n  {e}\n")
         for sid, title in e.candidates:
-            print(f"    --session {sid:<24} {title}")
-        print()
+            print(f"    {title}")
+            print(f"      mission {' '.join(shlex.quote(x) for x in ran)} "
+                  f"--session {sid}\n")
+        if not e.candidates:
+            print()
         return 1
 
 

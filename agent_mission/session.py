@@ -215,13 +215,20 @@ def resolve_session(explicit: str | None, cwd: str | None = None) -> str:
     # A mission opened IN this directory beats one opened at the repo root, so
     # only a TIE at the deepest level is genuinely ambiguous. Two sessions on
     # the same directory is the normal case this tool exists for, and guessing
-    # between them would tick the wrong plan.
+    # between them would tick the wrong plan. Breaking the tie on recency would
+    # be guessing with extra steps.
     deepest = [f for f in found if f[0] == found[0][0]]
     if len(deepest) == 1:
         return deepest[0][2]
+    import time as _t
+    rich = []
+    for _, mtime, sid, title in deepest:
+        mins = int((_t.time() - mtime) / 60)
+        when = ("just now" if mins < 1 else
+                f"{mins}m ago" if mins < 60 else f"{mins // 60}h ago")
+        rich.append((sid, f"{title}  ·  active {when}"))
     raise NoSessionError(
-        "several missions cover this directory — say which:",
-        [(sid, title) for _, _, sid, title in deepest])
+        "several missions cover this directory — say which:", rich)
 
 
 def find_session(needle: str, base=None) -> str:

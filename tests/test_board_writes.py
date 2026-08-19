@@ -157,3 +157,20 @@ def test_a_test_store_never_takes_the_real_boards_port(monkeypatch, tmp_path):
                         raising=False)
     board.serve(8976, writable=False)
     assert got["port"] != 8976, "a temp store must not hold the shared port"
+
+
+def test_a_second_board_for_the_same_store_refuses_to_start(monkeypatch, tmp_path):
+    """Two boards for one set of missions is two answers to 'what is the
+    state', and the one you are looking at is whichever won the port. That is
+    how a test store came to be serving 8976 while five real sessions read
+    'No mission yet'."""
+    from agent_mission import board, daemon
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(Path.home() / ".agent-mission"))
+    monkeypatch.setattr(daemon, "identify",
+                        lambda p, timeout=0.6: {"mission_board": True, "pid": 999}
+                        if p == 8976 else None)
+    started = []
+    monkeypatch.setattr(board.ThreadingHTTPServer, "__init__",
+                        lambda self, addr, h: started.append(addr[1]))
+    board.serve(8977, writable=False)
+    assert started == [], "it pointed at the running one instead of binding"

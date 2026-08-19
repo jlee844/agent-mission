@@ -82,6 +82,7 @@ rules. See [SECURITY.md](docs/SECURITY.md) for how, and for what that does
 | `remove` | drop items and their subtrees |
 | `detour` / `return` | declare a side quest; return replays the goal |
 | `set` | change a protected field, keeping the plan and the history |
+| `help <command>` | usage for one command, without running it |
 | `why <field>` | when it changed, to what, and who typed it |
 | `import <file>` | land an external plan as proposals; diffs on re-import |
 | `delegate <id>` | give one accepted item its own session for a subagent |
@@ -90,6 +91,47 @@ rules. See [SECURITY.md](docs/SECURITY.md) for how, and for what that does
 | `setup --check` | which surfaces are installed, missing, or outdated |
 | `setup` | slash command, deny rules, statusline, hooks |
 | `version` | the build, and every command that exists right now |
+
+## Goals move
+
+```bash
+mission set objective "Ship list sharing AND the invite flow" --session 69426e5a
+mission set name "List sharing + invites"
+```
+
+Every edit is a new event, so the old value stays and `mission why objective`
+still answers. The agent is refused on all of these. `--session` is in the first
+example because you type these in **your own terminal**, where it is often
+needed — see below.
+
+## Which mission does a command mean?
+
+Inside Claude Code the session id is in the environment, so nothing needs
+saying. In **your own terminal** — where every human-only command has to be
+typed — it is not, so `mission` resolves it from the directory you are standing
+in:
+
+1. `--session` if you passed one. It takes a **mission name or an id prefix**,
+   not only the full uuid.
+2. The `CLAUDE_CODE_SESSION_ID` of the session you are inside.
+3. The missions recorded for this directory, **counting ancestors** — you are
+   usually in a subfolder of the session's root. Deepest match wins, so a
+   mission opened in a subproject beats one opened at the repo root.
+4. A tie **refuses**, and prints your own command back once per candidate:
+
+```
+several missions cover this directory — say which:
+
+  Career hub, live locally  ·  active 11h ago
+    mission accept --pending --session 69426e5a-a75f-448b-aa45-c3f80eabd2b1
+
+  Mission board for live sessions  ·  active 18h ago
+    mission accept --pending --session be17144b-d3be-41dd-a02a-c6ef71292e3f
+```
+
+It refuses rather than picking the most recent, because two sessions on one
+directory is the normal case here and guessing would tick the wrong plan.
+Breaking the tie on recency is guessing with extra steps.
 
 ## The board
 
@@ -102,6 +144,11 @@ Run it yourself in a terminal and it prints a write code, which turns on accept,
 tick and note buttons. The agent never sees that code — that is the point, and
 [SECURITY.md](docs/SECURITY.md) explains the mechanism.
 
+**One board per store, and only one.** Starting a second finds the first and
+points you at it rather than splitting the truth in two — two boards for the
+same missions is two answers to "what is the state", and the one you happen to
+be looking at is whichever won the port.
+
 It lives at `127.0.0.1:8976` and **stays there**: the port is the lock and the
 record is only a cache, so a restart returns to 8976, a board whose record was
 lost is adopted rather than duplicated, and only a foreign process on that port
@@ -111,8 +158,10 @@ dead URL.
 
 ## Limitations
 
-- **Session discovery is Claude Code specific.** The store, the board and the
-  CLI are not.
+- **Session discovery works two ways, and the second is fuzzy.** Inside Claude
+  Code the id comes from the environment and is exact. In your own terminal it
+  is matched from the working directory, and when several missions share a
+  directory tree the command refuses rather than guessing — see above.
 - **Progress is measured or marked, never inferred.** There is no drift
   detection here, on purpose — [DESIGN.md](docs/DESIGN.md) says what was tried.
 - **The event log is a plain file.** An agent with shell access can append a

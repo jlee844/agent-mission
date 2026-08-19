@@ -194,6 +194,19 @@ person actually needs at that moment. Nesting is fine.
 Do not infer a detour from what you are doing. Declare one when you choose to
 go off, or leave it alone.
 
+## Composing a command they have to run themselves
+
+`set`, `accept`, `done`, `remove` and `add` are denied to you by the harness —
+and the deny patterns are prefix matches, so `mission accept --help` is blocked
+too. To read the flags without running anything:
+
+```bash
+mission help accept
+```
+
+When you hand them a command, include `--session <id>` if more than one mission
+covers the directory, and prefer a name over a uuid — `--session` accepts either.
+
 ## Never report the plan from memory
 
 The human accepts, ticks and commits **in their own terminal**, where you cannot

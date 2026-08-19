@@ -924,3 +924,69 @@ def test_one_installed_surface_does_not_abort_the_rest(tmp_path, monkeypatch,
     assert data["hooks"]["SessionStart"], "and the hook"
     out = capsys.readouterr().out
     assert "already installed" in out and "older version" in out
+
+
+def test_the_readme_documents_how_a_session_is_resolved():
+    """Three findable problems in one complaint: --session missing from the
+    first `set` example (it is the normal path for every human-only command),
+    no statement of the resolution order anywhere, and a Limitations line that
+    said "Claude Code specific" when the truth is it works outside too — which
+    is exactly where the ambiguity lives."""
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    assert "Which mission does a command mean?" in readme
+    first_set = readme[readme.index("mission set objective"):][:120]
+    assert "--session" in first_set, "the first set example shows it"
+    assert "Claude Code specific" not in readme
+    assert "counting ancestors" in readme and "refuses" in readme
+
+
+def test_help_reads_usage_for_a_command_the_agent_cannot_run(capsys):
+    """Permission patterns are prefix matches with no negation, so
+    `Bash(mission accept:*)` also blocks `mission accept --help`. An agent
+    composing a command for the human cannot read the flags of the commands it
+    is most likely to be composing. A hole in the deny rule would weaken the
+    one gate that is a real boundary; a read-only command does not."""
+    from agent_mission.__main__ import DENY_RULES, main
+    assert main(["help", "accept"]) == 0
+    out = capsys.readouterr().out
+    assert "--pending" in out and "--under" in out
+    assert not any("mission help" in r for r in DENY_RULES), "never denied"
+
+    assert main(["help", "nonsense"]) == 1
+    assert "no command" in capsys.readouterr().out
+
+
+def test_the_refusal_rebuilds_the_command_you_ran(tmp_path, monkeypatch, capsys):
+    """A correct refusal that costs three minutes of retyping is one you learn
+    to route around."""
+    from agent_mission.__main__ import main
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for n in ("one", "two"):
+        st = MissionStore(root_for(n))
+        st.create(n, str(repo), f"goal {n}", by="human")
+        st.set_protected("name", f"mission {n}", by="human")
+    monkeypatch.chdir(repo)
+
+    assert main(["pending"]) == 1
+    out = capsys.readouterr().out
+    assert "mission pending --session one" in out
+    assert "mission pending --session two" in out
+    assert "active" in out, "and when each was last touched"
+
+
+def test_session_accepts_a_name_not_only_a_uuid(tmp_path, monkeypatch, capsys):
+    from agent_mission.__main__ import main
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    st = MissionStore(root_for("abc123def"))
+    st.create("abc123def", "/repo", "the goal", by="human")
+    st.set_protected("name", "Career hub", by="human")
+    st.propose("an idea", by="agent")
+
+    assert main(["pending", "--session", "Career hub"]) == 0
+    assert "1 awaiting you" in capsys.readouterr().out
+    assert main(["pending", "--session", "abc123"]) == 0, "prefix works too"

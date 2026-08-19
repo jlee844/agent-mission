@@ -801,6 +801,22 @@ def serve(port: int = 8976, writable: bool | None = None) -> None:
         print(f"\n  serving {_missions_home()} (not the default store),"
               f"\n  so taking port {port} instead of 8976.\n")
 
+    # ONE board per store, always. Two boards for the same missions is two
+    # answers to "what is the state", and the one you are looking at is
+    # whichever won the port -- exactly how a test store came to be serving
+    # 8976 while five real sessions read "No mission yet".
+    from .daemon import identify
+    for probe in range(8976, 8976 + 12):
+        if probe == port:
+            continue
+        found = identify(probe)
+        if found:
+            print(f"\n  a board for this store is already running:"
+                  f"\n    http://127.0.0.1:{probe}   (pid {found.get('pid')})"
+                  f"\n\n  that one is the single source. Use it, or stop it first"
+                  f"\n  with `mission board --stop`.\n")
+            return
+
     global WRITES
     if writable is None:
         try:
