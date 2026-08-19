@@ -222,9 +222,22 @@ mission observe notes "the eval set is the bottleneck, not the model"
 
 That one needs no gate at all — recording is not deciding.
 
-**The agent has no path to a protected field.** Not a permission check it might
-route around — there is no method that writes one on its behalf, and the same
-holds for accepting a proposal and for marking an item done. Marking work
+**The agent cannot author a protected field.** Not a permission check it might
+route around: `store.set_protected` refuses anything not marked `human`, and
+the same holds for accepting a proposal and for marking an item done.
+
+There are exactly two places where an agent's command reaches a protected field
+at all, and neither lets it choose the content:
+
+- **`init --from-file`** — the documented flow, where it transcribes an
+  interview. Every line came from one of your answers.
+- **`delegate`** — copies an item you already accepted into a child mission,
+  and inherits your constraints verbatim.
+
+Both record `typed_by: agent`, so `mission why` names the runner as well as the
+authority, and `mission show` prints a warning on any mission an agent
+transcribed. An outside reviewer caught `delegate` missing that annotation
+after `init` had been fixed — one function over. Marking work
 complete is a judgement, so it stays with you; the agent may record evidence.
 
 **With one deliberate exception, and it is recorded.** `mission init` is not
