@@ -2,7 +2,7 @@
 
 **The goal, beside the work, that the agent cannot quietly rewrite.**
 
-[![tests](https://img.shields.io/badge/tests-127%20passing-0E6E68)](tests/)
+[![tests](https://img.shields.io/badge/tests-134%20passing-0E6E68)](tests/)
 [![python](https://img.shields.io/badge/python-3.9%20–%203.14-0E6E68)](pyproject.toml)
 [![context cost](https://img.shields.io/badge/always--on%20context-47%20tokens-0E6E68)](commands/mission.md)
 [![deps](https://img.shields.io/badge/dependencies-none-0E6E68)](pyproject.toml)
@@ -85,8 +85,25 @@ of its children and is done when they are.
 
 ```bash
 mission add "Wire the invite flow" --under e92721c7
-mission remove e92721c7          # drops it and its subtree
+mission remove e92721c7 4a1c9e02          # drops them and their subtrees
 ```
+
+**Name a set instead of listing ids.** Measured across five real missions: 152
+proposals, 91 accepted, **61 left pending** — because accepting cost a person
+retyping an eight-character id per item, and the worst case was 25 of them in
+one command that failed and had to be redone by hand.
+
+```bash
+mission pending                  # what is waiting, and the command to clear it
+mission accept --pending         # all of it, no ids
+mission accept --under 56fa8644  # one subtree
+mission done   --under 56fa8644  # tick that subtree's leaves
+```
+
+`--all` deliberately does **not** work for `done`: it is shared with `show
+--all`, so `mission done --all` is a plausible typo for "show me everything" —
+and it would declare every task finished. Accepting everything is cheap to
+undo; ticking everything is a judgement.
 
 Removal is soft: the event log keeps it. Append-only is about not losing
 history, not about being unable to change your mind — a plan you cannot prune
@@ -198,6 +215,13 @@ This is the whole design.
 | 🟡 **proposed** | checklist, strategy | agent suggests, you accept |
 | 🟢 **observable** | decisions, evidence, notes | agent records freely |
 
+```bash
+mission observe evidence "134 tests pass on 3.9 through 3.14"
+mission observe notes "the eval set is the bottleneck, not the model"
+```
+
+That one needs no gate at all — recording is not deciding.
+
 **The agent has no path to a protected field.** Not a permission check it might
 route around — there is no method that writes one on its behalf, and the same
 holds for accepting a proposal and for marking an item done. Marking work
@@ -225,7 +249,7 @@ and `mission show` says it above the plan:
 `typed_by` records; it never grants. An agent still cannot `set`, `accept`,
 `done`, `remove` or `add`.
 
-There are 127 tests and most of them guard exactly this.
+There are 134 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store has always refused agent
 writes. The *CLI* could not tell who typed the command, so it passed
@@ -385,7 +409,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 127 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 134 tests, no network
 ```
 
 ## Status
@@ -393,7 +417,7 @@ pip install -e ".[dev]" && python -m pytest tests/ -q     # 127 tests, no networ
 Not on PyPI yet — install from source as above. Session discovery is Claude
 Code specific; the store and the board are not.
 
-**Python 3.9 through 3.14**, all 127 tests passing on each. The floor is 3.9
+**Python 3.9 through 3.14**, all 134 tests passing on each. The floor is 3.9
 because that is the Python macOS ships: the package originally declared 3.10+,
 which would have told a user on stock macOS Python that it was unsupported
 while it ran fine.

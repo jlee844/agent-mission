@@ -461,6 +461,40 @@ def cmd_delegate(a) -> int:
     return 0
 
 
+def cmd_observe(a) -> int:
+    """Record evidence, a decision, or a note. The one write needing no gate.
+
+    The whole OBSERVABLE level was unreachable from the CLI: `store.observe()`
+    existed and was tested, the README and the refusal message both told the
+    agent it could observe, and there was no subcommand. So the level the
+    design most encourages the agent to use went nowhere.
+    """
+    sid = resolve_session(a.session, getattr(a, "cwd", None))
+    st = _store(sid)
+    st.observe(a.field, a.text, by="human" if _at_a_keyboard() else "agent")
+    print(f"  recorded under {a.field}")
+    print(f"  → {_where(sid)}")
+    return 0
+
+
+def cmd_pending(a) -> int:
+    """Everything waiting on you, with the command to clear it."""
+    sid = resolve_session(a.session, getattr(a, "cwd", None))
+    m = _store(sid).load()
+    if m is None:
+        raise NoMissionError(sid)
+    waiting = m.unaccepted
+    if not waiting:
+        print("\n  nothing awaiting you here.\n")
+        return 0
+    print(f"\n  {len(waiting)} awaiting you in {m.title}\n")
+    for i in waiting:
+        print(f"    [?] {i.id}  {i.text}")
+    print(f"\n    mission accept --pending"
+          f"{'' if not a.session else ' --session ' + a.session}\n")
+    return 0
+
+
 def cmd_why(a) -> int:
     """When did this field change, and to what. The log already knew."""
     import datetime as _dt
@@ -550,7 +584,47 @@ def cmd_propose(a) -> int:
     return 0
 
 
-def _apply(a, verb: str, fn) -> int:
+def _subtree(m, root: str) -> list[str]:
+    """Every id under `root`, including it."""
+    ids, growing = set(), {root}
+    while growing:
+        ids |= growing
+        growing = {d["id"] for d in m.checklist
+                   if d.get("parent") in ids and d["id"] not in ids}
+    return [d["id"] for d in m.checklist if d["id"] in ids]
+
+
+def _select(a, m, want: str) -> list[str] | None:
+    """Turn --all / --under into a set of ids, or None if ids were given.
+
+    Measured across five real missions: 152 proposals, 91 accepted, 61 still
+    pending -- 40%. Accepting costs a person retyping an 8-character id per
+    item, and the worst instance was a 25-id command that failed and had to be
+    redone by hand eight minutes later. Naming the set is the fix. Who may run
+    it does not change: this is still gated and still denied to the agent.
+    """
+    # `--all` is shared with `show --all` on the common parser, so `mission
+    # done --all` is a plausible typo for "show me everything" -- and it would
+    # tick the whole plan. Accepting everything is cheap to undo; declaring all
+    # the work finished is a judgement. So --all selects only for accept, and
+    # ticking a set requires naming the subtree.
+    wide = getattr(a, "all", False) and want == "accept"
+    pool = _subtree(m, a.under) if getattr(a, "under", None) else \
+        ([i.id for i in m.items] if wide else None)
+    if pool is None:
+        return None
+    by_id = {i.id: i for i in m.items}
+    if want == "accept":
+        return [i for i in pool if not by_id[i].accepted]
+    if want == "done":
+        # Only leaves are work, and only agreed work can be ticked.
+        leaves = {i.id for i in m.leaves}
+        return [i for i in pool
+                if i in leaves and by_id[i].accepted and not by_id[i].done]
+    return pool          # remove takes whatever is in scope
+
+
+def _apply(a, verb: str, fn, want: str = "") -> int:
     """Run a per-item action over every id given, and report each one.
 
     Several ids at once because the alternative is what actually happens: the
@@ -558,9 +632,18 @@ def _apply(a, verb: str, fn) -> int:
     being maintained. An unknown id is reported and the rest still run -- a
     typo in the fourth id must not silently drop the first three.
     """
-    st = _store(resolve_session(a.session, getattr(a, 'cwd', None)))
+    st = _store(resolve_session(a.session, getattr(a, "cwd", None)))
+    m = st.load()
+    if m is None:
+        raise NoMissionError("")
+    chosen = _select(a, m, want) if want else None
+    ids = list(a.item_id) if chosen is None else chosen
+    if not ids:
+        print(f"  nothing to {verb}" if chosen is not None
+              else "  no ids given — pass some, or --all")
+        return 0
     bad = 0
-    for iid in a.item_id:
+    for iid in ids:
         try:
             fn(st, iid)
         except NoSuchItemError:
@@ -577,13 +660,15 @@ def _apply(a, verb: str, fn) -> int:
 def cmd_accept(a) -> int:
     if not _human_gate("accepting a proposal"):
         return 1
-    return _apply(a, "accepted", lambda st, i: st.accept(i, by="human"))
+    return _apply(a, "accepted", lambda st, i: st.accept(i, by="human"),
+                  want="accept")
 
 
 def cmd_done(a) -> int:
     if not _human_gate("marking work done"):
         return 1
-    rc = _apply(a, "done", lambda st, i: st.complete(i, by="human"))
+    rc = _apply(a, "done", lambda st, i: st.complete(i, by="human"),
+                want="done")
     return rc or cmd_show(a)
 
 
@@ -704,13 +789,9 @@ def _install_deny_rules(a) -> int:
 def cmd_remove(a) -> int:
     if not _human_gate("removing an item"):
         return 1
-    try:
-        _store(resolve_session(a.session, getattr(a, 'cwd', None))).remove(a.item_id, by="human")
-    except NoSuchItemError:
-        print(f"  no item {a.item_id!r} in this plan")
-        return 1
-    print(f"  removed {a.item_id}")
-    return cmd_show(a)
+    rc = _apply(a, "removed", lambda st, i: st.remove(i, by="human"),
+                want="remove")
+    return rc or cmd_show(a)
 
 
 def cmd_board(a) -> int:
@@ -773,10 +854,16 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--under", default=None, metavar="ID")
     pr.set_defaults(fn=cmd_propose)
     ac = sub.add_parser("accept", parents=[common])
-    ac.add_argument("item_id", nargs="+", metavar="ID")
+    ac.add_argument("item_id", nargs="*", metavar="ID")
+    ac.add_argument("--pending", dest="all", action="store_true",
+                    help="every proposal awaiting you — no ids needed")
+    ac.add_argument("--under", metavar="ID",
+                    help="everything in this subtree")
     ac.set_defaults(fn=cmd_accept)
     dn = sub.add_parser("done", parents=[common])
-    dn.add_argument("item_id", nargs="+", metavar="ID")
+    dn.add_argument("item_id", nargs="*", metavar="ID")
+    dn.add_argument("--under", metavar="ID",
+                    help="everything in this subtree")
     dn.set_defaults(fn=cmd_done)
     su = sub.add_parser("setup", parents=[common],
                         help="install the /mission slash command")
@@ -796,7 +883,7 @@ def main(argv: list[str] | None = None) -> int:
     se.set_defaults(fn=cmd_set)
 
     rm = sub.add_parser("remove", parents=[common], help="drop an item (and its subtree)")
-    rm.add_argument("item_id")
+    rm.add_argument("item_id", nargs="+", metavar="ID")
     rm.set_defaults(fn=cmd_remove)
 
     im = sub.add_parser("import", parents=[common],
@@ -816,6 +903,17 @@ def main(argv: list[str] | None = None) -> int:
     dg.add_argument("--to", default=None, metavar="NAME",
                     help="short name for the child mission")
     dg.set_defaults(fn=cmd_delegate)
+
+    ob = sub.add_parser("observe", parents=[common],
+                        help="record evidence, a decision, or a note")
+    ob.add_argument("field", choices=sorted(
+        f for f, au in FIELD_AUTHORITY.items() if au is Authority.OBSERVABLE))
+    ob.add_argument("text")
+    ob.set_defaults(fn=cmd_observe)
+
+    pd = sub.add_parser("pending", parents=[common],
+                        help="what is awaiting your accept, and how to clear it")
+    pd.set_defaults(fn=cmd_pending)
 
     wy = sub.add_parser("why", parents=[common],
                         help="when a protected field changed, and to what")

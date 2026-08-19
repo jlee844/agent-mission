@@ -617,3 +617,93 @@ def test_the_deny_rule_count_in_the_docs_matches_the_list():
                              r"(deny rule|commands only a person)", text, re.I):
             assert words[m.group(1).lower()] == len(DENY_RULES), (
                 f"{where} says {m.group(1)}; DENY_RULES has {len(DENY_RULES)}")
+
+
+def _plan_for(tmp_path, monkeypatch):
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    st = MissionStore(root_for("s"))
+    st.create("s", "/repo", "goal", by="human")
+    parent = st.propose("Subgoal", by="human")["item_id"]
+    st.accept(parent, by="human")
+    kids = []
+    for t in ("one", "two"):
+        e = st.propose(t, by="human", parent=parent)["item_id"]
+        st.accept(e, by="human")
+        kids.append(e)
+    loose = st.propose("an agent idea", by="agent")["item_id"]
+    return st, parent, kids, loose
+
+
+def test_accept_pending_takes_every_proposal_without_ids(
+        tmp_path, monkeypatch, capsys, at_a_keyboard):
+    """152 proposals across five real missions, 61 never accepted. The cost was
+    retyping an 8-character id per item; the worst case was 25 of them in one
+    command that failed and had to be redone by hand."""
+    from agent_mission.__main__ import main
+    st, parent, kids, loose = _plan_for(tmp_path, monkeypatch)
+    assert main(["accept", "--pending", "--session", "s"]) == 0
+    assert st.load().unaccepted == []
+    assert loose in capsys.readouterr().out
+
+
+def test_done_under_ticks_a_subtree_and_only_its_leaves(
+        tmp_path, monkeypatch, at_a_keyboard):
+    from agent_mission.__main__ import main
+    st, parent, kids, _ = _plan_for(tmp_path, monkeypatch)
+    main(["done", "--under", parent, "--session", "s"])
+    m = st.load()
+    assert {i.id for i in m.leaves if i.done} == set(kids)
+    assert m.done_count == 2, "the container is not work and is not ticked"
+
+
+def test_all_will_not_tick_a_whole_plan(tmp_path, monkeypatch, at_a_keyboard):
+    """`--all` is shared with `show --all`, so `mission done --all` is a
+    plausible typo for 'show me everything' — and it would declare every task
+    finished."""
+    from agent_mission.__main__ import main
+    st, parent, kids, _ = _plan_for(tmp_path, monkeypatch)
+    main(["done", "--all", "--session", "s"])
+    assert st.load().done_count == 0
+
+
+def test_remove_takes_several_ids(tmp_path, monkeypatch, at_a_keyboard):
+    from agent_mission.__main__ import main
+    st, parent, kids, loose = _plan_for(tmp_path, monkeypatch)
+    main(["remove", *kids, "--session", "s"])
+    assert {d["id"] for d in st.load().checklist} == {parent, loose}
+
+
+def test_observe_exists_and_needs_no_gate(tmp_path, monkeypatch, capsys):
+    """The whole OBSERVABLE level was unreachable from the CLI: store.observe()
+    existed and was tested, the README and the refusal message both told the
+    agent it could observe, and there was no subcommand."""
+    from agent_mission.__main__ import main
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    MissionStore(root_for("s")).create("s", "/repo", "goal", by="human")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+
+    assert main(["observe", "evidence", "127 tests pass", "--session", "s"]) == 0
+    assert MissionStore(root_for("s")).load().evidence == ["127 tests pass"]
+
+
+def test_observe_cannot_reach_a_protected_field(tmp_path, monkeypatch):
+    from agent_mission.__main__ import main
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    MissionStore(root_for("s")).create("s", "/repo", "goal", by="human")
+    with pytest.raises(SystemExit):        # argparse rejects the choice
+        main(["observe", "objective", "mine now", "--session", "s"])
+
+
+def test_pending_prints_the_command_that_clears_it(tmp_path, monkeypatch, capsys):
+    from agent_mission.__main__ import main
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    st = MissionStore(root_for("s"))
+    st.create("s", "/repo", "goal", by="human")
+    st.propose("an idea", by="agent")
+    main(["pending", "--session", "s"])
+    out = capsys.readouterr().out
+    assert "1 awaiting you" in out and "mission accept --pending" in out
