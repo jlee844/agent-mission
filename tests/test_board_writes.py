@@ -140,3 +140,20 @@ def test_a_bad_id_in_a_batch_does_not_hide_the_good_ones(mission):
     assert out["ids"] == [good] and out["failed"][0]["id"] == "not-an-id"
     assert out["ok"] is False
     assert mission.load().items[0].accepted, "the good one still landed"
+
+
+def test_a_test_store_never_takes_the_real_boards_port(monkeypatch, tmp_path):
+    """A board left running with AGENT_MISSION_HOME=/tmp/... kept port 8976, so
+    every real session's card read "No mission yet". The data was fine; the
+    board was reading an empty directory and the page did not say so."""
+    from agent_mission import board
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    got = {}
+    monkeypatch.setattr(board.ThreadingHTTPServer, "__init__",
+                        lambda self, addr, h: got.update(port=addr[1]))
+    monkeypatch.setattr(board.ThreadingHTTPServer, "serve_forever",
+                        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))
+    monkeypatch.setattr(board.ThreadingHTTPServer, "daemon_threads", True,
+                        raising=False)
+    board.serve(8976, writable=False)
+    assert got["port"] != 8976, "a temp store must not hold the shared port"

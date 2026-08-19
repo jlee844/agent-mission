@@ -526,6 +526,15 @@ const passes = s =>
 async function tick(){
   let payload; try{ payload=await (await fetch('/data')).json() }catch(e){ return }
   const all = payload.rows; WRITABLE = payload.writable;
+  if (payload.home){
+    const w = document.getElementById('strip');
+    w.className = ''; w.innerHTML =
+      `<span>⚠ reading <b>${esc(payload.home)}</b>, not your usual store —` +
+      ` this board was started with AGENT_MISSION_HOME set.</span>`;
+    document.getElementById('g').innerHTML =
+      all.map(s=>`<div class=card><p class=obj>${esc(s.title||s.id)}</p></div>`).join('');
+    return;
+  }
   askForCode();
   const d = all.filter(passes);
   document.getElementById('age').textContent =
@@ -736,7 +745,13 @@ class _H(BaseHTTPRequestHandler):
             }).encode(), "application/json")
         if self.path.startswith("/data"):
             # `writable` says a code will be ACCEPTED, never what it is.
-            payload = {"rows": CACHE.get(), "writable": WRITES.enabled}
+            home = str(_missions_home())
+            payload = {"rows": CACHE.get(), "writable": WRITES.enabled,
+                       # Only sent when it is NOT the usual store: an empty
+                       # board is otherwise indistinguishable from a board
+                       # pointed somewhere else.
+                       "home": None if home == str(Path.home() / ".agent-mission")
+                       else home}
             return self._send(200, json.dumps(payload).encode(),
                               "application/json")
         self._send(200, PAGE.encode(), "text/html; charset=utf-8")
@@ -776,6 +791,16 @@ def serve(port: int = 8976, writable: bool | None = None) -> None:
     # `mission init` spawns does not, and its stdout goes to a log file the
     # agent could read. So the tty IS the test, and the code only ever reaches
     # a real terminal.
+    # A board serving a TEST store must not sit on the port every real session
+    # looks at. One left running with AGENT_MISSION_HOME=/tmp/... made every
+    # card on the real board read "No mission yet" -- the data was fine, the
+    # board was reading an empty directory, and nothing on the page said so.
+    default_home = Path.home() / ".agent-mission"
+    if _missions_home() != default_home and port == 8976:
+        port = 8996
+        print(f"\n  serving {_missions_home()} (not the default store),"
+              f"\n  so taking port {port} instead of 8976.\n")
+
     global WRITES
     if writable is None:
         try:
