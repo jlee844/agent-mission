@@ -237,6 +237,12 @@ class MissionStore:
         # empty directory reads as "a mission exists" to anything scanning.
         self.root = Path(root)
         self.log = self.root / "events.jsonl"
+        # Where the writer stood, and HOW this mission was chosen. Set by the
+        # CLI before a write. Yesterday's forensics could not answer either
+        # question for anything but `init`, so "which session wrote this, from
+        # where, and why did it land here" was unanswerable for 52 events.
+        self.context_cwd = ""
+        self.context_via = ""
         # Lines that could not be parsed on the last read. Surfaced rather than
         # swallowed: silently skipping damage is how a log stops being evidence.
         self.damaged = 0
@@ -255,6 +261,10 @@ class MissionStore:
         # `why objective` said "human" about a goal an agent had written.
         ev = {**detail, "kind": kind, "by": by,
               "typed_by": typed_by or by, "at": time.time()}
+        if self.context_cwd:
+            ev.setdefault("cwd", self.context_cwd)
+        if self.context_via:
+            ev["via"] = self.context_via          # explicit | env | cwd
         self.root.mkdir(parents=True, exist_ok=True)
         with self.log.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(ev) + "\n")

@@ -100,8 +100,36 @@ def _edit(seed: str) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-def _store(sid: str) -> MissionStore:
-    return MissionStore(root_for(sid))
+def _store(sid: str, a=None) -> MissionStore:
+    st = MissionStore(root_for(sid))
+    if a is not None:
+        try:
+            st.context_cwd = str(Path(getattr(a, "cwd", ".") or ".").resolve())
+        except Exception:
+            st.context_cwd = ""
+        st.context_via = getattr(a, "_via", "")
+    return st
+
+
+def _resolve_with_path(a) -> tuple[str, str]:
+    """The session, and HOW it was chosen: explicit, env, or cwd.
+
+    The path matters as much as the answer. An app-attached terminal exports
+    CLAUDE_CODE_SESSION_ID, so a human typing there resolves by `env` while
+    believing they resolved by `cwd` -- which is how a career objective landed
+    on the Tripnom mission and then renamed it.
+    """
+    given = getattr(a, "session", None)
+    if given:
+        if (root_for(given) / "events.jsonl").exists():
+            return given, "explicit"
+        try:
+            return find_session(given), "explicit"
+        except NoSessionError:
+            return given, "explicit"
+    if current_session_id():
+        return current_session_id(), "env"
+    return resolve_session(None, getattr(a, "cwd", None)), "cwd"
 
 
 def _resolve(a):
@@ -147,6 +175,54 @@ def _at_a_keyboard() -> bool:
         return False
 
 
+def _confirm_env_target(a, sid: str) -> bool:
+    """A human at a terminal, targeting by env var, must see and confirm it.
+
+    The design assumed a person's terminal has no CLAUDE_CODE_SESSION_ID. An
+    app-attached terminal pane has one, so `mission set` typed by hand
+    resolved to whichever session owned the pane -- not the mission the person
+    was thinking about. It renamed that mission, and the rename made every
+    later target line agree with the mistake.
+    """
+    if getattr(a, "session", None) or getattr(a, "yes", False):
+        return True
+    try:
+        if not sys.stdin.isatty():
+            return True            # not an interactive human; other gates apply
+    except Exception:
+        return True
+    m = _store(sid).load()
+    if m is None:
+        return True
+    first = (m.objective or "").strip().split("\n")[0]
+    print(f"\n  this will write to:\n"
+          f"    {short_id(sid)}  {m.title}\n"
+          f"    goal: {first[:72]}\n"
+          f"\n  targeted through CLAUDE_CODE_SESSION_ID, which your terminal"
+          f"\n  inherited from the session it is attached to — not from where"
+          f"\n  you are standing.\n")
+    try:
+        answer = input("  right mission? [y/N] ").strip().lower()
+    except EOFError:
+        return False
+    if answer in ("y", "yes"):
+        return True
+    print("\n  nothing written. Name it instead:  --session <name-or-id>\n")
+    return False
+
+
+def _target(a, what: str):
+    """Resolve, record how, and make a tty confirm an env-resolved target.
+
+    Returns (sid, store) or (None, None) if the person declined.
+    """
+    sid, via = _resolve_with_path(a)
+    a._via = via
+    if via == "env" and not _confirm_env_target(a, sid):
+        return None, None
+    return sid, _store(sid, a)
+
+
 def _human_gate(what: str) -> bool:
     if _at_a_keyboard():
         return True
@@ -160,11 +236,12 @@ def _human_gate(what: str) -> bool:
 
 
 def cmd_init(a) -> int:
-    sid = _resolve(a)
+    sid, via = _resolve_with_path(a)
+    a._via = via
     if not sid:
         print("  no session id. Run inside Claude Code, or pass --session.")
         return 1
-    st = _store(sid)
+    st = _store(sid, a)
     existing = st.load()
     if existing and not a.force:
         print(f"  a mission already exists for {short_id(sid)}. `mission` to see it, "
@@ -314,12 +391,13 @@ def cmd_set(a) -> int:
     """Change a protected field. Goals move; a mission you cannot edit is a
     mission you abandon and rewrite from scratch."""
     from .store import PROTECTED_FIELDS
-    sid = _resolve(a)
-    st = _store(sid)
+    if not _human_gate(f"the {a.field}"):
+        return 1
+    sid, st = _target(a, "set")
+    if st is None:
+        return 1
     if st.load() is None:
         print("  no mission for this session — `mission init` first")
-        return 1
-    if not _human_gate(f"the {a.field}"):
         return 1
     field = a.field.replace("-", "_")
     if field not in PROTECTED_FIELDS:
@@ -701,9 +779,18 @@ def _print_tree(nodes, depth: int = 0, prefix: str = "",
 
 
 def _where(sid: str) -> str:
-    """Which mission a write just landed on, in one line."""
+    """Which mission a write landed on -- name AND objective.
+
+    A name echo is circular after a rename: the mis-targeted write renamed the
+    mission it hit, so every later target line displayed the right name over
+    the wrong id and the error confirmed itself. The objective cannot be
+    renamed by the same accident, so it is what breaks the loop.
+    """
     m = _store(sid).load()
-    return f"{short_id(sid)}  {m.title}" if m else short_id(sid)
+    if not m:
+        return short_id(sid)
+    first = (m.objective or "").strip().split("\n")[0]
+    return f"{short_id(sid)}  {m.title}\n     goal: {first[:72]}"
 
 
 def cmd_add(a) -> int:
@@ -714,8 +801,9 @@ def cmd_add(a) -> int:
     # them at once.
     if not _human_gate("adding an agreed item"):
         return 1
-    sid = _resolve(a)
-    st = _store(sid)
+    sid, st = _target(a, "add")
+    if st is None:
+        return 1
     ev = st.propose(a.text, by="human", parent=a.under)
     st.accept(ev["item_id"], by="human")
     where = f" under {a.under}" if a.under else ""
@@ -735,10 +823,11 @@ def cmd_propose(a) -> int:
     # reach the plan only by the human retyping them, which is the friction
     # that stranded 61 of 152 proposals.
     if getattr(a, "into", None):
-        sid = find_session(a.into)
+        sid, via = find_session(a.into), "explicit"
     else:
-        sid = _resolve(a)
-    ev = _store(sid).propose(a.text, by="agent", parent=a.under,
+        sid, via = _resolve_with_path(a)
+    a._via = via
+    ev = _store(sid, a).propose(a.text, by="agent", parent=a.under,
                              from_session=current_session_id() or "")
     print(f"  proposed {ev['item_id']} — inert until you `mission accept {ev['item_id']}`")
     print(f"  → {_where(sid)}")
@@ -793,7 +882,9 @@ def _apply(a, verb: str, fn, want: str = "") -> int:
     being maintained. An unknown id is reported and the rest still run -- a
     typo in the fourth id must not silently drop the first three.
     """
-    st = _store(_resolve(a))
+    sid, st = _target(a, verb)
+    if st is None:
+        return 1
     m = st.load()
     if m is None:
         raise NoMissionError("")

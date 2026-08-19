@@ -699,3 +699,87 @@ def test_starting_over_is_something_you_say(store):
 def test_only_a_human_can_discard_a_mission(store):
     with pytest.raises(ProtectedFieldError):
         store.discard(by="agent")
+
+
+# ── C11a: targeting, after a write landed on the wrong mission ───────────────
+
+def test_every_write_records_where_it_came_from_and_how_it_was_targeted(
+        tmp_path, monkeypatch):
+    """Yesterday's forensics could answer neither question for anything but
+    `init`: 52 events with no cwd and no resolution path, so "which session
+    wrote this, from where, and why did it land here" was unanswerable."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
+    seed = tmp_path / "m.txt"
+    seed.write_text("OBJECTIVE: a goal\n")
+    main(["init", "--from-file", str(seed), "--session", "s",
+          "--cwd", str(tmp_path), "--no-board"])
+    main(["propose", "an idea", "--session", "s", "--cwd", str(tmp_path)])
+
+    evs = list(MissionStore(root_for("s")).events())
+    assert all(e.get("via") == "explicit" for e in evs), "how it was targeted"
+    assert all(e.get("cwd") for e in evs), "and where the writer stood"
+
+
+def test_a_tty_targeting_by_env_var_must_confirm(tmp_path, monkeypatch, capsys):
+    """The design assumed a person's terminal has no CLAUDE_CODE_SESSION_ID.
+    An app-attached terminal pane has one, so a hand-typed `set` resolved to
+    whichever session owned the pane -- and the write renamed that mission, so
+    every later target line agreed with the mistake."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "tripnom")
+    st = MissionStore(root_for("tripnom"))
+    st.create("tripnom", "/repo", "Ship Tripnom to the App Store", by="human",
+              typed_by="human")
+    st.set_protected("name", "Ship Tripnom", by="human", typed_by="human")
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    assert main(["set", "name", "Career hub"]) == 1
+
+    m = MissionStore(root_for("tripnom")).load()
+    assert m.name == "Ship Tripnom", "declining wrote nothing"
+    out = capsys.readouterr().out
+    assert "Ship Tripnom to the App Store" in out, "the OBJECTIVE is shown"
+    assert "CLAUDE_CODE_SESSION_ID" in out, "and why it resolved there"
+
+    monkeypatch.setattr("builtins.input", lambda *a: "y")
+    assert main(["set", "name", "Career hub"]) == 0
+    assert MissionStore(root_for("tripnom")).load().name == "Career hub"
+
+
+def test_an_explicit_session_is_never_second_guessed(tmp_path, monkeypatch):
+    """Naming the target IS the confirmation."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "other")
+    MissionStore(root_for("s")).create("s", "/repo", "a goal", by="human",
+                                       typed_by="human")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input",
+                        lambda *a: pytest.fail("must not ask"))
+    assert main(["set", "name", "Named", "--session", "s"]) == 0
+
+
+def test_the_target_line_shows_the_objective_not_just_the_name(tmp_path,
+                                                               monkeypatch,
+                                                               capsys):
+    """A name echo is circular after a rename: the mis-targeted write renamed
+    the mission it hit, so the target line displayed the right name over the
+    wrong id."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
+    st = MissionStore(root_for("s"))
+    st.create("s", "/repo", "Ship Tripnom to the App Store", by="human",
+              typed_by="human")
+    st.set_protected("name", "Career hub", by="human", typed_by="human")
+
+    main(["propose", "an idea", "--session", "s"])
+    out = capsys.readouterr().out
+    assert "Career hub" in out and "Ship Tripnom to the App Store" in out, \
+        "the mislabel contradicts itself on screen"
