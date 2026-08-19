@@ -137,6 +137,11 @@ class Mission:
     evidence: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     created: float = 0.0
+    # True when every protected field was entered by a person at a keyboard.
+    # False means an agent transcribed at least one of them -- permitted, and
+    # worth showing, because "is this really your goal" is the question this
+    # whole tool exists to keep answerable.
+    typed_by_human: bool = True
 
     @property
     def items(self) -> list[Item]:
@@ -222,19 +227,27 @@ class MissionStore:
         self.log = self.root / "events.jsonl"
 
     # ── writing ──────────────────────────────────────────────────────────
-    def _append(self, kind: str, by: str, /, **detail: Any) -> dict:
+    def _append(self, kind: str, by: str, /, typed_by: str | None = None,
+                **detail: Any) -> dict:
         # kind/by are positional-only so a payload may legitimately carry a
         # field called "kind" -- and the envelope is written LAST so it wins.
         # Without the ordering, such a payload overwrites the event's own kind
         # and the event becomes unfindable by the reader.
-        ev = {**detail, "kind": kind, "by": by, "at": time.time()}
+        # `by` is AUTHORITY -- whose field this is. `typed_by` is who actually
+        # ran the command. They differ in the one case the design permits: the
+        # agent transcribing an interview through `init --from-file`. Recording
+        # only `by` made that indistinguishable from a person typing, so
+        # `why objective` said "human" about a goal an agent had written.
+        ev = {**detail, "kind": kind, "by": by,
+              "typed_by": typed_by or by, "at": time.time()}
         self.root.mkdir(parents=True, exist_ok=True)
         with self.log.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(ev) + "\n")
         return ev
 
     def create(self, session_id: str, cwd: str, objective: str, by: str,
-               parent_session: str = "", parent_item: str = "") -> dict:
+               parent_session: str = "", parent_item: str = "",
+               typed_by: str | None = None) -> dict:
         """A mission is authored by a person.
 
         The one exception is a DELEGATED mission, where the objective is not
@@ -247,11 +260,13 @@ class MissionStore:
         if by != "human" and not parent_item:
             raise ProtectedFieldError(
                 "a mission is created by the person, not the agent")
-        return self._append("created", by, session_id=session_id, cwd=cwd,
+        return self._append("created", by, typed_by=typed_by,
+                            session_id=session_id, cwd=cwd,
                             objective=objective, parent_session=parent_session,
                             parent_item=parent_item)
 
-    def set_protected(self, fieldname: str, value: Any, by: str) -> dict:
+    def set_protected(self, fieldname: str, value: Any, by: str,
+                      typed_by: str | None = None) -> dict:
         """Only a human may write a protected field. No agent path exists."""
         self._require_mission()
         if fieldname not in PROTECTED_FIELDS:
@@ -259,7 +274,8 @@ class MissionStore:
         if by != "human":
             raise ProtectedFieldError(
                 f"{fieldname} is yours; the agent cannot set it")
-        return self._append("set", by, field=fieldname, value=value)
+        return self._append("set", by, typed_by=typed_by, field=fieldname,
+                            value=value)
 
     def _require_mission(self) -> None:
         if self.load() is None:
@@ -324,10 +340,13 @@ class MissionStore:
                             cwd=ev.get("cwd", ""), objective=ev.get("objective", ""),
                             parent_session=ev.get("parent_session", ""),
                             parent_item=ev.get("parent_item", ""),
-                            created=ev.get("at", 0.0))
+                            created=ev.get("at", 0.0),
+                            typed_by_human=ev.get("typed_by", "human") == "human")
             elif m is None:
                 continue
             elif k == "set":
+                if ev.get("typed_by", "human") != "human":
+                    m.typed_by_human = False
                 f, v = ev["field"], ev["value"]
                 setattr(m, f, list(v) if f in LIST_FIELDS and isinstance(v, list) else v)
             elif k == "proposed":

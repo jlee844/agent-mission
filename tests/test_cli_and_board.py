@@ -367,7 +367,7 @@ def _mission_at(tmp_path, sid, cwd, name):
 
 
 def test_a_person_in_their_own_terminal_gets_a_message_not_a_traceback(
-        tmp_path, monkeypatch, capsys):
+        tmp_path, monkeypatch, capsys, at_a_keyboard):
     """Outside Claude Code there is no CLAUDE_CODE_SESSION_ID -- and the design
     sends the person to their own terminal for every human-only command, so
     this is the NORMAL path. It used to raise a pathlib TypeError."""
@@ -585,3 +585,35 @@ def test_a_write_says_which_mission_it_landed_on(tmp_path, monkeypatch, capsys):
     assert "Career hub" in capsys.readouterr().out
     main(["propose", "invite tokens", "--session", "s"])
     assert "Career hub" in capsys.readouterr().out
+
+
+def test_the_readme_states_the_real_test_count():
+    """Corrected once, wrong again eleven commits later, and caught by another
+    session both times. A number a human retypes is a number that drifts."""
+    import re
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+    out = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q",
+                          str(root / "tests")], capture_output=True, text=True,
+                         cwd=root).stdout
+    real = int(re.search(r"(\d+) tests? collected", out).group(1))
+    readme = (root / "README.md").read_text()
+    claimed = {int(n) for n in re.findall(r"(\d+)\s*tests", readme)}
+    assert claimed == {real}, (
+        f"README claims {sorted(claimed)}; there are {real}")
+
+
+def test_the_deny_rule_count_in_the_docs_matches_the_list():
+    """A comment said 'the four commands only a person may run' directly above
+    a list of five, added in the same commit that added the fifth."""
+    import re
+    from agent_mission.__main__ import DENY_RULES
+    root = Path(__file__).resolve().parents[1]
+    src = (root / "agent_mission" / "__main__.py").read_text()
+    readme = (root / "README.md").read_text()
+    words = {"four": 4, "five": 5, "six": 6, "three": 3}
+    for text, where in ((src, "__main__.py"), (readme, "README.md")):
+        for m in re.finditer(r"\b(three|four|five|six)\b[^.\n]{0,40}"
+                             r"(deny rule|commands only a person)", text, re.I):
+            assert words[m.group(1).lower()] == len(DENY_RULES), (
+                f"{where} says {m.group(1)}; DENY_RULES has {len(DENY_RULES)}")

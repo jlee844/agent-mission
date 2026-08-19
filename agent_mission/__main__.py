@@ -183,12 +183,20 @@ def cmd_init(a) -> int:
         return 1
 
     cwd = str(Path(a.cwd).resolve())
-    st.create(sid, cwd, parsed["objective"], by="human")
+    # `init` is deliberately NOT gated: the documented flow is the agent
+    # interviewing you and transcribing your answers with --from-file. But
+    # recording that as plain "human" made an agent-authored objective
+    # indistinguishable from one you typed -- `why objective` said "human"
+    # about a goal an agent had written, which is the exact failure this tool
+    # exists to make impossible. So the runner is recorded alongside the
+    # authority, and `show` says so.
+    typed = "human" if _at_a_keyboard() else "agent"
+    st.create(sid, cwd, parsed["objective"], by="human", typed_by=typed)
     if parsed["name"]:
-        st.set_protected("name", parsed["name"], by="human")
+        st.set_protected("name", parsed["name"], by="human", typed_by=typed)
     for f in ("success_criteria", "constraints", "non_goals"):
         if parsed[f]:
-            st.set_protected(f, parsed[f], by="human")
+            st.set_protected(f, parsed[f], by="human", typed_by=typed)
     stack: list[tuple[int, str]] = []          # (indent, item_id)
     for entry in parsed["checklist"]:
         text, indent = entry["text"], entry["indent"]
@@ -232,6 +240,10 @@ def cmd_show(a) -> int:
         print(f"  {m.objective}\n")
     else:
         print(f"\n  {m.objective}\n")
+    if not m.typed_by_human:
+        print("  ⚠ an agent transcribed this goal — `mission why objective` for"
+              " the record,\n    `mission set objective \"...\"` to make it "
+              "yours.\n")
     if m.success_criteria:
         print("  DONE WHEN")
         for c in m.success_criteria:
@@ -289,7 +301,8 @@ def cmd_set(a) -> int:
         print(f"  {a.field} is not one of: {', '.join(sorted(PROTECTED_FIELDS))}")
         return 1
     value = a.value if field in ("name", "objective") else list(a.value_list or a.value.split("|"))
-    st.set_protected(field, value, by="human")
+    st.set_protected(field, value, by="human",
+                     typed_by="human" if _at_a_keyboard() else "agent")
     print(f"  {field} updated")
     return cmd_show(a)
 
@@ -467,7 +480,9 @@ def cmd_why(a) -> int:
         when = _dt.datetime.fromtimestamp(e["at"]).strftime("%Y-%m-%d %H:%M")
         v = e.get("value", e.get("objective", ""))
         v = " | ".join(v) if isinstance(v, list) else str(v)
-        print(f"  {when}  {e['by']:<6} {v}")
+        who = e.get("typed_by", e["by"])
+        mark = e["by"] if who == e["by"] else f"{e['by']} (typed by {who})"
+        print(f"  {when}  {mark:<24} {v}")
     print()
     return 0
 
@@ -620,7 +635,7 @@ def cmd_setup(a) -> int:
     return _install_deny_rules(a)
 
 
-# The four commands only a person may run. Blocked at the harness, they never
+# The five commands only a person may run. Blocked at the harness, they never
 # reach this code at all -- which is the point: the tty check lives inside the
 # thing being protected, and a rule here is enforced by the thing that already
 # holds the authority.

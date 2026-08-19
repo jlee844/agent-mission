@@ -418,3 +418,53 @@ def test_add_on_an_empty_store_explains_instead_of_crashing(tmp_path, monkeypatc
     out = capsys.readouterr().out
     assert "no mission for this session yet" in out
     assert "Traceback" not in out and "NoSuchItemError" not in out
+
+
+# ── who actually typed it ────────────────────────────────────────────────────
+
+def test_an_agent_transcribed_objective_is_recorded_as_such(tmp_path, monkeypatch, capsys):
+    """The most serious finding in this project, reported by another session:
+    `init --from-file` is an agent-runnable path into a protected field, and it
+    stamped the result `human`. `mission why objective` then said a person set
+    a goal an agent had written -- the exact failure the tool exists to make
+    impossible. init stays ungated (the documented flow IS the agent
+    transcribing an interview); what changes is that the record says so."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    _no_tty(monkeypatch)                      # an agent's shell
+    seed = tmp_path / "m.txt"
+    seed.write_text("OBJECTIVE: a goal the agent invented\n")
+    assert main(["init", "--from-file", str(seed), "--session", "s",
+                 "--cwd", str(tmp_path), "--no-board"]) == 0
+
+    m = MissionStore(root_for("s")).load()
+    assert m.objective == "a goal the agent invented"
+    assert m.typed_by_human is False, "the record must not claim a person typed it"
+
+    capsys.readouterr()
+    main(["show", "--session", "s"])
+    assert "an agent transcribed this goal" in capsys.readouterr().out
+
+    capsys.readouterr()
+    main(["why", "objective", "--session", "s"])
+    assert "typed by agent" in capsys.readouterr().out
+
+
+def test_a_person_typing_it_is_recorded_plainly(tmp_path, monkeypatch, capsys):
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
+    seed = tmp_path / "m.txt"
+    seed.write_text("OBJECTIVE: a goal I typed myself\n")
+    main(["init", "--from-file", str(seed), "--session", "s",
+          "--cwd", str(tmp_path), "--no-board"])
+    assert MissionStore(root_for("s")).load().typed_by_human is True
+    capsys.readouterr()
+    main(["show", "--session", "s"])
+    assert "an agent transcribed" not in capsys.readouterr().out
+
+
+def test_authority_is_still_refused_regardless_of_who_typed(store):
+    """typed_by records; it never grants. An agent still cannot set a field."""
+    with pytest.raises(ProtectedFieldError):
+        store.set_protected("objective", "mine now", by="agent", typed_by="human")
