@@ -6,4 +6,4 @@ from .store import (FIELD_AUTHORITY, Authority, Item, Mission, MissionStore,
 __all__ = ["Mission", "MissionStore", "Item", "Authority", "FIELD_AUTHORITY",
            "ProtectedFieldError", "root_for", "current_session_id",
            "transcript_for", "activity", "live"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

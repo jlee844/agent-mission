@@ -538,3 +538,50 @@ def test_a_failed_refresh_keeps_the_last_good_board(monkeypatch):
     assert c.get()[0]["full"] == "good"
     c._refresh()
     assert c.get()[0]["full"] == "good", "the last good board survives"
+
+
+def test_force_will_not_silently_discard_a_plan(tmp_path, monkeypatch, capsys):
+    """Another session told Jonathan to run `mission init --force` to fix a bad
+    objective. It would have dropped 11 items and 10 pending proposals: load()
+    folds from the LAST `created` event, so a re-init discards everything
+    before it."""
+    from agent_mission.__main__ import main
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
+    seed = tmp_path / "m.txt"
+    seed.write_text("OBJECTIVE: original\nCHECKLIST:\n- one\n- two\n")
+    main(["init", "--from-file", str(seed), "--session", "s", "--cwd",
+          str(tmp_path), "--no-board"])
+    capsys.readouterr()
+
+    again = tmp_path / "m2.txt"
+    again.write_text("OBJECTIVE: replacement\n")
+    assert main(["init", "--force", "--from-file", str(again), "--session", "s",
+                 "--cwd", str(tmp_path), "--no-board"]) == 1
+    out = capsys.readouterr().out
+    assert "2 items" in out and "mission set objective" in out
+    m = MissionStore(root_for("s")).load()
+    assert m.objective == "original" and len(m.checklist) == 2, "nothing lost"
+
+    assert main(["init", "--force", "--discard-plan", "--from-file", str(again),
+                 "--session", "s", "--cwd", str(tmp_path), "--no-board"]) == 0
+    assert MissionStore(root_for("s")).load().objective == "replacement"
+
+
+def test_a_write_says_which_mission_it_landed_on(tmp_path, monkeypatch, capsys):
+    """Two items meant for another project turned up on the career card and
+    nobody noticed: the only feedback was an id and the text, neither of which
+    says where it went."""
+    from agent_mission.__main__ import main
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
+    st = MissionStore(root_for("s"))
+    st.create("s", "/repo", "the career hub", by="human")
+    st.set_protected("name", "Career hub", by="human")
+
+    main(["add", "Backend", "--session", "s"])
+    assert "Career hub" in capsys.readouterr().out
+    main(["propose", "invite tokens", "--session", "s"])
+    assert "Career hub" in capsys.readouterr().out

@@ -1,6 +1,6 @@
 [project]
 name = "agent-mission"
-version = "0.1.0"
+version = "0.2.0"
 description = "The goal, beside the work, that the agent cannot quietly rewrite"
 requires-python = ">=3.9"
 dependencies = []

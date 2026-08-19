@@ -104,6 +104,7 @@ def _store(sid: str) -> MissionStore:
 
 
 HUMAN_ENV = "AGENT_MISSION_I_AM_HUMAN"
+_SUBCOMMANDS: set[str] = set()
 
 
 def _at_a_keyboard() -> bool:
@@ -144,9 +145,23 @@ def cmd_init(a) -> int:
         print("  no session id. Run inside Claude Code, or pass --session.")
         return 1
     st = _store(sid)
-    if st.load() and not a.force:
+    existing = st.load()
+    if existing and not a.force:
         print(f"  a mission already exists for {short_id(sid)}. `mission` to see it, "
               f"`mission init --force` to start over.")
+        return 1
+    if existing and a.force and existing.checklist and not a.discard_plan:
+        # Another session told Jonathan to run `init --force` to fix a bad
+        # objective. It would have discarded 11 items and 10 pending proposals:
+        # load() folds from the LAST `created` event, so a re-init drops
+        # everything before it. Editing a field is what he actually wanted.
+        n, p = len(existing.checklist), len(existing.unaccepted)
+        print(f"\n  {short_id(sid)} has a plan: {n} items, {p} awaiting accept."
+              f"\n  `init --force` starts over and drops all of it.\n"
+              f"\n  To change what the mission SAYS, keeping the plan:"
+              f"\n    mission set objective \"...\""
+              f"\n    mission set name \"...\"\n"
+              f"\n  To really start over: add --discard-plan\n")
         return 1
 
     seed_obj, seed_crit = "", ""
@@ -485,6 +500,12 @@ def _print_tree(nodes, depth: int = 0, prefix: str = "",
                         show_all=show_all, kids=kids)
 
 
+def _where(sid: str) -> str:
+    """Which mission a write just landed on, in one line."""
+    m = _store(sid).load()
+    return f"{short_id(sid)}  {m.title}" if m else short_id(sid)
+
+
 def cmd_add(a) -> int:
     # `add` = propose + accept in one step, both as the human. Ungated, it was
     # the whole authority model in one command: an agent could write an
@@ -498,14 +519,19 @@ def cmd_add(a) -> int:
     ev = st.propose(a.text, by="human", parent=a.under)
     st.accept(ev["item_id"], by="human")
     where = f" under {a.under}" if a.under else ""
+    # Name the mission it landed on. Two items meant for Tripnom turned up on
+    # the career card and nobody noticed, because the only feedback was the id
+    # and the text -- neither of which says WHERE it went.
     print(f"  added {ev['item_id']}{where}  {a.text}")
+    print(f"  → {_where(sid)}")
     return 0
 
 
 def cmd_propose(a) -> int:
-    ev = _store(resolve_session(a.session, getattr(a, 'cwd', None))).propose(
-        a.text, by="agent", parent=a.under)
+    sid = resolve_session(a.session, getattr(a, 'cwd', None))
+    ev = _store(sid).propose(a.text, by="agent", parent=a.under)
     print(f"  proposed {ev['item_id']} — inert until you `mission accept {ev['item_id']}`")
+    print(f"  → {_where(sid)}")
     return 0
 
 
@@ -544,6 +570,34 @@ def cmd_done(a) -> int:
         return 1
     rc = _apply(a, "done", lambda st, i: st.complete(i, by="human"))
     return rc or cmd_show(a)
+
+
+def cmd_version(a) -> int:
+    """Which build of the tool is this session running?
+
+    Long sessions hold a picture of the tool from whenever they last read it,
+    and this one changed under three of them in a day -- one recommended
+    `init --force` to fix an objective, which would have dropped the plan,
+    because `mission set` did not exist when that session last looked.
+    """
+    import subprocess
+    from . import __version__
+    here = Path(__file__).resolve().parent.parent
+    rev = date = ""
+    try:
+        rev = subprocess.run(["git", "-C", str(here), "log", "-1", "--format=%h"],
+                             capture_output=True, text=True, timeout=3).stdout.strip()
+        date = subprocess.run(["git", "-C", str(here), "log", "-1", "--format=%cd",
+                               "--date=format:%Y-%m-%d %H:%M"],
+                              capture_output=True, text=True, timeout=3).stdout.strip()
+    except Exception:
+        pass
+    print(f"\n  mission {__version__}" + (f"  ({rev}, {date})" if rev else ""))
+    print(f"  {here}")
+    print(f"\n  commands: {', '.join(sorted(_SUBCOMMANDS))}")
+    print("\n  If a command here is missing from what you remember, your picture"
+          "\n  of this tool is older than the tool.\n")
+    return 0
 
 
 def cmd_setup(a) -> int:
@@ -682,6 +736,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd")
 
     i = sub.add_parser("init", parents=[common]); i.add_argument("--force", action="store_true")
+    i.add_argument("--discard-plan", action="store_true",
+                   help="with --force: really drop the existing checklist")
     i.add_argument("--blank", action="store_true", help="do not seed from the transcript")
     i.add_argument("--no-edit", action="store_true", help="skip the editor (for scripts)")
     i.add_argument("--from-file", default=None,
@@ -758,6 +814,13 @@ def main(argv: list[str] | None = None) -> int:
     bd.add_argument("--foreground", action="store_true",
                     help=argparse.SUPPRESS)   # used by the spawner
     bd.set_defaults(fn=cmd_board)
+
+    vs = sub.add_parser("version", parents=[common],
+                        help="which build of mission is this, and what can it do")
+    vs.set_defaults(fn=cmd_version)
+
+    global _SUBCOMMANDS
+    _SUBCOMMANDS = set(sub.choices)
 
     a = ap.parse_args(argv)
     try:

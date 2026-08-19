@@ -159,6 +159,23 @@ Several ids in one command, because six items is otherwise six commands and the
 plan stops being maintained. **Never tick it yourself** — marking work complete
 is their judgement, and the whole guarantee rests on it.
 
+## The tool changes under you
+
+This CLI is under active development and a long session holds a picture of it
+from whenever it last looked. One session, working from an older picture, told
+Jonathan to run `mission init --force` to fix a badly-worded objective — that
+discards the whole plan, and `mission set objective` (which does not) already
+existed.
+
+So before advising a command you have not run this session:
+
+```bash
+mission version
+```
+
+It prints the build and every subcommand that exists right now. If something
+there is unfamiliar, your picture is older than the tool.
+
 ## Never report the plan from memory
 
 The human accepts, ticks and commits **in their own terminal**, where you cannot
