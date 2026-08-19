@@ -1038,3 +1038,42 @@ def test_an_outdated_slash_command_is_not_reported_as_installed(tmp_path,
     assert "outdated" in out and "--force" in out
     assert "missing" not in out.split("slash command")[1].split("\n")[0], \
         "the file is plainly there — calling it missing reads as a lie"
+
+
+def test_the_boards_javascript_parses():
+    """A stray newline inside a confirm() string killed the whole script, so
+    the board rendered a header and nothing else -- 203 tests green, page
+    blank. Nothing in the suite had ever parsed the JavaScript it ships."""
+    import shutil
+    import subprocess
+    from agent_mission.board import PAGE
+    js = PAGE.split("<script>")[1].split("</script>")[0]
+
+    node = shutil.which("node")
+    if node:
+        r = subprocess.run([node, "--check", "-"], input=js,
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        return
+
+    # No node: catch the specific class anyway -- an unterminated string
+    # literal on a single line.
+    for n, line in enumerate(js.splitlines(), 1):
+        for q in ("'", '"'):
+            if line.count(q) % 2 and "\\" + q not in line and "`" not in line:
+                raise AssertionError(f"line {n}: odd number of {q}: {line[:70]}")
+
+
+def test_every_actionable_state_shows_how_to_act_on_it():
+    """The reported dead end: the strip said "31 proposals awaiting you",
+    clicking `show` appeared to do nothing, and no card said how to accept
+    anything. A board that reports a problem and offers no exit is a board that
+    teaches you to ignore it."""
+    from agent_mission.board import PAGE
+    assert "mission accept --pending --on" in PAGE, \
+        "a read-only card prints the command that clears it"
+    assert "This board is read-only" in PAGE and "mission board" in PAGE, \
+        "and says why there are no buttons, once, at the top"
+    assert "scrollIntoView" in PAGE and "flash" in PAGE, \
+        "`show` takes you to the card instead of only re-filtering"
+    assert "user-select:all" in PAGE, "the command is one click to select"

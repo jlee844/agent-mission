@@ -528,6 +528,16 @@ cursor:pointer}
 .rev .acts button:hover{background:var(--bad);color:var(--bg)}
 .rev code{font-family:var(--mono);font-size:.72rem;background:var(--card);
 padding:.1rem .3rem;border-radius:3px;-webkit-user-select:all;user-select:all}
+/* Every state that says "something needs doing" must show HOW. A read-only
+   board has no buttons, so it prints the command instead -- click to select
+   the whole thing, because the alternative is retyping an id by hand. */
+.howto{font-family:var(--mono);font-size:.72rem;background:var(--soft);
+color:var(--ink);border:1px solid var(--rule);border-radius:4px;
+padding:.35rem .5rem;margin:.4rem 0 .1rem;-webkit-user-select:all;user-select:all;
+cursor:copy;overflow-x:auto;white-space:nowrap}
+.howto:hover{border-color:var(--mut)}
+.why{color:var(--mut);font-size:.74rem;margin:.3rem 0 .1rem;line-height:1.5}
+.card.flash{border-color:var(--ok)}
 .st{display:flex;align-items:center;gap:.4rem}
 /* No border tint for "waiting". On a real board five of six sessions had
    proposals outstanding, so every card lit up and the accent meant nothing
@@ -714,6 +724,9 @@ async function tick(){
   if (blank.length) bits.push(`<span><b>${blank.length}</b> session${
     blank.length>1?'s':''} with no mission</span>`
     + `<button class=go data-jump=todo>show</button>`);
+  if (!WRITABLE) bits.push('<span class=why>This board is read-only. Run'
+    + ' <code>mission board</code> yourself in a terminal for a write code'
+    + ' and buttons.</span>');
   strip.className = bits.length? '' : 'clear';
   strip.innerHTML = bits.length? bits.join('')
     : '<span>Nothing is waiting on you.</span>';
@@ -746,6 +759,9 @@ async function tick(){
          ${s.pending_accept?`<span class="warn ask">${s.pending_accept} awaiting accept${
    (WRITABLE&&CODE())?` <button class="act ok" data-do=acceptall data-s="${s.full}">accept all</button>`:''
  }</span>`:'<span></span>'}</div>
+         ${(s.pending_accept && !(WRITABLE&&CODE()))?`
+           <div class=why>To accept them, in your own terminal:</div>
+           <div class=howto>mission accept --pending --on ${esc(s.id)}</div>`:''}
          <ul class=chk>${visible(s.tree).map(i=>row(i,false,s.full)).join('')}</ul><!-- map(row) passes the INDEX as row's second argument, so every row
      after the first rendered in flat mode and the tree lost every
      connector. The nesting was in the data the whole time. -->
@@ -821,8 +837,8 @@ document.getElementById('setup').addEventListener('click', async e=>{
 document.getElementById('g').addEventListener('click', e=>{
   const ar = e.target.closest('[data-arch]');
   if (ar){
-    if (confirm('Archive this goal?\n\nIt leaves the board. Nothing is deleted —'
-              + ' the log stays and `mission unarchive` brings it back.'))
+    if (confirm('Archive this goal? It leaves the board. Nothing is deleted — '
+              + 'the log stays, and `mission archive --undo` brings it back.'))
       act('archive', ar.dataset.arch, []);
     return;
   }
@@ -848,7 +864,17 @@ document.getElementById('g').addEventListener('click', e=>{
 });
 document.getElementById('strip').addEventListener('click', e=>{
   const b = e.target.closest('[data-jump]'); if(!b) return;
+  // Filtering alone looked like nothing happened: when every card is already
+  // waiting on you, "show" filtered three cards down to the same three. Take
+  // the reader to the first one and mark it instead.
   document.querySelector('.chip[data-f=todo]').click();
+  setTimeout(()=>{
+    const first = document.querySelector('#g .card');
+    if (!first) return;
+    first.scrollIntoView({behavior:'smooth', block:'center'});
+    first.classList.add('flash');
+    setTimeout(()=>first.classList.remove('flash'), 1400);
+  }, 120);
 });
 document.getElementById('dense').addEventListener('click', ()=>{
   const on = document.getElementById('g').classList.toggle('compact');
