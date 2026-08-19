@@ -723,6 +723,17 @@ class _H(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):                                    # noqa: N802
+        if self.path.startswith("/api/identity"):
+            # Proof that the thing on this port is OUR board, serving THIS
+            # store. A bare TCP connect could not tell a live board from a
+            # foreign service, so a lost record spawned a second board and a
+            # stranger on 8976 was reported as the board's URL.
+            import os
+            from . import __version__
+            return self._send(200, json.dumps({
+                "mission_board": True, "pid": os.getpid(),
+                "home": str(_missions_home()), "version": __version__,
+            }).encode(), "application/json")
         if self.path.startswith("/data"):
             # `writable` says a code will be ACCEPTED, never what it is.
             payload = {"rows": CACHE.get(), "writable": WRITES.enabled}

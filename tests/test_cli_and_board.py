@@ -721,20 +721,30 @@ def test_pending_prints_the_command_that_clears_it(tmp_path, monkeypatch, capsys
     assert "1 awaiting you" in out and "mission accept --pending" in out
 
 
-def test_an_existing_statusline_is_never_replaced(tmp_path, monkeypatch, capsys,
-                                                  at_a_keyboard):
-    """A statusline someone already configured is theirs. Replacing it silently
-    is the same class of move this tool exists to prevent."""
+def test_an_existing_statusline_is_composed_not_discarded(
+        tmp_path, monkeypatch, capsys, at_a_keyboard):
+    """C2 shipped as printed instructions -- "here is what to chain" -- and the
+    statusline stayed exactly as it was for two days. A surface delivered as
+    advice does not get installed, so setup composes it instead. The original
+    command survives verbatim inside the wrapper."""
     import json as J
+    import subprocess
     from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
     settings = tmp_path / "settings.json"
-    mine = {"type": "command", "command": "my-own-statusline"}
-    settings.write_text(J.dumps({"statusLine": mine}))
+    settings.write_text(J.dumps({"statusLine": {
+        "type": "command", "command": "printf 'branch: main\\nline two'"}}))
 
     main(["setup", "--dest", str(tmp_path / "c"), "--settings", str(settings)])
-    assert J.loads(settings.read_text())["statusLine"] == mine
-    out = capsys.readouterr().out
-    assert "leaving it alone" in out and "chain it" in out
+    wrapper = J.loads(settings.read_text())["statusLine"]["command"]
+    assert wrapper.endswith("statusline.sh")
+    body = Path(wrapper).read_text()
+    assert "printf 'branch: main" in body, "the original, verbatim"
+
+    out = subprocess.run(["sh", wrapper], input="{}", capture_output=True,
+                         text=True).stdout
+    assert "branch: main" in out, "their statusline still shows"
+    assert "\n" not in out.strip(), "one line — statuslines truncate"
 
 
 def test_the_statusline_is_offered_when_there_is_none(tmp_path, monkeypatch,
@@ -813,3 +823,71 @@ def test_an_ambiguous_target_refuses_rather_than_guessing(tmp_path, monkeypatch,
     out = capsys.readouterr().out
     assert "matches several" in out and "alpha" in out and "beta" in out
     assert MissionStore(root_for("beta")).load().checklist == []
+
+
+def test_check_reports_each_surface_and_exits_nonzero_when_missing(
+        tmp_path, monkeypatch, capsys):
+    """The contract: re-running `mission setup` is always the complete fix, and
+    there is never a second instruction to follow. --check is how you know."""
+    import json as J
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
+    settings = tmp_path / "settings.json"
+    settings.write_text(J.dumps({}))
+
+    assert main(["setup", "--check", "--settings", str(settings),
+                 "--dest", str(tmp_path / "c")]) == 1
+    out = capsys.readouterr().out
+    for surface in ("slash command", "deny rules", "statusline",
+                    "re-anchor hook", "board bookmark"):
+        assert surface in out
+    assert "missing" in out and "mission setup" in out
+
+
+def test_check_passes_once_setup_has_run(tmp_path, monkeypatch, capsys,
+                                         at_a_keyboard):
+    import json as J
+    from agent_mission.__main__ import main
+    from agent_mission.daemon import write_bookmark
+    home = tmp_path / "home"
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(home))
+    settings = tmp_path / "settings.json"
+    settings.write_text(J.dumps({}))
+
+    main(["setup", "--settings", str(settings), "--dest", str(tmp_path / "c")])
+    write_bookmark(8976)                 # the board writes this when it binds
+    capsys.readouterr()
+    assert main(["setup", "--check", "--settings", str(settings),
+                 "--dest", str(tmp_path / "c")]) == 0
+    assert "everything is installed" in capsys.readouterr().out
+
+
+def test_setup_run_twice_changes_nothing_the_second_time(
+        tmp_path, monkeypatch, capsys, at_a_keyboard):
+    import json as J
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
+    settings = tmp_path / "settings.json"
+    settings.write_text(J.dumps({}))
+    args = ["setup", "--force", "--settings", str(settings),
+            "--dest", str(tmp_path / "c")]
+
+    main(args)
+    once = settings.read_text()
+    capsys.readouterr()
+    main(args)
+    assert settings.read_text() == once, "idempotent"
+    out = capsys.readouterr().out
+    assert "already" in out
+
+
+def test_the_bookmark_points_at_the_live_port_and_says_so_when_down(tmp_path,
+                                                                    monkeypatch):
+    """Bookmark it once and it is correct forever, including across a port
+    change -- and it must not send you to a dead URL."""
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    from agent_mission.daemon import write_bookmark
+    page = write_bookmark(8979).read_text()
+    assert "http://127.0.0.1:8979/" in page
+    assert 'mode: "no-cors"' in page, "file:// origin is null; a plain fetch is refused"
+    assert "not running" in page and "mission board" in page

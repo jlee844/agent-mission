@@ -26,9 +26,18 @@ pip install -e .
 mission setup      # slash command, deny rules, statusline, re-anchor hook
 ```
 
-`setup` only ever *offers*: it backs up your settings, never replaces a
-statusline or hooks you already have, and refuses to touch anything unless a
-person is at the keyboard.
+`setup` **finishes the job** rather than printing instructions — if you already
+have a statusline it writes a wrapper that runs yours *and* appends the goal,
+keeping your original verbatim. It backs up your settings, appends to hooks
+instead of replacing them, and refuses to touch anything unless a person is at
+the keyboard.
+
+```bash
+mission setup --check     # which surfaces are live here; exits 1 if any is missing
+```
+
+Re-running `mission setup` is always the complete fix. There is never a second
+instruction to follow.
 
 ## Usage
 
@@ -78,6 +87,7 @@ rules. See [SECURITY.md](docs/SECURITY.md) for how, and for what that does
 | `delegate <id>` | give one accepted item its own session for a subagent |
 | `observe <field> <text>` | record evidence, a decision, or a note |
 | `board` | the shared board (`--stop`; run it yourself for write buttons) |
+| `setup --check` | which surfaces are installed, missing, or outdated |
 | `setup` | slash command, deny rules, statusline, hooks |
 | `version` | the build, and every command that exists right now |
 
@@ -91,6 +101,13 @@ question you arrive with: *is anything waiting on me.*
 Run it yourself in a terminal and it prints a write code, which turns on accept,
 tick and note buttons. The agent never sees that code — that is the point, and
 [SECURITY.md](docs/SECURITY.md) explains the mechanism.
+
+It lives at `127.0.0.1:8976` and **stays there**: the port is the lock and the
+record is only a cache, so a restart returns to 8976, a board whose record was
+lost is adopted rather than duplicated, and only a foreign process on that port
+can push it elsewhere. `~/.agent-mission/board.html` is a bookmark that always
+points at the live one — and says the board is down rather than sending you to a
+dead URL.
 
 ## Limitations
 

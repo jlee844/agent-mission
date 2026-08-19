@@ -568,6 +568,11 @@ def cmd_whereami(a) -> int:
     n = len(m.unaccepted)
     if n:
         bits.append(f"{n} proposal{'' if n == 1 else 's'} waiting")
+    # The link, re-read every render. A port hop updates it by construction,
+    # which is the whole reason it is not printed once and remembered.
+    rec = board_running()
+    if rec:
+        bits.append(f"http://127.0.0.1:{rec['port']}")
     print(" · ".join(bits))
     return 0
 
@@ -821,8 +826,54 @@ def cmd_version(a) -> int:
     return 0
 
 
+def _surfaces(a) -> list[tuple[str, bool, str]]:
+    """Each surface, and whether it is actually installed on THIS machine."""
+    p, data = _read_settings(a)
+    data = data or {}
+    dest = (Path(a.dest).expanduser() if getattr(a, "dest", None)
+            else Path.home() / ".claude" / "commands")
+    deny = data.get("permissions", {}).get("deny", [])
+    sl = data.get("statusLine") or {}
+    sl_cmd = sl.get("command", "") if isinstance(sl, dict) else str(sl)
+    wrapper = _home_dir() / "statusline.sh"
+    sl_ok = "mission whereami" in sl_cmd or (
+        wrapper.exists() and str(wrapper) in sl_cmd)
+    hooks = json.dumps(data.get("hooks", {}).get("SessionStart", []))
+    return [
+        ("slash command", (dest / "mission.md").exists(), str(dest / "mission.md")),
+        ("deny rules", all(r in deny for r in DENY_RULES),
+         f"{sum(r in deny for r in DENY_RULES)}/{len(DENY_RULES)} in {p}"),
+        ("statusline", bool(sl_ok), sl_cmd[:60] or "not set"),
+        ("re-anchor hook", "mission whereami --full" in hooks,
+         "SessionStart"),
+        ("board bookmark", (_home_dir() / "board.html").exists(),
+         str(_home_dir() / "board.html")),
+    ]
+
+
+def cmd_check(a) -> int:
+    """Which surfaces are live here. Exit 1 if any is missing, so it scripts.
+
+    The contract this exists to make true: re-running `mission setup` is always
+    the complete fix, and there is never a second instruction to follow.
+    """
+    rows = _surfaces(a)
+    print()
+    for name, ok, detail in rows:
+        print(f"  {'✓' if ok else '·'} {name:<16} {'installed' if ok else 'missing':<10} {detail}")
+    missing = [n for n, ok, _ in rows if not ok]
+    if missing:
+        print(f"\n  {len(missing)} missing — `mission setup` in a terminal "
+              f"installs everything.\n")
+        return 1
+    print("\n  everything is installed.\n")
+    return 0
+
+
 def cmd_setup(a) -> int:
     """Install the /mission slash command so sessions run it, not read it."""
+    if getattr(a, "check", False):
+        return cmd_check(a)
     src = Path(__file__).resolve().parent.parent / "commands" / "mission.md"
     if not src.exists():
         print("  commands/mission.md not found in the package")
@@ -866,6 +917,13 @@ def _write_settings(p: Path, data: dict) -> Path:
     return backup
 
 
+def _home_dir() -> Path:
+    import os
+    h = Path(os.environ.get("AGENT_MISSION_HOME", Path.home() / ".agent-mission"))
+    h.mkdir(parents=True, exist_ok=True)
+    return h
+
+
 STATUSLINE = {"type": "command", "command": "mission whereami"}
 
 
@@ -889,10 +947,37 @@ def _offer_statusline(a) -> None:
         print("  statusline already runs `mission whereami`\n")
         return
     if current:
-        print("  you already have a statusline:")
-        print(f"    {json.dumps(current)[:120]}")
-        print("  leaving it alone. To show the goal there too, chain it:")
-        print("    <your command> && mission whereami\n")
+        inner = current.get("command") if isinstance(current, dict) else str(current)
+        if "mission whereami" in (inner or ""):
+            print("  statusline already includes `mission whereami`\n")
+            return
+        if not _at_a_keyboard():
+            print("  you already have a statusline. `mission setup` in a terminal"
+                  "\n  offers to chain `mission whereami` onto it.\n")
+            return
+        # Compose, do not instruct. A surface delivered as "here is what to
+        # type" does not get installed -- C2 shipped as printed instructions
+        # and the statusline stayed exactly as it was for two days.
+        wrapper = _home_dir() / "statusline.sh"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            "# Written by `mission setup`. Your original statusline command is\n"
+            "# preserved verbatim below; `mission whereami` is appended to it.\n"
+            "# Statuslines are ONE line, so both halves are flattened.\n"
+            "input=$(cat)\n"
+            f"mine=$(printf '%s' \"$input\" | {inner} 2>/dev/null | tr '\\n' ' ')\n"
+            "goal=$(mission whereami 2>/dev/null)\n"
+            "if [ -n \"$mine\" ] && [ -n \"$goal\" ]; then\n"
+            "  printf '%s · %s' \"$mine\" \"$goal\"\n"
+            "else\n"
+            "  printf '%s%s' \"$mine\" \"$goal\"\n"
+            "fi\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        data["statusLine"] = {"type": "command", "command": str(wrapper)}
+        b = _write_settings(p, data)
+        print(f"  statusline now runs your command AND `mission whereami`")
+        print(f"  wrapper: {wrapper}   (your original is inside it, verbatim)")
+        print(f"  WRITTEN TO {p}  (backup: {b.name})\n")
         return
     if not _at_a_keyboard():
         print("  no statusline set. `mission setup` in a terminal offers to add"
@@ -1089,6 +1174,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="install the /mission slash command")
     su.add_argument("--dest", default=None)
     su.add_argument("--force", action="store_true")
+    su.add_argument("--check", action="store_true",
+                    help="report which surfaces are installed; change nothing")
     su.add_argument("--no-statusline", action="store_true",
                     help="skip the statusline offer")
     su.add_argument("--no-hooks", action="store_true",
