@@ -202,6 +202,11 @@ def cmd_init(a) -> int:
         print("  no OBJECTIVE given — nothing saved.")
         return 1
 
+    if existing and a.discard_plan:
+        # Say it in the log, so the fold has a reason to start over rather
+        # than inferring one from a duplicate.
+        st.discard(by="human")
+
     cwd = str(Path(a.cwd).resolve())
     # `init` is deliberately NOT gated: the documented flow is the agent
     # interviewing you and transcribing your answers with --from-file. But

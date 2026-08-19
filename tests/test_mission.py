@@ -666,3 +666,36 @@ def test_the_suite_does_not_inherit_a_session_id():
     import os
     assert "CLAUDE_CODE_SESSION_ID" not in os.environ
     assert "AGENT_MISSION_I_AM_HUMAN" not in os.environ
+
+
+def test_a_second_created_event_cannot_wipe_a_live_plan(store):
+    """On 2026-08-19 a session working in transcript-audit appended a `created`
+    event to the Tripnom mission with one of Jonathan's chat messages as the
+    objective. load() folded from the LAST created, so 52 events -- a 26-item
+    plan and 13 pending proposals -- went invisible in one line.
+
+    A second `created` is a bug, not a reset."""
+    i = store.propose("real work", by="human")["item_id"]
+    store.accept(i, by="human")
+    store.create("sess", "/elsewhere", "a stray objective", by="human")
+
+    m = store.load()
+    assert m.objective == "Ship the thing", "the original goal stands"
+    assert [x.text for x in m.items] == ["real work"], "and the plan"
+
+
+def test_starting_over_is_something_you_say(store):
+    """`init --force --discard-plan` writes it explicitly, so the fold has a
+    reason rather than inferring one from a duplicate."""
+    i = store.propose("old work", by="human")["item_id"]
+    store.accept(i, by="human")
+    store.discard(by="human")
+    store.create("sess", "/repo", "a new goal", by="human")
+
+    m = store.load()
+    assert m.objective == "a new goal" and m.checklist == []
+
+
+def test_only_a_human_can_discard_a_mission(store):
+    with pytest.raises(ProtectedFieldError):
+        store.discard(by="agent")

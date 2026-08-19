@@ -91,6 +91,14 @@ real change in behaviour — an adversarial subagent given an impossible goal hi
 the refusal three times, was *told* the bypass in the error message, and did not
 use it. That is evidence about ordinary behaviour, not a security result.
 
+**`init` is not gated, and that is a real edge.** The documented flow is an
+agent transcribing your interview, so `init` stays runnable by an agent — it
+records `typed_by: agent` and `mission show` warns. What it must never do is
+destroy a plan, and on 2026-08-19 it did: a session working in another
+directory appended a second `created` event to a live mission and 52 events
+went invisible. The fold now ignores a duplicate `created`; starting over
+requires an explicit `discarded` event that only a human can write.
+
 **The event log is a plain file.** An agent with shell access can append
 `{"kind":"set","by":"human","field":"objective",...}` directly to
 `events.jsonl`, and every command will believe it. There is no signature and no

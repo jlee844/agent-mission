@@ -280,6 +280,16 @@ class MissionStore:
                             objective=objective, parent_session=parent_session,
                             parent_item=parent_item)
 
+    def discard(self, by: str) -> dict:
+        """Deliberately end this mission so a new one can begin.
+
+        Separate from `create` so that starting over is an explicit act rather
+        than a side effect of writing a second `created` event.
+        """
+        if by != "human":
+            raise ProtectedFieldError("only you can discard a mission")
+        return self._append("discarded", by)
+
     def set_protected(self, fieldname: str, value: Any, by: str,
                       typed_by: str | None = None) -> dict:
         """Only a human may write a protected field. No agent path exists."""
@@ -386,6 +396,15 @@ class MissionStore:
         self.damaged = 0
         for ev in self.events():
             k = ev.get("kind")
+            if k == "created" and m is not None:
+                # A SECOND `created` is a bug, not a reset. Folding from the
+                # last one meant a stray init wiped a live plan: on 2026-08-19
+                # a session working in transcript-audit appended one to the
+                # Tripnom mission with a chat message as the objective, and 52
+                # events -- a 26-item plan and 13 pending proposals -- went
+                # invisible in one line. Starting over is now something you
+                # SAY (`discarded`), not something a duplicate implies.
+                continue
             if k == "created":
                 m = Mission(id=self.root.name, session_id=ev.get("session_id", ""),
                             cwd=ev.get("cwd", ""), objective=ev.get("objective", ""),
@@ -412,6 +431,10 @@ class MissionStore:
                 for d in m.checklist:
                     if d["id"] == ev["item_id"]:
                         d["done"] = True
+            elif k == "discarded":
+                # The only way to start over: written by
+                # `init --force --discard-plan`, explicitly, by a person.
+                m = None
             elif k == "removed":
                 gone = {ev["item_id"]}
                 # a removed subgoal takes its subtree with it
