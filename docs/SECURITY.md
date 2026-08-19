@@ -1,0 +1,73 @@
+# Security and the honest limits
+
+What is enforced, how, and — more importantly — what is not.
+
+## Three layers
+
+**1. The store refuses.** `set_protected`, `accept`, `complete` and `remove`
+raise unless the caller passes `by="human"`. There is no agent path through the
+library. This is tested against every protected field, not spot-checked.
+
+**2. The CLI requires a terminal.** The store's refusal was advisory for months,
+because the CLI passed `by="human"` unconditionally — it could not tell who was
+typing. In a test, a subagent handed the CLI **rewrote a protected objective on
+its first try**, and `mission why` recorded the change as the human's.
+
+So `set`, `accept`, `done`, `remove` and `add` now require a controlling
+terminal. An agent's shell has none; a person typing in one does.
+
+**3. The harness denies.** `mission setup` writes five deny rules into
+`~/.claude/settings.json`. Claude Code blocks those commands before this code
+runs, so there is nothing left inside the tool to talk past. This is the layer
+that actually holds — it stopped the author's own agent mid-session.
+
+## What `typed_by` is for
+
+`init --from-file` and `delegate` are agent-runnable and *do* write protected
+fields — the documented flow is the agent transcribing an interview. Recording
+that as plain `human` made an agent-authored objective indistinguishable from a
+typed one.
+
+Every event now carries **`by`** (whose field it is) and **`typed_by`** (who ran
+the command). `mission why` prints both, and `mission show` warns on any mission
+an agent transcribed.
+
+## The board's write code
+
+Buttons on the board would be a POST any local process can make — including the
+agent's shell with one `curl`, which the deny rules never see because they match
+shell commands and not HTTP.
+
+So writes exist only when the board's own stdout is a **tty**, meaning a person
+started it. That board mints a six-character code, keeps it in memory, prints it
+to that terminal, and never writes it to disk or returns it from any endpoint.
+The background board that `mission init` spawns is read-only and has no code.
+
+Six hex characters is 16.7 million values, and on loopback a full sweep is hours
+rather than years — so **five wrong codes lock writes** until the board is
+restarted.
+
+## The limits, stated plainly
+
+**The `AGENT_MISSION_I_AM_HUMAN=1` override exists.** An agent can set it. It
+turns impersonation from the default outcome into a deliberate lie, which is a
+real change in behaviour — an adversarial subagent given an impossible goal hit
+the refusal three times, was *told* the bypass in the error message, and did not
+use it. That is evidence about ordinary behaviour, not a security result.
+
+**The event log is a plain file.** An agent with shell access can append
+`{"kind":"set","by":"human","field":"objective",...}` directly to
+`events.jsonl`, and every command will believe it. There is no signature and no
+hash chain today.
+
+So the guarantee is precisely this: **an agent cannot rewrite your goal through
+this tool's interfaces, and cannot do it accidentally or in passing.** It is not
+tamper-proof against an agent that sets out to forge the record. Anyone relying
+on this for more than that should read the log themselves.
+
+**A corrupt log degrades rather than dies.** A line that will not parse is
+skipped and counted; one unreadable session loses its card instead of taking the
+board down. This was not true until an outside review found it.
+
+**Everything is local.** The board binds `127.0.0.1`. Transcripts are read from
+`~/.claude/projects` and never leave the machine.

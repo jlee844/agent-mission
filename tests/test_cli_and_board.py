@@ -605,20 +605,14 @@ def test_a_write_says_which_mission_it_landed_on(tmp_path, monkeypatch, capsys):
     assert "Career hub" in capsys.readouterr().out
 
 
-def test_the_readme_states_the_real_test_count():
-    """Corrected once, wrong again eleven commits later, and caught by another
-    session both times. A number a human retypes is a number that drifts."""
+def test_the_readme_does_not_hardcode_a_test_count():
+    """It went stale twice and was caught by a reviewer both times. CI says the
+    number now; prose does not get to."""
     import re
-    import subprocess
-    root = Path(__file__).resolve().parents[1]
-    out = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q",
-                          str(root / "tests")], capture_output=True, text=True,
-                         cwd=root).stdout
-    real = int(re.search(r"(\d+) tests? collected", out).group(1))
-    readme = (root / "README.md").read_text()
-    claimed = {int(n) for n in re.findall(r"(\d+)\s*tests", readme)}
-    assert claimed == {real}, (
-        f"README claims {sorted(claimed)}; there are {real}")
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    stale = re.findall(r"\b\d+\s*tests\b", readme)
+    assert not stale, f"hardcoded test counts in the README: {stale}"
+    assert "actions/workflows/tests.yml/badge.svg" in readme, "CI badge instead"
 
 
 def test_the_deny_rule_count_in_the_docs_matches_the_list():
@@ -725,3 +719,97 @@ def test_pending_prints_the_command_that_clears_it(tmp_path, monkeypatch, capsys
     main(["pending", "--session", "s"])
     out = capsys.readouterr().out
     assert "1 awaiting you" in out and "mission accept --pending" in out
+
+
+def test_an_existing_statusline_is_never_replaced(tmp_path, monkeypatch, capsys,
+                                                  at_a_keyboard):
+    """A statusline someone already configured is theirs. Replacing it silently
+    is the same class of move this tool exists to prevent."""
+    import json as J
+    from agent_mission.__main__ import main
+    settings = tmp_path / "settings.json"
+    mine = {"type": "command", "command": "my-own-statusline"}
+    settings.write_text(J.dumps({"statusLine": mine}))
+
+    main(["setup", "--dest", str(tmp_path / "c"), "--settings", str(settings)])
+    assert J.loads(settings.read_text())["statusLine"] == mine
+    out = capsys.readouterr().out
+    assert "leaving it alone" in out and "chain it" in out
+
+
+def test_the_statusline_is_offered_when_there_is_none(tmp_path, monkeypatch,
+                                                      capsys, at_a_keyboard):
+    import json as J
+    from agent_mission.__main__ import STATUSLINE, main
+    settings = tmp_path / "settings.json"
+    settings.write_text(J.dumps({}))
+    main(["setup", "--dest", str(tmp_path / "c"), "--settings", str(settings)])
+    assert J.loads(settings.read_text())["statusLine"] == STATUSLINE
+    assert list(tmp_path.glob("settings.json.bak-mission-*"))
+
+
+def test_the_reanchor_hook_is_appended_not_substituted(tmp_path, monkeypatch,
+                                                       capsys, at_a_keyboard):
+    """The machine this was built on already had four hooks. Replacing the
+    SessionStart array would have removed two of them."""
+    import json as J
+    from agent_mission.__main__ import main
+    settings = tmp_path / "settings.json"
+    theirs = [{"hooks": [{"type": "command", "command": "their-thing"}]},
+              {"hooks": [{"type": "command", "command": "another"}]}]
+    settings.write_text(J.dumps({"hooks": {"SessionStart": list(theirs)}}))
+
+    main(["setup", "--dest", str(tmp_path / "c"), "--settings", str(settings)])
+    got = J.loads(settings.read_text())["hooks"]["SessionStart"]
+    assert got[:2] == theirs, "both of theirs survive, in order"
+    assert len(got) == 3 and "mission whereami --full" in J.dumps(got[2])
+
+
+def test_an_agent_cannot_edit_your_settings(tmp_path, monkeypatch, capsys):
+    import json as J
+    from agent_mission.__main__ import main
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+    settings = tmp_path / "settings.json"
+    settings.write_text(J.dumps({}))
+    main(["setup", "--force", "--dest", str(tmp_path / "c"),
+          "--settings", str(settings)])
+    assert J.loads(settings.read_text()) == {}, "nothing written"
+
+
+def test_proposing_into_another_session_records_where_it_came_from(
+        tmp_path, monkeypatch, capsys):
+    """A reviewing session's findings reach the plan without the human
+    retyping them -- the friction that stranded 61 of 152 proposals."""
+    from agent_mission.__main__ import main
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "reviewer")
+    for name in ("alpha", "beta"):
+        st = MissionStore(root_for(name))
+        st.create(name, "/repo", f"goal of {name}", by="human")
+        st.set_protected("name", f"{name} mission", by="human")
+
+    assert main(["propose", "found a bug", "--into", "beta mission"]) == 0
+    beta = MissionStore(root_for("beta")).load()
+    assert [i.text for i in beta.items] == ["found a bug"]
+    assert not beta.items[0].accepted, "still inert — a peer cannot accept"
+    ev = [e for e in MissionStore(root_for("beta")).events()
+          if e["kind"] == "proposed"][0]
+    assert ev["from_session"] == "reviewer"
+    assert MissionStore(root_for("alpha")).load().checklist == []
+
+
+def test_an_ambiguous_target_refuses_rather_than_guessing(tmp_path, monkeypatch,
+                                                          capsys):
+    from agent_mission.__main__ import main
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    for name in ("alpha", "beta"):
+        st = MissionStore(root_for(name))
+        st.create(name, "/repo", f"goal of {name}", by="human")
+        st.set_protected("name", f"{name} mission", by="human")
+
+    assert main(["propose", "x", "--into", "mission"]) == 1
+    out = capsys.readouterr().out
+    assert "matches several" in out and "alpha" in out and "beta" in out
+    assert MissionStore(root_for("beta")).load().checklist == []

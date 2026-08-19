@@ -222,3 +222,37 @@ def resolve_session(explicit: str | None, cwd: str | None = None) -> str:
     raise NoSessionError(
         "several missions cover this directory — say which:",
         [(sid, title) for _, _, sid, title in deepest])
+
+
+def find_session(needle: str, base=None) -> str:
+    """Resolve a session by id prefix or mission name. Ambiguity refuses.
+
+    A reviewing session proposing into a working session's mission needs to
+    name it, and nobody types a full uuid. Matching is exact-id, then prefix,
+    then case-insensitive substring of the mission's name or objective.
+    """
+    from .store import MissionStore, root_for
+
+    home = root_for("x", base).parent
+    if not home.exists():
+        raise NoSessionError(f"no missions at all — nothing named {needle!r}")
+    cands = []
+    for d in sorted(home.iterdir()):
+        if not d.is_dir() or not (d / "events.jsonl").exists():
+            continue
+        if d.name == needle:
+            return d.name
+        try:
+            m = MissionStore(d).load()
+        except Exception:
+            continue
+        if m is None:
+            continue
+        hay = f"{m.name} {m.objective}".lower()
+        if d.name.startswith(needle) or needle.lower() in hay:
+            cands.append((d.name, m.title))
+    if not cands:
+        raise NoSessionError(f"no session matches {needle!r}")
+    if len(cands) > 1:
+        raise NoSessionError(f"{needle!r} matches several — say which:", cands)
+    return cands[0][0]

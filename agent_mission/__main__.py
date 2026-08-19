@@ -21,7 +21,8 @@ from pathlib import Path
 
 from .daemon import ensure as ensure_board, running as board_running, stop as board_stop
 from .session import (NoSessionError, activity, current_session_id,
-                      resolve_session, short_id, transcript_for)
+                      find_session, resolve_session, short_id,
+                      transcript_for)
 from .store import (FIELD_AUTHORITY, Authority, Item, MissionStore,
                     NoMissionError, NoSuchItemError, ProtectedFieldError,
                     children_of, root_for)
@@ -540,6 +541,23 @@ def cmd_whereami(a) -> int:
         print("no mission — mission init")
         return 0
 
+    if getattr(a, "full", False):
+        # Ten lines for a hook to inject: the goal and the guards, not the plan.
+        print(f"MISSION: {m.title} — {m.objective}")
+        for label, vals in (("DONE WHEN", m.success_criteria),
+                            ("CONSTRAINTS", m.constraints),
+                            ("NOT DOING", m.non_goals)):
+            for v in vals:
+                print(f"{label}: {v}")
+        nxt = [i for i in m.leaves if i.accepted and not i.done]
+        for i in nxt[:3]:
+            print(f"NEXT: [{i.id}] {i.text}")
+        if m.detours:
+            print(f"ON DETOUR: {m.detours[-1]} ({len(m.detours)} deep)")
+        if m.unaccepted:
+            print(f"AWAITING THE HUMAN: {len(m.unaccepted)} proposal(s)")
+        return 0
+
     bits = [m.title if len(m.title) <= 40 else m.title[:37].rsplit(" ", 1)[0] + "…"]
     if m.total_count:
         bits.append(f"{m.done_count}/{m.total_count}")
@@ -670,8 +688,18 @@ def cmd_add(a) -> int:
 
 
 def cmd_propose(a) -> int:
-    sid = resolve_session(a.session, getattr(a, 'cwd', None))
-    ev = _store(sid).propose(a.text, by="agent", parent=a.under)
+    # --into lets a REVIEWING session put an item on a WORKING session's plan.
+    # The authority model needs nothing new: a proposal is inert until a person
+    # accepts it, so a peer proposing is no more dangerous than the worker
+    # proposing into its own mission. Without it, a second session's findings
+    # reach the plan only by the human retyping them, which is the friction
+    # that stranded 61 of 152 proposals.
+    if getattr(a, "into", None):
+        sid = find_session(a.into)
+    else:
+        sid = resolve_session(a.session, getattr(a, "cwd", None))
+    ev = _store(sid).propose(a.text, by="agent", parent=a.under,
+                             from_session=current_session_id() or "")
     print(f"  proposed {ev['item_id']} — inert until you `mission accept {ev['item_id']}`")
     print(f"  → {_where(sid)}")
     return 0
@@ -810,7 +838,104 @@ def cmd_setup(a) -> int:
     print("  type /mission in any Claude Code session\n")
     print("  Without this, typing 'mission init' into a session is read as an")
     print("  instruction and the agent goes and does something else entirely.\n")
-    return _install_deny_rules(a)
+    rc = _install_deny_rules(a)
+    _offer_statusline(a)
+    _offer_hooks(a)
+    return rc
+
+
+def _settings_path(a) -> Path:
+    return (Path(a.settings).expanduser() if getattr(a, "settings", None)
+            else Path.home() / ".claude" / "settings.json")
+
+
+def _read_settings(a):
+    p = _settings_path(a)
+    if not p.exists():
+        return p, None
+    try:
+        return p, json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return p, None
+
+
+def _write_settings(p: Path, data: dict) -> Path:
+    backup = p.with_suffix(f".json.bak-mission-{int(time.time())}")
+    backup.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
+    p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return backup
+
+
+STATUSLINE = {"type": "command", "command": "mission whereami"}
+
+
+def _offer_statusline(a) -> None:
+    """Put the goal on screen permanently -- the highest-leverage surface.
+
+    The moment you have drifted is exactly the moment you do not think to run
+    `mission show`, so the goal has to arrive without being asked for.
+
+    Never overwrites: a statusline someone already configured is theirs, and
+    replacing it silently would be the same class of move this whole tool
+    exists to prevent.
+    """
+    if getattr(a, "no_statusline", False):
+        return
+    p, data = _read_settings(a)
+    if data is None:
+        return
+    current = data.get("statusLine")
+    if current == STATUSLINE:
+        print("  statusline already runs `mission whereami`\n")
+        return
+    if current:
+        print("  you already have a statusline:")
+        print(f"    {json.dumps(current)[:120]}")
+        print("  leaving it alone. To show the goal there too, chain it:")
+        print("    <your command> && mission whereami\n")
+        return
+    if not _at_a_keyboard():
+        print("  no statusline set. `mission setup` in a terminal offers to add"
+              "\n  one that runs `mission whereami`.\n")
+        return
+    data["statusLine"] = STATUSLINE
+    b = _write_settings(p, data)
+    print(f"  statusline now runs `mission whereami`  (backup: {b.name})")
+    print("  the goal is on screen from here on, at zero keystrokes\n")
+
+
+def _hook_cmd() -> str:
+    return "mission whereami --full 2>/dev/null || true"
+
+
+def _offer_hooks(a) -> None:
+    """Re-anchor after compaction, which is where memory actually fails.
+
+    The mission already SURVIVES compaction on disk. Nothing put it back in
+    front of the agent afterwards, so it survived somewhere nobody looked.
+    """
+    if getattr(a, "no_hooks", False):
+        return
+    p, data = _read_settings(a)
+    if data is None:
+        return
+    hooks = data.setdefault("hooks", {})
+    start = hooks.setdefault("SessionStart", [])
+    if any(_hook_cmd() in json.dumps(h) for h in start):
+        print("  SessionStart hook already re-anchors the mission\n")
+        return
+    entry = {"hooks": [{"type": "command", "command": _hook_cmd(),
+                        "timeout": 5}]}
+    if not _at_a_keyboard():
+        print("  a SessionStart hook would re-anchor the mission after a"
+              "\n  compaction. `mission setup` in a terminal to add it.\n")
+        return
+    start.append(entry)                    # appended, never replacing yours
+    b = _write_settings(p, data)
+    print(f"  SessionStart hook added, alongside your {len(start) - 1} existing"
+          f" one(s)  (backup: {b.name})")
+    print("  after a compaction the agent gets the goal back, not just the"
+          " transcript\n")
 
 
 # The five commands only a person may run. Blocked at the harness, they never
@@ -945,6 +1070,8 @@ def main(argv: list[str] | None = None) -> int:
     pr = sub.add_parser("propose", parents=[common])
     pr.add_argument("text")
     pr.add_argument("--under", default=None, metavar="ID")
+    pr.add_argument("--into", metavar="SESSION",
+                    help="another session's mission, by id prefix or name")
     pr.set_defaults(fn=cmd_propose)
     ac = sub.add_parser("accept", parents=[common])
     ac.add_argument("item_id", nargs="*", metavar="ID")
@@ -962,6 +1089,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="install the /mission slash command")
     su.add_argument("--dest", default=None)
     su.add_argument("--force", action="store_true")
+    su.add_argument("--no-statusline", action="store_true",
+                    help="skip the statusline offer")
+    su.add_argument("--no-hooks", action="store_true",
+                    help="skip the SessionStart re-anchor hook")
     su.add_argument("--no-permissions", action="store_true",
                     help="skip the Claude Code deny rules")
     su.add_argument("--settings", default=None,
@@ -1015,6 +1146,8 @@ def main(argv: list[str] | None = None) -> int:
 
     wa = sub.add_parser("whereami", parents=[common],
                         help="one line: goal, progress, detour, what is waiting")
+    wa.add_argument("--full", action="store_true",
+                    help="the goal and its guards, ~10 lines, for a hook")
     wa.set_defaults(fn=cmd_whereami)
 
     pd = sub.add_parser("pending", parents=[common],

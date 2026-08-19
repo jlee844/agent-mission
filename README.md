@@ -1,10 +1,10 @@
 # mission
 
-**The goal, beside the work, that the agent cannot quietly rewrite.**
+**The goal that outlives the detours — the agent cannot quietly rewrite it, and
+you cannot quietly forget it.**
 
-[![tests](https://img.shields.io/badge/tests-147%20passing-0E6E68)](tests/)
+[![tests](https://github.com/jlee844/agent-mission/actions/workflows/tests.yml/badge.svg)](https://github.com/jlee844/agent-mission/actions/workflows/tests.yml)
 [![python](https://img.shields.io/badge/python-3.9%20–%203.14-0E6E68)](pyproject.toml)
-[![context cost](https://img.shields.io/badge/always--on%20context-47%20tokens-0E6E68)](commands/mission.md)
 [![deps](https://img.shields.io/badge/dependencies-none-0E6E68)](pyproject.toml)
 [![license](https://img.shields.io/badge/license-MIT-666)](LICENSE)
 
@@ -12,447 +12,112 @@ You start a session with something in mind. Two hours later there are 800 tool
 calls, a summary written by the thing being summarised, and no easy answer to
 *what was this for, and is it done?*
 
-`mission` puts the goal next to the work: one command at the start, a checklist
-you own, and one page showing every running session — what each is for, what it
-has ticked off, and what it has actually done.
+`mission` writes the goal down once, keeps it somewhere the agent cannot edit,
+and puts it back in front of you — on your statusline, after a compaction, and
+on one page showing every session you have running.
 
-![The mission board: three sessions, their goals, their plans, and what each has actually done](docs/board.png)
+![The mission board](docs/board.png)
 
-Three sessions above. `▪` is done, `▫` is agreed work, `?` is something the
-agent proposed and you have not accepted. Finished items and the fixed terms
-both fold away. The numbers at the bottom of each card are **measured from the
-transcript**, not reported by the agent.
-
-**The strip at the top is the whole point of the page.** *3 proposals awaiting
-you in 2 sessions* — the question you actually arrive with is "is anything
-waiting on me", and it should not cost six cards to answer. A coloured dot per
-card says which state it is in (**working · waiting on you · idle · no mission ·
-ended**), cards needing you sort first, and `compact` collapses the board to one
-line per session for when three sessions becomes eight.
-
-Colour means one thing here: **this is waiting on you.** Failed calls and health
-notes are grey. An alarm that fires for three unrelated reasons is not an alarm.
+## Install
 
 ```bash
 git clone https://github.com/jlee844/agent-mission && cd agent-mission
 pip install -e .
-
-mission setup     # install the /mission slash command (once)
-mission init      # write it — opens your editor, then opens the board
-mission           # show it, with measured activity
-mission board     # the shared board (starts it, or joins the one running)
+mission setup      # slash command, deny rules, statusline, re-anchor hook
 ```
 
-## What it looks like
+`setup` only ever *offers*: it backs up your settings, never replaces a
+statusline or hooks you already have, and refuses to touch anything unless a
+person is at the keyboard.
 
-```
-  Ship list sharing to mobile
-
-  DONE WHEN
-    · lists sync web↔mobile
-    · PARITY.md regenerated
-
-  CONSTRAINTS
-    · no schema migration
-
-  NOT DOING
-    · redesigning the map
-
-  PLAN  2/5
-    [ ] 627d52c7  Mobile port   1/2
-    └─ [ ] a91922a1  Wire AddToListSheet
-    [ ] f87a7497  Regenerate PARITY.md
-    [?] 660974c9  Add a caching layer
-    (2 finished, hidden — `mission show --all`)
-
-    1 proposed, awaiting your accept
-
-  MEASURED SO FAR
-    527 tool calls · 42 files changed · 141 test runs · 19 failed calls
-```
-
-`[?]` is an agent proposal. It is inert until you accept it.
-
-**Finished work sinks and then folds away.** What is left is what you act on, so
-it should not have to be found among ticked boxes. Order is unfinished-first at
-every level, and the order you wrote survives inside each group. `--all` brings
-the finished items back; on the board they are one click away under `▸ FINISHED`.
-
-**The plan is a tree.** An objective breaks into subgoals, subgoals into work.
-Only leaves count — a subgoal is a container, so counting it as a task both
-inflates the total and can never be ticked honestly. A branch shows the progress
-of its children and is done when they are.
+## Usage
 
 ```bash
-mission add "Wire the invite flow" --under e92721c7
-mission remove e92721c7 4a1c9e02          # drops them and their subtrees
+mission init                 # interviews you, then writes it
+mission                      # the goal, the plan, measured activity
+mission whereami             # one line, for a statusline
+mission detour "chasing a flaky test"
+mission return               # replays the goal and the guards you set
+mission board                # every live session on one page
 ```
 
-**Name a set instead of listing ids.** Measured across five real missions: 152
-proposals, 91 accepted, **61 left pending** — because accepting cost a person
-retyping an eight-character id per item, and the worst case was 25 of them in
-one command that failed and had to be redone by hand.
-
-```bash
-mission pending                  # what is waiting, and the command to clear it
-mission accept --pending         # all of it, no ids
-mission accept --under 56fa8644  # one subtree
-mission done   --under 56fa8644  # tick that subtree's leaves
+```
+Ship list sharing · 2/5 · detour: chasing a flaky test · 3 proposals waiting
 ```
 
-`--all` deliberately does **not** work for `done`: it is shared with `show
---all`, so `mission done --all` is a plausible typo for "show me everything" —
-and it would declare every task finished. Accepting everything is cheap to
-undo; ticking everything is a judgement.
-
-Removal is soft: the event log keeps it. Append-only is about not losing
-history, not about being unable to change your mind — a plan you cannot prune
-stops being a plan.
-
-## Use it from inside a session
-
-```
-/mission init
-/mission add "port the list types"
-/mission done 5005d9f8
-```
-
-`/mission init` **interviews you** — one question at a time, each with a
-recommended answer so you can say "yes" and move on. Objective, then success
-criteria (the one people skip), constraints, non-goals, and a proposed
-checklist. It stops when a competent stranger could pick up the session and know
-what to do and when to stop. The agent is the scribe; every line traces to
-something you said.
-
-**Install the slash command with `mission setup`.** Without it, typing
-`mission init` into a session is read as an *instruction* rather than run as a
-command — in testing, an agent took it as "go re-initialise the project" and
-spent a long turn rewriting unrelated files. A slash command executes.
-
-The command file also tells the agent it may `mission propose "..."` freely —
-proposals are inert until you accept them — and that it must not author the
-mission itself or route around the store's refusal via the CLI.
-
-## Bring a plan you already have
-
-Every planner in this space ends at a markdown file — `writing-plans` writes to
-`docs/superpowers/plans/`, GSD to `.planning/ROADMAP.md`, Kiro to
-`.kiro/specs/<feature>/tasks.md`. They are good at decomposition and they all
-stop at a file nothing reads back.
-
-```bash
-mission import docs/superpowers/plans/2026-08-17-list-sharing.md
-mission import .kiro/specs/lists/tasks.md --under 56fa8644
-```
-
-Headings and nested checkboxes become the tree, and it lands as **proposals**.
-Fenced code is skipped, links flatten to their text, and the numbering the
-source carries (`2.1`, `Task 3:`) is dropped — renumber a plan and every item
-would otherwise look new.
-
-**Re-importing diffs.** New rows go up, rows already in the plan are left alone,
-and rows that vanished from the file are reported with `--strict` and **never
-removed** — removing is your call, and a tool that silently prunes the plan
-because a file changed is one you stop trusting with the plan. That is what
-makes a replan cheap: change the file, import again, read the difference.
-
-**A `[x]` in the source is imported unticked.** The file says it is finished;
-the file is not you. The count is reported so you can tick them in one command
-if the source was right.
-
-## Hand one item to a subagent
-
-A subagent has no session id of its own — it runs inside its parent's — so its
-work is invisible on the board and it has to be handed an id invented by hand.
-It also does not need the whole mission. It needs one item, and the limits that
-still apply.
-
-```bash
-mission delegate 5a182a09 --to "logreg baseline"
-```
-
-That makes a child mission whose objective is **copied verbatim** from an item
-you already accepted. Constraints and non-goals carry down, because a limit that
-stops applying to a subagent is not a limit. Success criteria stay with the
-parent: a slice of the work does not get to decide the whole mission is
-finished. The parent's plan then shows `→ <child> 2/4` beside that item.
-
-**The agent may run this**, because it authors nothing. It may not delegate an
-*unaccepted* proposal — otherwise it could propose an item and immediately
-delegate it, turning its own suggestion into a goal.
-
-## Goals move
-
-```bash
-mission set objective "Ship list sharing AND the invite flow"
-mission set name "List sharing + invites"
-mission set success-criteria "lists sync both ways|invites accepted end to end"
-```
-
-A mission you cannot edit is one you abandon and rewrite from scratch. Every
-edit is a new event, so the old value stays in the log:
-
-```bash
-mission why objective        # when it changed, and to what
-```
-
-The agent is refused on all of these exactly as before.
-
-## It survives compaction
-
-The mission lives in `~/.agent-mission/<session-id>/`, not in the model's
-context. Compact the conversation and the agent forgets the discussion; the
-objective, the criteria and the tree are still on the board, and `mission` still
-prints them. That is the point of writing it down.
-
-## Three levels of authority
-
-This is the whole design.
+**Three levels of authority.** This is the whole design.
 
 | level | fields | who writes |
 |---|---|---|
 | 🔒 **protected** | objective, success criteria, constraints, non-goals | **you only** |
 | 🟡 **proposed** | checklist, strategy | agent suggests, you accept |
-| 🟢 **observable** | decisions, evidence, notes | agent records freely |
+| 🟢 **observable** | decisions, evidence, notes, detours | agent records freely |
 
-```bash
-mission observe evidence "147 tests pass on 3.9 through 3.14"
-mission observe notes "the eval set is the bottleneck, not the model"
-```
+The agent cannot author a protected field, accept its own proposal, or tick an
+item — enforced in the store, at the terminal, and by Claude Code's own deny
+rules. See [SECURITY.md](docs/SECURITY.md) for how, and for what that does
+*not* cover.
 
-That one needs no gate at all — recording is not deciding.
+## Commands
 
-**The agent cannot author a protected field.** Not a permission check it might
-route around: `store.set_protected` refuses anything not marked `human`, and
-the same holds for accepting a proposal and for marking an item done.
+| command | what it does |
+|---|---|
+| `init` | interview and write the mission (`--from-file`, `--force --discard-plan`) |
+| `show` | the goal, the plan, measured activity (`--all` includes finished) |
+| `whereami` | one line for a statusline (`--full` for the ~10-line re-anchor) |
+| `pending` | what awaits your accept, and the command that clears it |
+| `add` | add an agreed item (`--under <id>`) |
+| `propose` | suggest an item; inert until accepted (`--into <session>`) |
+| `accept` | accept proposals (`--pending`, `--under <id>`, or ids) |
+| `done` | tick agreed work (`--under <id>`, or ids) |
+| `remove` | drop items and their subtrees |
+| `detour` / `return` | declare a side quest; return replays the goal |
+| `set` | change a protected field, keeping the plan and the history |
+| `why <field>` | when it changed, to what, and who typed it |
+| `import <file>` | land an external plan as proposals; diffs on re-import |
+| `delegate <id>` | give one accepted item its own session for a subagent |
+| `observe <field> <text>` | record evidence, a decision, or a note |
+| `board` | the shared board (`--stop`; run it yourself for write buttons) |
+| `setup` | slash command, deny rules, statusline, hooks |
+| `version` | the build, and every command that exists right now |
 
-There are exactly two places where an agent's command reaches a protected field
-at all, and neither lets it choose the content:
+## The board
 
-- **`init --from-file`** — the documented flow, where it transcribes an
-  interview. Every line came from one of your answers.
-- **`delegate`** — copies an item you already accepted into a child mission,
-  and inherits your constraints verbatim.
+`mission board` shows every running session: its goal, its plan as a tree, and
+what it has **actually done** — calls, files, test runs, failures, read from the
+transcript rather than reported by the agent. A strip at the top answers the
+question you arrive with: *is anything waiting on me.*
 
-Both record `typed_by: agent`, so `mission why` names the runner as well as the
-authority, and `mission show` prints a warning on any mission an agent
-transcribed. An outside reviewer caught `delegate` missing that annotation
-after `init` had been fixed — one function over. Marking work
-complete is a judgement, so it stays with you; the agent may record evidence.
+Run it yourself in a terminal and it prints a write code, which turns on accept,
+tick and note buttons. The agent never sees that code — that is the point, and
+[SECURITY.md](docs/SECURITY.md) explains the mechanism.
 
-**With one deliberate exception, and it is recorded.** `mission init` is not
-gated, because the documented flow *is* the agent interviewing you and
-transcribing your answers with `--from-file`. That makes `init` a path an agent
-can run into a protected field — found by another session working on this repo,
-after an adversarial subagent test had passed because it only tried `set`.
+## Limitations
 
-So the log records **two** things: `by`, whose field it is, and `typed_by`, who
-actually ran the command.
+- **Session discovery is Claude Code specific.** The store, the board and the
+  CLI are not.
+- **Progress is measured or marked, never inferred.** There is no drift
+  detection here, on purpose — [DESIGN.md](docs/DESIGN.md) says what was tried.
+- **The event log is a plain file.** An agent with shell access can append a
+  forged event. The guarantee is no *silent* rewrite through this tool's
+  interfaces, not tamper-proofness.
+- **Not on PyPI.** Install from source.
 
-```
-$ mission why objective
-  2026-08-19 00:43  human (typed by agent)   a goal the agent invented
-```
+## Docs
 
-and `mission show` says it above the plan:
-
-> ⚠ an agent transcribed this goal — `mission why objective` for the record,
-> `mission set objective "..."` to make it yours.
-
-`typed_by` records; it never grants. An agent still cannot `set`, `accept`,
-`done`, `remove` or `add`.
-
-There are 147 tests and most of them guard exactly this.
-
-**The honest scope of that guarantee.** The store has always refused agent
-writes. The *CLI* could not tell who typed the command, so it passed
-`by="human"` unconditionally — and in a test, a subagent handed the CLI rewrote
-a protected objective on its first try. `mission why` recorded the change as
-mine. It also accepted its own proposal. The README disclosed this as a known
-limit at the time; disclosure stopped nothing.
-
-So human-only commands now require a **controlling terminal**:
-
-```
-$ mission set objective "something else"      # from an agent's shell
-  the objective is yours, and this is not a terminal — refusing.
-  If you are an agent: `mission propose "..."` instead.
-```
-
-An agent's shell has no tty; a person typing in one does. `set`, `accept`,
-`done` and `remove` are gated on it, with `AGENT_MISSION_I_AM_HUMAN=1` for
-pipelines and CI.
-
-**The rule that actually holds.** `mission setup` also offers to add four deny
-rules to `~/.claude/settings.json`:
-
-```
-Bash(mission set:*)  ·  Bash(mission accept:*)
-Bash(mission done:*) ·  Bash(mission remove:*)
-```
-
-Now the harness refuses the call before this code runs, so there is nothing
-left inside the tool to talk past — and it costs the person nothing, because
-they type those in their own terminal anyway. The agent keeps `propose`,
-`delegate`, `observe`, `show` and `import`.
-
-Writing those rules is itself gated on a terminal, and **not** on `--force`:
-that flag means "overwrite the command file", and letting it also wave through
-a settings edit is how a narrow escape hatch becomes a wide one. It did, once.
-
-> **The tty check alone is not a security boundary.** An agent can set that variable. What it
-> changes is the *default*: impersonation went from what happens on the first
-> try to something that takes a deliberate lie — which is the threat this
-> design actually claims to address. Proving a human is present needs a
-> confirmation the agent cannot supply, and that is not built.
-
-The refusal always names `propose`, so the agent keeps a way to be useful. A
-guardrail with no path around it gets routed around.
-
-## Several sessions at once
-
-Two agents in one directory is normal — one on the sub-project, one that needs
-the parent repo. Each session identifies itself from the id Claude Code exports
-into every tool call, so missions never cross. `mission board` shows them
-together, refreshing:
-
-- what each session is for, and its checklist
-- criteria, constraints and non-goals
-- measured activity: calls, files changed, test runs, failed calls
-- sessions with no mission say so, and tell you the command
-
-**Long lists scroll inside their own block.** The plan caps at about ten rows
-and the finished fold at ten more, each scrolling in place rather than growing
-the card — one session here finished eleven items with four proposals behind
-them, and unbounded the card ran past the fold and pushed the goal off the top
-of the screen, which is the one thing the board must never do.
-
-**Search and filter.** The header carries a search box — matching the goal,
-every task in the plan, the criteria, the folder and the session id, because
-the case that matters is looking for a task you half remember across a board of
-goals — and four filters: `all`, `live`, `needs you` (proposals awaiting your
-accept, or a session with no mission at all) and `ended`. The header stays put
-while the board scrolls.
-
-**Delegated missions attach to their parent** rather than standing as their own
-cards. One session under test produced five cards, four of them its own
-children. A child whose parent is not on the board is still shown — hiding it
-would lose the work entirely.
-
-**One board, not one per session.** `mission init` in a second session joins
-the board already running and appears as another card — same URL, no second
-server. The port is recorded and *probed*, because a recorded port whose
-process died is worse than no record: it sends you to a dead URL.
-
-A mission whose session has ended stays on the board, dimmed and marked
-`ended`. The work happened; losing sight of it is what this exists to prevent.
-
-Localhost only. Reads transcripts and the mission log.
-
-### Accepting and ticking from the board
-
-Run `mission board` **yourself in a terminal** and it prints a short write code:
-
-```
-mission board -> http://127.0.0.1:8976
-
-write code: 4f2a91
-type it into the board once to accept and tick from there.
-it is not on disk and no page returns it — only this terminal
-has it, which is why the agent cannot use these buttons.
-```
-
-Type it in once and every card grows buttons: **accept** on a proposal, **tick**
-on agreed work, **accept all** per session, and a note box. No more copying
-eight-character ids into a shell.
-
-**Why a code, and why the terminal.** A plain Accept button would be a POST any
-local process can make — including the agent's own shell, with one `curl` — and
-the deny rules would never see it, because they match shell commands and not
-HTTP. The naive version does not merely fail to help; it removes the protection
-the tty gate and the deny rules provide.
-
-What the agent cannot reach is your terminal. So the code exists only when the
-board's own stdout is a tty, which means **you** started it. The board that
-`mission init` spawns in the background is read-only and has no code at all —
-its output goes to a log file the agent could read.
-
-An agent can still get the code if you paste your terminal into the chat. That
-is you choosing to share it — the same shape as the `AGENT_MISSION_I_AM_HUMAN`
-override: a decision, not an accident.
-
-**And the code is short, so it is guessable.** Six hex characters is 16.7
-million values, the deny rules do not help here (they match shell commands, not
-an HTTP POST from a one-line script), and on loopback a full sweep is hours
-rather than years. So five wrong codes lock writes until you restart the board.
-A correct one resets the counter, because fat-fingering it once should not cost
-you the session.
-
-## Session health
-
-Three facts about *how* a session ran, shown on each card. None of them is a
-judgement about whether the work was right.
-
-**Which model, and whether it changed.** Behaviour shifting after an update is
-not imagination. In one real session the model went
-`sonnet-4-6 → opus-4-8 → opus-5` mid-flight, and nothing surfaced it.
-
-**Replies repeated verbatim.** The agent answering a turn it already answered.
-Found in a real session at cosine 1.000 — 2,475 characters, byte-identical,
-thirteen replies apart. Median similarity in that session was 0.22, so it is far
-outside the noise. Numbers count as tokens, because "40/62" and "41/62" are
-different answers and a word-only tokenizer calls them a repeat.
-
-**Files two live sessions are both writing.** Nothing inside either session can
-see the other, so this is only visible from a board that watches all of them. On
-the machine this was built on, three sessions were editing the same file.
-
-## What it will not do
-
-**It does not judge whether the work is the right work.** That needs your
-intent, and five separate attempts to answer it mechanically all failed — drift
-detection by execution ratio, by vocabulary, by an LLM judge with the full
-session, and by structural segmentation. Progress here is either **measured**
-(what actually happened) or **marked by you**. Never inferred.
-
-**It does not maintain your checklist for you.** A related tool's recorded task
-state had 14 of 15 items reading `pending` while the first one's description
-ended `"DONE."` — nothing updated it when work landed. Ticking an item is one
-command, and an untouched checklist is honest rather than wrong.
-
-## Storage
-
-An append-only event log per session under `~/.agent-mission/<session-id>/`.
-State is a fold over it, so *why does the mission say this* is answerable by
-reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
-
-## Tests
-
-```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 147 tests, no network
-```
-
-## Status
-
-Not on PyPI yet — install from source as above. Session discovery is Claude
-Code specific; the store and the board are not.
-
-**Python 3.9 through 3.14**, all 147 tests passing on each. The floor is 3.9
-because that is the Python macOS ships: the package originally declared 3.10+,
-which would have told a user on stock macOS Python that it was unsupported
-while it ran fine.
-
----
+- [DESIGN.md](docs/DESIGN.md) — why it is shaped this way, and the five dead drift detectors
+- [SECURITY.md](docs/SECURITY.md) — what is enforced, and the honest limits
 
 ## Part of a set
 
 Four small tools that read what an AI coding session actually did, rather than
-what it said it did. Each stands alone; together they cover a session end to
-end.
+what it said it did.
 
 | | |
 |---|---|
-| **mission** *(you are here)* | the goal, beside the work, that the agent cannot quietly rewrite — plus one live board for every running session |
-| [**receipt**](https://github.com/jlee844/receipt) | what a session did, what it cost, and which of its claims are backed by the filesystem |
-| [**blindspot**](https://github.com/jlee844/blindspot) | which lines in a change a test would actually catch a bug in — coverage says a line ran, not that anything asserted on it |
-| [**transcript-audit**](https://github.com/jlee844/transcript-audit) | profile a corpus of agent transcripts before computing any statistic over it |
+| **mission** *(you are here)* | the goal, beside the work |
+| [**receipt**](https://github.com/jlee844/receipt) | what a session did, what it cost, which claims are backed |
+| [**blindspot**](https://github.com/jlee844/blindspot) | which changed lines a test would actually catch a bug in |
+| [**transcript-audit**](https://github.com/jlee844/transcript-audit) | profile a transcript corpus before computing anything over it |
+
+MIT.

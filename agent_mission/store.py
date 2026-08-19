@@ -296,12 +296,17 @@ class MissionStore:
         if self.load() is None:
             raise NoMissionError(self.root.name)
 
-    def propose(self, text: str, by: str = "agent",
-                parent: str | None = None) -> dict:
-        """Suggest a node. Inert until accepted. `parent` nests it under another."""
+    def propose(self, text: str, by: str = "agent", parent: str | None = None,
+                from_session: str = "") -> dict:
+        """Suggest a node. Inert until accepted. `parent` nests it under another.
+
+        `from_session` records a proposal that came from ANOTHER session, so
+        `why` can say where a suggestion on your plan came from.
+        """
         self._require_mission()
+        extra = {"from_session": from_session} if from_session else {}
         return self._append("proposed", by, item_id=uuid.uuid4().hex[:8],
-                            text=text, parent=parent)
+                            text=text, parent=parent, **extra)
 
     def _require(self, item_id: str) -> None:
         m = self.load()
