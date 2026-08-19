@@ -372,6 +372,21 @@ def _announce_board(a) -> None:
 
 
 def cmd_show(a) -> int:
+    from . import missions as M
+    if not getattr(a, "on", None) and not getattr(a, "session", None):
+        sid = current_session_id()
+        if sid and not M.attachments().get(sid) and M.all_missions():
+            # No ceremony: the common case for an unattached session is that a
+            # goal for it already exists, so say which and how -- rather than
+            # "no mission for this session", which reads as "start over".
+            print(f"\n  {short_id(sid)} is not attached to a goal yet.\n")
+            for mid, st in M.all_missions()[:6]:
+                m = st.load()
+                if m and not m.archived:
+                    print(f"    mission attach {mid}")
+                    print(f"      {(m.objective or '')[:70]}")
+            print("\n  or `mission init` to write a new one.\n")
+            return 1
     sid = _resolve(a)
     m = _store(sid).load() if sid else None
     if not m:
@@ -982,6 +997,19 @@ def cmd_attach(a) -> int:
     return 0
 
 
+def cmd_archive(a) -> int:
+    """Take a finished goal off the board. Nothing is deleted."""
+    from . import missions as M
+    if not _human_gate("archiving a goal"):
+        return 1
+    mid = M.find(a.name)
+    st = MissionStore(M.missions_root() / mid)
+    st.archive(by="human", undo=a.undo)
+    print(f"  {mid} {'is back on the board' if a.undo else 'archived'}"
+          f" — the log is untouched")
+    return 0
+
+
 def cmd_missions(a) -> int:
     """Every goal, with the sessions that served it."""
     from . import missions as M
@@ -990,10 +1018,12 @@ def cmd_missions(a) -> int:
         print("\n  no missions yet — `mission init`, or `mission migrate`\n")
         return 1
     print()
+    shown = 0
     for mid, st in rows:
         m = st.load()
-        if m is None:
+        if m is None or (m.archived and not a.all):
             continue
+        shown += 1
         sess = M.sessions_of(mid)
         print(f"  {mid:<32} {m.done_count}/{m.total_count}"
               f"{'  ⚑' + str(len(m.unaccepted)) if m.unaccepted else ''}")
@@ -1538,6 +1568,12 @@ def _build() -> argparse.ArgumentParser:
                         help="point this session at a mission, by name")
     at.add_argument("name")
     at.set_defaults(fn=cmd_attach)
+
+    ar = sub.add_parser("archive", parents=[common],
+                        help="take a finished goal off the board")
+    ar.add_argument("name")
+    ar.add_argument("--undo", action="store_true", help="put it back")
+    ar.set_defaults(fn=cmd_archive)
 
     ms = sub.add_parser("missions", parents=[common],
                         help="every goal, with the sessions that served it")

@@ -176,6 +176,17 @@ mission version
 It prints the build and every subcommand that exists right now. If something
 there is unfamiliar, your picture is older than the tool.
 
+## Attach the session to a goal, once
+
+If `mission` says this session is not attached, ask them which goal it is —
+list what it printed — and run `mission attach <name>` with their answer. One
+question, one command, and every later `mission` in this session knows what it
+is for.
+
+A goal is not a session: several sessions serve one goal over its life, and a
+session re-attaches when the work pivots. `--on <name>` addresses a goal from
+anywhere without attaching at all.
+
 ## Say when you go off, and say when you come back
 
 Drifting into a subgoal is normal work, not a failure. The failure is climbing

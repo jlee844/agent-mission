@@ -856,9 +856,13 @@ def test_check_reports_each_surface_and_exits_nonzero_when_missing(
     assert main(["setup", "--check", "--settings", str(settings),
                  "--dest", str(tmp_path / "c")]) == 1
     out = capsys.readouterr().out
+    # Four surfaces, not five: the board bookmark is written by the board
+    # itself when it binds, so offering it in setup was ceremony -- a row that
+    # asked you to install something that installs itself.
     for surface in ("slash command", "deny rules", "statusline",
-                    "re-anchor hook", "board bookmark"):
+                    "re-anchor hook"):
         assert surface in out
+    assert "board bookmark" not in out
     assert "missing" in out and "mission setup" in out
 
 
@@ -874,7 +878,7 @@ def test_check_passes_once_setup_has_run(tmp_path, monkeypatch, capsys,
 
     main(["setup", "--settings", str(settings), "--dest", str(tmp_path / "c")])
     write_bookmark(8976)                 # the board writes this when it binds
-    capsys.readouterr()
+    capsys.readouterr()  # noqa
     assert main(["setup", "--check", "--settings", str(settings),
                  "--dest", str(tmp_path / "c")]) == 0
     assert "everything is installed" in capsys.readouterr().out

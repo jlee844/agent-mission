@@ -93,7 +93,7 @@ def mission_rows() -> list[dict]:
 
     for mid, st in M.all_missions():
         m = _safe_load(st.root)
-        if m is None:
+        if m is None or m.archived:
             continue
         calls = files = tests = fails = 0
         sess = []
@@ -146,7 +146,11 @@ def snapshot() -> list[dict]:
             r["needs_you"] = r["state"] in ("waiting", "nomission", "review")
         order = {"review": 0, "waiting": 1, "nomission": 2, "working": 3,
                  "idle": 4, "ended": 5}
-        return sorted(rows, key=lambda r: (order[r["state"]], -r["mtime"]))
+        # Live work outranks a finished goal, whatever is pending on it. A
+        # one-off test mission with four unaccepted proposals was sorting above
+        # three sessions that were actually running.
+        return sorted(rows, key=lambda r: (r["ended"], order[r["state"]],
+                                           -r["mtime"]))
     return _session_snapshot()
 
 
@@ -328,6 +332,10 @@ grid-template-columns:repeat(auto-fill,minmax(min(23rem,100%),1fr))}
 .card{background:var(--card);border:1px solid var(--rule);border-radius:7px;
 padding:1.1rem 1.2rem;transition:border-color .15s ease,transform .15s ease}
 .card:hover{border-color:var(--mut)}
+/* The archive control appears on hover: it is rare, irreversible-feeling, and
+   should not sit in the reading path of a card you are just looking at. */
+.card .sid .act{opacity:0}
+.card:hover .sid .act,.card .sid .act:focus{opacity:1}
 .card.ended{opacity:.62}
 /* A long cwd used to run straight into "1 live here" at narrow widths --
    they are separate facts and read as one string. Gap, and the path is the
@@ -719,7 +727,9 @@ async function tick(){
        <span class=rp>${s.pending_accept?s.pending_accept+' waiting':''}</span></div>
      <div class=sid><span class=st><span class="dot ${s.state}" title="${s.state}"></span>
        ${s.id} · ${esc(s.cwd)}</span>
-       <span>${s.ended?'ended':s.procs+' live here'}</span></div>
+       <span>${s.ended?'ended':s.procs+' live here'}${
+         (WRITABLE&&CODE()&&s.mission)?
+           ` <button class=act data-arch="${s.full}">archive</button>`:''}</span></div>
      ${s.has_mission? `
        <p class=obj>${esc(s.title)}</p>
        ${s.named && s.objective?`<p class=objsub>${esc(s.objective)}</p>`:''}
@@ -809,6 +819,13 @@ document.getElementById('setup').addEventListener('click', async e=>{
   renderSetup();
 });
 document.getElementById('g').addEventListener('click', e=>{
+  const ar = e.target.closest('[data-arch]');
+  if (ar){
+    if (confirm('Archive this goal?\n\nIt leaves the board. Nothing is deleted —'
+              + ' the log stays and `mission unarchive` brings it back.'))
+      act('archive', ar.dataset.arch, []);
+    return;
+  }
   const a = e.target.closest('[data-ack]');
   if (a){
     act('ack', a.dataset.s, [], a.dataset.ack);

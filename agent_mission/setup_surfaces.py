@@ -27,8 +27,8 @@ DENY_RULES = [f"Bash(mission {c}:*)" for c in
               ("set", "accept", "done", "remove", "add")]
 STATUSLINE = {"type": "command", "command": "mission whereami"}
 HOOK_CMD = "mission whereami --full 2>/dev/null || true"
-SURFACES = ("slash command", "deny rules", "statusline", "re-anchor hook",
-            "board bookmark")
+SURFACES = ("slash command", "deny rules", "statusline",
+            "re-anchor hook")
 
 
 def home() -> Path:
@@ -102,8 +102,6 @@ def status(settings: str | None = None, dest: str | None = None) -> list[dict]:
          "detail": sl_cmd[:70] or "not set"},
         {"name": "re-anchor hook", "ok": "mission whereami --full" in hooks,
          "detail": "SessionStart"},
-        {"name": "board bookmark", "ok": (home() / "board.html").exists(),
-         "detail": str(home() / "board.html")},
     ]
 
 

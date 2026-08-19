@@ -147,6 +147,7 @@ class Mission:
     # attempts to detect drift, and the honest residue is that the agent says
     # when it is going off, rather than a detector guessing.
     detours: list[str] = field(default_factory=list)
+    archived: bool = False
 
     @property
     def items(self) -> list[Item]:
@@ -368,6 +369,18 @@ class MissionStore:
         self._require_mission()
         return self._append("returned", by)
 
+    def archive(self, by: str, undo: bool = False) -> dict:
+        """Take a finished goal off the board. Nothing is deleted.
+
+        Append-only means the log stays; archiving is a statement about
+        attention, not about history. A one-off test mission with four
+        unaccepted proposals otherwise outranks live work forever.
+        """
+        if by != "human":
+            raise ProtectedFieldError("only you can archive a mission")
+        self._require_mission()
+        return self._append("unarchived" if undo else "archived", by)
+
     def acknowledge(self, finding: str, by: str) -> dict:
         """"I have read this." Clears a finding without pretending it changed.
 
@@ -453,6 +466,10 @@ class MissionStore:
                 for d in m.checklist:
                     if d["id"] == ev["item_id"]:
                         d["done"] = True
+            elif k == "archived":
+                m.archived = True
+            elif k == "unarchived":
+                m.archived = False
             elif k == "discarded":
                 # The only way to start over: written by
                 # `init --force --discard-plan`, explicitly, by a person.

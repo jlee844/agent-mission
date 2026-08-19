@@ -139,7 +139,13 @@ sessions used to read as four cards, each showing a slice.
 
 ```bash
 mission migrate               # lift older session-keyed stores; safe to re-run
+mission archive <name>        # take a finished goal off the board (--undo)
 ```
+
+A finished goal keeps its log forever and stops competing for your attention.
+Archiving is a statement about attention, not about history — one throwaway
+experiment with four unaccepted proposals was outranking three live sessions.
+On the board it is a hover control on the card header.
 
 ## Which mission does a command mean?
 

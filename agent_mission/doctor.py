@@ -34,7 +34,8 @@ def _logs(base=None):
 # carries a permanent badge, and a permanent badge is one you stop seeing in a
 # day: the same failure as red once meaning three unrelated things.
 CLEARABLE = {"duplicate mission start", "written from another directory",
-             "damaged log", "agent-transcribed goal", "detour left open"}
+             "damaged log", "agent-transcribed goal", "detour left open",
+             "stale goal"}
 
 
 def review(base=None) -> list[dict]:
@@ -98,8 +99,19 @@ def findings(base=None) -> list[dict]:
             })
 
         m = MissionStore(d).load()
-        if m is None:
+        if m is None or getattr(m, "archived", False):
             continue
+
+        # A goal nobody has touched in a fortnight is not "in progress", and
+        # leaving it on the board teaches you to read past the board.
+        last = max((e.get("at", 0) for e in evs), default=0)
+        idle_days = (time.time() - last) / 86400
+        if idle_days >= 14 and m.done_count < m.total_count:
+            out.append({
+                "sid": sid, "level": "note", "what": "stale goal",
+                "detail": f"untouched {idle_days:.0f} days — "
+                          f"`mission archive {sid}` if it is over",
+            })
 
         # A detour nobody returned from. Declared, so this is a fact rather
         # than a guess about whether attention wandered.

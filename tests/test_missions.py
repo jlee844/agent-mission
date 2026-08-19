@@ -117,3 +117,71 @@ def test_cwd_never_routes_a_write(monkeypatch, tmp_path):
 
     a.on = "career"
     assert _mission_target(a) == ("career-hub", "explicit")
+
+
+# ── Phase 3: less ceremony ───────────────────────────────────────────────────
+
+def test_archiving_takes_a_goal_off_the_board_without_deleting_it():
+    """A one-off test mission with four unaccepted proposals outranked three
+    live sessions. Archiving is a statement about attention, not history."""
+    from agent_mission import board
+    _legacy("s1", "A finished experiment", "prove something once")
+    M.migrate()
+    st = MissionStore(M.missions_root() / M.find("finished"))
+    before = len(list(st.events()))
+
+    st.archive(by="human")
+    assert st.load().archived
+    assert len(list(st.events())) == before + 1, "one event, nothing removed"
+    assert st.load().objective == "prove something once", "the log is intact"
+
+    import types
+    board.live = lambda: []
+    assert board.snapshot() == [], "off the board"
+
+    st.archive(by="human", undo=True)
+    assert not st.load().archived
+    assert len(board.snapshot()) == 1, "and back"
+
+
+def test_only_a_human_can_archive():
+    from agent_mission.store import ProtectedFieldError
+    _legacy("s1", "A goal", "a thing")
+    M.migrate()
+    st = MissionStore(M.missions_root() / M.find("goal"))
+    with pytest.raises(ProtectedFieldError):
+        st.archive(by="agent")
+
+
+def test_live_work_outranks_a_finished_goal_whatever_is_pending(monkeypatch):
+    from agent_mission import board
+    _legacy("dead", "Old experiment", "done long ago")
+    _legacy("alive", "Current work", "in progress")
+    M.migrate()
+    MissionStore(M.missions_root() / M.find("old")).propose("stray", by="agent")
+
+    monkeypatch.setattr(board, "live", lambda: [])
+    monkeypatch.setattr(board, "mission_rows", lambda: [
+        {"full": "old-experiment", "ended": True, "state": "waiting",
+         "mtime": 99, "review": [], "has_mission": True, "pending_accept": 1},
+        {"full": "current-work", "ended": False, "state": "waiting",
+         "mtime": 1, "review": [], "has_mission": True, "pending_accept": 0},
+    ])
+    assert [r["full"] for r in board.snapshot()] == ["current-work",
+                                                     "old-experiment"]
+
+
+def test_an_unattached_session_is_offered_the_goals_that_exist(tmp_path,
+                                                               monkeypatch,
+                                                               capsys):
+    """"No mission for this session" reads as "start over" when the goal
+    already exists and this session simply has not said so."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "brand-new")
+    _legacy("s1", "Career hub", "Ship the career pages")
+    M.migrate()
+
+    assert main(["show"]) == 1
+    out = capsys.readouterr().out
+    assert "not attached" in out and "mission attach career-hub" in out
+    assert "Ship the career pages" in out

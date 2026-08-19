@@ -28,7 +28,8 @@ import secrets
 
 from .store import MissionStore, root_for
 
-ACTIONS = ("accept", "done", "remove", "note", "setup", "ack")
+ACTIONS = ("accept", "done", "remove", "note", "setup", "ack",
+           "archive")
 
 
 class Unauthorised(PermissionError):
@@ -85,6 +86,17 @@ def apply(session: Session, code: str, action: str, sid: str,
     st = MissionStore(root_for(sid))
     if st.load() is None:
         raise ValueError(f"no mission for {sid}")
+
+    if action == "archive":
+        st = MissionStore(root_for(sid))
+        from . import missions as _M
+        d = _M.missions_root() / sid
+        if d.exists():
+            st = MissionStore(d)
+        if st.load() is None:
+            raise ValueError(f"no mission for {sid}")
+        st.archive(by="human")
+        return {"ok": True, "did": "archive"}
 
     if action == "ack":
         st = MissionStore(root_for(sid))
