@@ -833,6 +833,24 @@ def cmd_done(a) -> int:
     return rc or cmd_show(a)
 
 
+def cmd_doctor(a) -> int:
+    """What is wrong with the missions, as opposed to the installation."""
+    from .doctor import findings
+    rows = findings()
+    if not rows:
+        print("\n  nothing wrong with any mission log.\n")
+        return 0
+    order = {"serious": 0, "note": 1, "todo": 2}
+    mark = {"serious": "⚠", "note": "·", "todo": "→"}
+    print()
+    for r in sorted(rows, key=lambda r: order[r["level"]]):
+        print(f"  {mark[r['level']]} {short_id(r['sid']):<10} {r['what']}")
+        print(f"      {r['detail']}")
+    bad = sum(1 for r in rows if r["level"] == "serious")
+    print(f"\n  {bad} serious, {len(rows) - bad} to read.\n")
+    return 1 if bad else 0
+
+
 def cmd_help(a) -> int:
     """Usage for one command, without running it.
 
@@ -1328,6 +1346,10 @@ def _build() -> argparse.ArgumentParser:
     bd.add_argument("--foreground", action="store_true",
                     help=argparse.SUPPRESS)   # used by the spawner
     bd.set_defaults(fn=cmd_board)
+
+    dr = sub.add_parser("doctor", parents=[common],
+                        help="what is wrong with the missions themselves")
+    dr.set_defaults(fn=cmd_doctor)
 
     hp = sub.add_parser("help", parents=[common],
                         help="usage for one command, without running it")
