@@ -15,6 +15,18 @@ def _no_ambient_human_override(monkeypatch):
     monkeypatch.delenv("AGENT_MISSION_I_AM_HUMAN", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_session_id(monkeypatch):
+    """Claude Code exports CLAUDE_CODE_SESSION_ID into every shell, including
+    the one running pytest. So every resolution test silently resolved through
+    the harness's own session and never took the path a fresh checkout takes --
+    168 green locally, red on CI, for a month.
+
+    A test that needs a session id sets one.
+    """
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+
+
 @pytest.fixture
 def at_a_keyboard(monkeypatch):
     """Act as a person at a terminal, explicitly."""

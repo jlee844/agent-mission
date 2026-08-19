@@ -552,9 +552,20 @@ def cmd_whereami(a) -> int:
     """
     try:
         sid = _resolve(a)
+    except NoSessionError as e:
+        # No mission for this directory is a STATE, not a failure: "no mission
+        # — mission init" is the correct statusline for it. Only ambiguity
+        # deserves silence, because naming one of several would be a guess and
+        # a statusline has no room to ask.
+        print("" if e.candidates else "no mission — mission init")
+        return 0
+    except Exception:
+        print("")
+        return 0
+    try:
         m = _store(sid).load()
     except Exception:
-        print("")                       # silent rather than noisy or broken
+        print("")                       # a corrupt log: saying anything is wrong
         return 0
     if m is None:
         print("no mission — mission init")

@@ -626,3 +626,43 @@ def test_a_proposal_does_not_move_your_progress_backwards(store):
     m = store.load()
     assert (m.done_count, m.total_count) == (1, 1), "still finished"
     assert len(m.unaccepted) == 1, "and the suggestion is reported separately"
+
+
+def test_whereami_distinguishes_no_mission_from_ambiguity(tmp_path, monkeypatch,
+                                                          capsys):
+    """Three states, three answers. 'No mission here' is a STATE and the
+    statusline should say so; ambiguity is the one case where silence is right,
+    because naming one of several would be a guess and a statusline cannot ask.
+
+    This is the test CI failed on for a month while passing locally: the
+    harness exports CLAUDE_CODE_SESSION_ID, so resolution never took the
+    empty-directory path a fresh checkout takes."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+
+    assert main(["whereami"]) == 0
+    assert capsys.readouterr().out.strip() == "no mission — mission init"
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for n in ("one", "two"):
+        st = MissionStore(root_for(n))
+        st.create(n, str(repo), f"goal {n}", by="human")
+    monkeypatch.chdir(repo)
+    assert main(["whereami"]) == 0
+    assert capsys.readouterr().out.strip() == "", "ambiguity says nothing"
+
+
+def test_the_suite_does_not_inherit_a_session_id():
+    """The guard itself. Without it every resolution test answers a question
+    the harness set, not the one the test asked -- 168 green locally, red on
+    CI. transcript-audit's whole thesis is 'profile the environment before
+    trusting a statistic over it', and the suite was caught doing exactly
+    that."""
+    import os
+    assert "CLAUDE_CODE_SESSION_ID" not in os.environ
+    assert "AGENT_MISSION_I_AM_HUMAN" not in os.environ
