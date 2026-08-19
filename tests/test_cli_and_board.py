@@ -142,15 +142,24 @@ def test_writing_creates_the_directory(tmp_path):
     assert (root / "events.jsonl").exists()
 
 
-def test_an_ended_session_keeps_its_mission_on_the_board():
-    """A mission whose session closed must not vanish — the work happened."""
-    import inspect
+def test_an_ended_session_keeps_its_mission_on_the_board(tmp_path, monkeypatch):
+    """The work happened; losing sight of it is what this exists to prevent.
+
+    Was an assertion on inspect.getsource() -- which passes if the string
+    appears in a comment, and broke the moment the function was split. Assert
+    the card, not the source."""
     from agent_mission import board
-    src = inspect.getsource(board.snapshot)
-    assert '"ended": True' in src and "_missions_home" in src
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setattr(board, "live", lambda: [])      # nothing running
+    st = MissionStore(root_for("gone"))
+    st.create("gone", "/repo", "work that finished", by="human",
+              typed_by="human")
 
+    rows = board.snapshot()
+    assert [r["full"] for r in rows] == ["gone"]
+    assert rows[0]["ended"] is True and rows[0]["has_mission"]
 
-# ── the slash command ────────────────────────────────────────────────────────
 
 def test_setup_installs_the_slash_command(tmp_path):
     from agent_mission.__main__ import main

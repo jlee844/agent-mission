@@ -101,7 +101,10 @@ def _edit(seed: str) -> str:
 
 
 def _store(sid: str, a=None) -> MissionStore:
-    st = MissionStore(root_for(sid))
+    from . import missions as M
+    root = (M.missions_root() / sid if (M.missions_root() / sid).exists()
+            else root_for(sid))
+    st = MissionStore(root)
     if a is not None:
         try:
             st.context_cwd = str(Path(getattr(a, "cwd", ".") or ".").resolve())
@@ -109,6 +112,26 @@ def _store(sid: str, a=None) -> MissionStore:
             st.context_cwd = ""
         st.context_via = getattr(a, "_via", "")
     return st
+
+
+def _mission_target(a) -> tuple[str, str] | None:
+    """Which MISSION a command means. Name routes; the session only speaks.
+
+    C11c: cwd is reach, not subject. Jonathan's sessions open at the Mission
+    Control root because the work needs the whole tree, while the goal lives
+    three folders down -- so cwd says what a session can SEE, never what it is
+    FOR. It is not consulted here at all.
+    """
+    from . import missions as M
+    on = getattr(a, "on", None)
+    if on:
+        return M.find(on), "explicit"
+    sid = current_session_id()
+    if sid:
+        mid = M.attachments().get(sid)
+        if mid:
+            return mid, "attached"
+    return None
 
 
 def _resolve_with_path(a) -> tuple[str, str]:
@@ -133,11 +156,19 @@ def _resolve_with_path(a) -> tuple[str, str]:
 
 
 def _resolve(a):
-    """One resolver for --session and --into: exact id, prefix, or name.
+    """One resolver, mission-first.
+
+    `--on <name>` always wins; then the mission this session is attached to;
+    only then the legacy session-keyed store. cwd never routes a write -- see
+    _mission_target and C11c.
 
     Nobody types a uuid. --into accepted a name from the day it shipped while
     --session, the flag every human-only command needs, took only the full id.
     """
+    hit = _mission_target(a)
+    if hit:
+        a._via = hit[1]
+        return hit[0]
     given = getattr(a, "session", None)
     if given and not (root_for(given) / "events.jsonl").exists():
         try:
@@ -212,6 +243,18 @@ def _confirm_env_target(a, sid: str) -> bool:
 
 
 def _target(a, what: str):
+    """Mission first, session only as the legacy fallback."""
+    hit = _mission_target(a)
+    if hit:
+        mid, via = hit
+        a._via = via
+        if via == "attached" and not _confirm_env_target(a, mid):
+            return None, None
+        return mid, _store(mid, a)
+    return _legacy_target(a, what)
+
+
+def _legacy_target(a, what: str):
     """Resolve, record how, and make a tty confirm an env-resolved target.
 
     Returns (sid, store) or (None, None) if the person declined.
@@ -924,6 +967,57 @@ def cmd_done(a) -> int:
     return rc or cmd_show(a)
 
 
+def cmd_attach(a) -> int:
+    """Point this session at a mission, by name."""
+    from . import missions as M
+    sid = a.session or current_session_id()
+    if not sid:
+        print("  no session id — run this inside Claude Code, or pass --session")
+        return 1
+    mid = M.find(a.name)
+    M.attach(sid, mid, by="human" if _at_a_keyboard() else "agent")
+    m = MissionStore(M.missions_root() / mid).load()
+    print(f"\n  {short_id(sid)} → {mid}")
+    print(f"  {m.title}\n  {(m.objective or '')[:76]}\n")
+    return 0
+
+
+def cmd_missions(a) -> int:
+    """Every goal, with the sessions that served it."""
+    from . import missions as M
+    rows = M.all_missions()
+    if not rows:
+        print("\n  no missions yet — `mission init`, or `mission migrate`\n")
+        return 1
+    print()
+    for mid, st in rows:
+        m = st.load()
+        if m is None:
+            continue
+        sess = M.sessions_of(mid)
+        print(f"  {mid:<32} {m.done_count}/{m.total_count}"
+              f"{'  ⚑' + str(len(m.unaccepted)) if m.unaccepted else ''}")
+        print(f"    {(m.objective or '')[:74]}")
+        print(f"    {len(sess)} session(s): "
+              f"{', '.join(short_id(x) for x in sess[:4])}\n")
+    return 0
+
+
+def cmd_migrate(a) -> int:
+    """Lift session-keyed stores into named missions. Safe to re-run."""
+    from . import missions as M
+    rows = M.migrate(dry_run=a.dry_run)
+    if not rows:
+        print("\n  nothing to migrate — everything is already a named mission.\n")
+        return 0
+    print(f"\n  {'would lift' if a.dry_run else 'lifted'} {len(rows)}:\n")
+    for r in rows:
+        print(f"    {short_id(r['session']):<12} → {r['mission']:<32} "
+              f"{r['events']:>3} events")
+    print(f"\n  the old stores are left untouched.\n")
+    return 0
+
+
 def cmd_doctor(a) -> int:
     """What is wrong with the missions, as opposed to the installation."""
     from .doctor import findings
@@ -1310,6 +1404,8 @@ def _build() -> argparse.ArgumentParser:
     common.add_argument("--session", default=None,
                         help="session id (default: this one)")
     common.add_argument("--cwd", default=".")
+    common.add_argument("--on", metavar="MISSION",
+                        help="which goal this is about, by name")
     common.add_argument("--all", action="store_true",
                         help="show finished items too (hidden by default)")
 
@@ -1437,6 +1533,20 @@ def _build() -> argparse.ArgumentParser:
     bd.add_argument("--foreground", action="store_true",
                     help=argparse.SUPPRESS)   # used by the spawner
     bd.set_defaults(fn=cmd_board)
+
+    at = sub.add_parser("attach", parents=[common],
+                        help="point this session at a mission, by name")
+    at.add_argument("name")
+    at.set_defaults(fn=cmd_attach)
+
+    ms = sub.add_parser("missions", parents=[common],
+                        help="every goal, with the sessions that served it")
+    ms.set_defaults(fn=cmd_missions)
+
+    mg = sub.add_parser("migrate", parents=[common],
+                        help="lift session stores into named missions")
+    mg.add_argument("--dry-run", action="store_true")
+    mg.set_defaults(fn=cmd_migrate)
 
     dr = sub.add_parser("doctor", parents=[common],
                         help="what is wrong with the missions themselves")

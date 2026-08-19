@@ -112,6 +112,35 @@ still answers. The agent is refused on all of these. `--session` is in the first
 example because you type these in **your own terminal**, where it is often
 needed — see below.
 
+## Missions are goals; sessions attach to them
+
+A goal outlives the session that started it, and one session often serves
+several goals in a day. So a **mission** is the thing with a name, and a
+**session attaches** to it:
+
+```bash
+mission attach career          # this session is working on that goal
+mission set objective "..." --on career    # from anywhere, any terminal
+mission missions               # every goal, and the sessions that served it
+```
+
+**The name routes; the session only speaks.** `--on <name>` is the address. The
+session id says *who is writing*, never *what is meant* — and the working
+directory says neither.
+
+That last part is deliberate. A session is opened where the work can *reach*
+what it needs, which for a coordination repo is the root — while the goal lives
+three folders down. **cwd tells you what a session can see, not what it is
+for**, so it never routes a write.
+
+The board now shows **one card per goal**, with the sessions that served it
+listed inside and their measured activity summed. One goal spanning four
+sessions used to read as four cards, each showing a slice.
+
+```bash
+mission migrate               # lift older session-keyed stores; safe to re-run
+```
+
 ## Which mission does a command mean?
 
 Inside Claude Code the session id is in the environment, so nothing needs

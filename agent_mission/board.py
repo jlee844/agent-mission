@@ -70,7 +70,87 @@ def _missions_home() -> Path:
                                Path.home() / ".agent-mission"))
 
 
+def mission_rows() -> list[dict]:
+    """One card per GOAL, with the sessions that served it inside it.
+
+    Activity sums across every attached session, because "how much work has
+    gone into this goal" is the question -- and one goal spanning four sessions
+    used to read as four cards each showing a slice.
+    """
+    # transcript_for is already imported at module level. Re-importing it here
+    # shadowed it, so a test could not substitute it -- and neither could
+    # anything else that needed to.
+    from . import missions as M
+    out = []
+    live_ids = set()
+    for proc in live():
+        d = PROJECTS / _slug(proc["cwd"])
+        if d.exists():
+            for tp in sorted((p for p in d.glob("*.jsonl")
+                              if p.stat().st_size > 2000),
+                             key=lambda p: -p.stat().st_mtime)[:proc["procs"]]:
+                live_ids.add(tp.stem)
+
+    for mid, st in M.all_missions():
+        m = _safe_load(st.root)
+        if m is None:
+            continue
+        calls = files = tests = fails = 0
+        sess = []
+        for sid in M.sessions_of(mid):
+            tp = transcript_for(sid)
+            a = activity(tp) if tp else None
+            if a:
+                calls += a.calls; files += len(a.files)
+                tests += a.tests; fails += a.failures
+            sess.append({"id": short_id(sid), "full": sid,
+                         "live": sid in live_ids,
+                         "calls": a.calls if a else 0})
+        out.append({
+            "id": mid, "full": mid, "mission": True,
+            "cwd": (m.cwd or "").replace(str(Path.home()), "~"),
+            "title": m.title, "objective": m.objective, "named": bool(m.name),
+            "criteria": m.success_criteria, "constraints": m.constraints,
+            "non_goals": m.non_goals, "tree": _tree(m),
+            "done": m.done_count, "total": m.total_count,
+            "pending_accept": len(m.unaccepted),
+            "sessions": sess, "procs": sum(1 for x in sess if x["live"]),
+            "ended": not any(x["live"] for x in sess),
+            "has_mission": True,
+            "calls": calls, "files": files, "tests": tests, "failures": fails,
+            "asks": [], "topfiles": [], "models": [], "model_changed": False,
+            "repeats": 0, "exact_repeats": 0, "worst_repeat": None,
+            "collisions": [], "children": [],
+            "mtime": st.log.stat().st_mtime,
+        })
+    return out
+
+
 def snapshot() -> list[dict]:
+    from . import missions as M
+    if M.all_missions():
+        rows = mission_rows()
+        from .doctor import review as _review
+        try:
+            lane = _review()
+        except Exception:
+            lane = []
+        per = {}
+        for f in lane:
+            per.setdefault(f["sid"], []).append({"what": f["what"],
+                                                 "detail": f["detail"]})
+        now = time.time()
+        for r in rows:
+            r["review"] = per.get(r["full"], [])
+            r["state"] = _state(r, now)
+            r["needs_you"] = r["state"] in ("waiting", "nomission", "review")
+        order = {"review": 0, "waiting": 1, "nomission": 2, "working": 3,
+                 "idle": 4, "ended": 5}
+        return sorted(rows, key=lambda r: (order[r["state"]], -r["mtime"]))
+    return _session_snapshot()
+
+
+def _session_snapshot() -> list[dict]:
     rows, seen = [], set()
     for proc in live():
         d = PROJECTS / _slug(proc["cwd"])
@@ -686,6 +766,12 @@ async function tick(){
         s.collisions.map(f=>esc(f)).join(' · ')}</div>`:''}
      ${s.worst_repeat&&s.worst_repeat.sim>=0.999?`<div class=flagdet>a reply was repeated
         verbatim ${s.worst_repeat.gap} replies later</div>`:''}
+     ${(s.sessions||[]).length?`<div class=kids><h3>Sessions on this goal</h3>${
+        s.sessions.map(x=>`<div class=kid>
+          <span class="dot ${x.live?'working':'ended'}"></span>
+          <span class=kn>${esc(x.id)}</span>
+          <span class=kt>${x.live?'live':'ended'}</span>
+          <span class=kp>${x.calls.toLocaleString()} calls</span></div>`).join('')}</div>`:''}
      ${(s.children||[]).length?`<div class=kids><h3>Delegated</h3>${
         s.children.map(k=>`<div class=kid><span class=kn>${esc(k.id)}</span>
           <span class=kt>${esc(k.title)}</span>
