@@ -225,6 +225,9 @@ class MissionStore:
         # empty directory reads as "a mission exists" to anything scanning.
         self.root = Path(root)
         self.log = self.root / "events.jsonl"
+        # Lines that could not be parsed on the last read. Surfaced rather than
+        # swallowed: silently skipping damage is how a log stops being evidence.
+        self.damaged = 0
 
     # ── writing ──────────────────────────────────────────────────────────
     def _append(self, kind: str, by: str, /, typed_by: str | None = None,
@@ -326,13 +329,34 @@ class MissionStore:
 
     # ── reading ──────────────────────────────────────────────────────────
     def events(self) -> Iterator[dict]:
+        """Every event, skipping any line that is not a whole event.
+
+        A log is appended to by processes that can be killed mid-write, so a
+        truncated final line is the normal failure, not an exotic one. Parsing
+        it strictly made ONE bad byte destroy the entire mission -- and, because
+        the board loads every session on its first request, one corrupt log
+        anywhere took the board down for every session at once.
+
+        An append-only log has to be readable up to the damage. A skipped line
+        loses that one event; raising loses all of them.
+        """
         if not self.log.exists():
-            return iter(())
-        return (json.loads(l) for l in
-                self.log.read_text(encoding="utf-8").splitlines() if l.strip())
+            return
+        for line in self.log.read_text(encoding="utf-8",
+                                       errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                self.damaged += 1
+                continue
+            if isinstance(ev, dict):
+                yield ev
 
     def load(self) -> Mission | None:
         m: Mission | None = None
+        self.damaged = 0
         for ev in self.events():
             k = ev.get("kind")
             if k == "created":

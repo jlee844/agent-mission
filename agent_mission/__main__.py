@@ -443,13 +443,18 @@ def cmd_delegate(a) -> int:
     cst.create(child, m.cwd or str(Path(a.cwd).resolve()), item.text,
                by="agent" if not _at_a_keyboard() else "human",
                parent_session=sid, parent_item=item.id)
-    cst.set_protected("name", (a.to or item.text)[:60], by="human")
+    # Same typed_by as the create above. These three writes hardcoded
+    # by="human" with no typed_by, so `why name` on a delegated child reported
+    # a plain human even when an agent ran the whole command -- the exact gap
+    # the init fix closed, left open one function over.
+    typed = "human" if _at_a_keyboard() else "agent"
+    cst.set_protected("name", (a.to or item.text)[:60], by="human", typed_by=typed)
     # Criteria are the PARENT's and stay there: a slice of the work does not
     # get to decide the whole mission is finished. Limits do carry, because a
     # constraint that stops applying to a subagent is not a constraint.
     for f in ("constraints", "non_goals"):
         if getattr(m, f):
-            cst.set_protected(f, getattr(m, f), by="human")
+            cst.set_protected(f, getattr(m, f), by="human", typed_by=typed)
 
     print(f"\n  delegated {item.id} → session {child}\n"
           f"  Hand the subagent this, verbatim:\n\n"

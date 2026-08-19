@@ -2,7 +2,7 @@
 
 **The goal, beside the work, that the agent cannot quietly rewrite.**
 
-[![tests](https://img.shields.io/badge/tests-134%20passing-0E6E68)](tests/)
+[![tests](https://img.shields.io/badge/tests-140%20passing-0E6E68)](tests/)
 [![python](https://img.shields.io/badge/python-3.9%20–%203.14-0E6E68)](pyproject.toml)
 [![context cost](https://img.shields.io/badge/always--on%20context-47%20tokens-0E6E68)](commands/mission.md)
 [![deps](https://img.shields.io/badge/dependencies-none-0E6E68)](pyproject.toml)
@@ -216,7 +216,7 @@ This is the whole design.
 | 🟢 **observable** | decisions, evidence, notes | agent records freely |
 
 ```bash
-mission observe evidence "134 tests pass on 3.9 through 3.14"
+mission observe evidence "140 tests pass on 3.9 through 3.14"
 mission observe notes "the eval set is the bottleneck, not the model"
 ```
 
@@ -249,7 +249,7 @@ and `mission show` says it above the plan:
 `typed_by` records; it never grants. An agent still cannot `set`, `accept`,
 `done`, `remove` or `add`.
 
-There are 134 tests and most of them guard exactly this.
+There are 140 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store has always refused agent
 writes. The *CLI* could not tell who typed the command, so it passed
@@ -368,6 +368,13 @@ An agent can still get the code if you paste your terminal into the chat. That
 is you choosing to share it — the same shape as the `AGENT_MISSION_I_AM_HUMAN`
 override: a decision, not an accident.
 
+**And the code is short, so it is guessable.** Six hex characters is 16.7
+million values, the deny rules do not help here (they match shell commands, not
+an HTTP POST from a one-line script), and on loopback a full sweep is hours
+rather than years. So five wrong codes lock writes until you restart the board.
+A correct one resets the counter, because fat-fingering it once should not cost
+you the session.
+
 ## Session health
 
 Three facts about *how* a session ran, shown on each card. None of them is a
@@ -409,7 +416,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 134 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 140 tests, no network
 ```
 
 ## Status
@@ -417,7 +424,7 @@ pip install -e ".[dev]" && python -m pytest tests/ -q     # 134 tests, no networ
 Not on PyPI yet — install from source as above. Session discovery is Claude
 Code specific; the store and the board are not.
 
-**Python 3.9 through 3.14**, all 134 tests passing on each. The floor is 3.9
+**Python 3.9 through 3.14**, all 140 tests passing on each. The floor is 3.9
 because that is the Python macOS ships: the package originally declared 3.10+,
 which would have told a user on stock macOS Python that it was unsupported
 while it ran fine.

@@ -68,9 +68,27 @@ def test_board_escapes_session_text():
 
 
 def test_board_binds_localhost_only():
-    import inspect
+    """Was `assert '"127.0.0.1"' in inspect.getsource(board.serve)` -- which
+    passes if the string appears in a comment or a dead branch, and never
+    verifies the socket. Bind it and look."""
+    import socket
+    import threading
     from agent_mission import board
-    assert '"127.0.0.1"' in inspect.getsource(board.serve)
+
+    srv = board.ThreadingHTTPServer(("127.0.0.1", 0), board._H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            pass                      # loopback reaches it
+
+        host = socket.gethostbyname(socket.gethostname())
+        if host.startswith("127."):
+            pytest.skip("this machine has no non-loopback address to try")
+        with pytest.raises(OSError):
+            socket.create_connection((host, port), timeout=2)
+    finally:
+        srv.shutdown()
 
 
 def test_board_tells_you_how_to_start_a_mission_when_there_is_none():

@@ -9,7 +9,7 @@ import json
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .actions import Session, Unauthorised, apply as apply_action
@@ -51,6 +51,19 @@ def _tree(m) -> list[dict]:
     return walk(m.tree())
 
 
+def _safe_load(path):
+    """Load a mission, or None if that session's log is unreadable.
+
+    snapshot() reads every session on the board, and the first request is not
+    inside the background refresh's try/except. So an exception here took the
+    whole page down for everyone rather than losing one card.
+    """
+    try:
+        return MissionStore(path).load()
+    except Exception:
+        return None
+
+
 def _missions_home() -> Path:
     import os
     return Path(os.environ.get("AGENT_MISSION_HOME",
@@ -70,7 +83,7 @@ def snapshot() -> list[dict]:
             if sid in seen:
                 continue
             seen.add(sid)
-            m = MissionStore(root_for(sid)).load()
+            m = _safe_load(root_for(sid))
             a = activity(tp)
             h = inspect_health(tp)
             rows.append({
@@ -113,7 +126,7 @@ def snapshot() -> list[dict]:
         for d in home.iterdir():
             if not d.is_dir() or d.name in seen or not (d / "events.jsonl").exists():
                 continue
-            m = MissionStore(d).load()
+            m = _safe_load(d)
             if m is None:
                 continue
             tp = transcript_for(d.name)
@@ -717,9 +730,19 @@ class _H(BaseHTTPRequestHandler):
                               "application/json")
         self._send(200, PAGE.encode(), "text/html; charset=utf-8")
 
+    # A client that sends a big Content-Length and then stalls used to block
+    # rfile.read() forever on a single-threaded server -- denying the board to
+    # everyone, including the person, with no symptom but a page that stopped
+    # updating. Any client dying mid-request did it by accident.
+    timeout = 10                       # BaseHTTPRequestHandler honours this
+    MAX_BODY = 256 * 1024
+
     def do_POST(self):                                   # noqa: N802
         try:
             n = int(self.headers.get("Content-Length") or 0)
+            if n > self.MAX_BODY:
+                return self._send(413, json.dumps(
+                    {"error": "body too large"}).encode(), "application/json")
             req = json.loads(self.rfile.read(n) or b"{}")
             out = apply_action(WRITES, req.get("code", ""), req.get("action", ""),
                                req.get("session", ""), req.get("ids", []),
@@ -749,7 +772,8 @@ def serve(port: int = 8976, writable: bool | None = None) -> None:
         except Exception:
             writable = False
     WRITES = Session(enabled=bool(writable))
-    srv = HTTPServer(("127.0.0.1", port), _H)
+    srv = ThreadingHTTPServer(("127.0.0.1", port), _H)
+    srv.daemon_threads = True
     # The server writes its own record, because it is the only thing that knows
     # it is up and which pid it is. Written by the LAUNCHER, a board started any
     # other way -- by hand, or after a restart -- leaves the previous pid in the

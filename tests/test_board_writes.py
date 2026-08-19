@@ -99,9 +99,44 @@ def test_writes_are_off_unless_stdout_is_a_terminal(monkeypatch):
     """The tty is the test: a person ran the board themselves. The board that
     `mission init` starts in the background has no terminal."""
     from agent_mission import board
-    monkeypatch.setattr(board.HTTPServer, "__init__", lambda *a, **k: None)
-    monkeypatch.setattr(board.HTTPServer, "serve_forever",
+    monkeypatch.setattr(board.ThreadingHTTPServer, "__init__", lambda *a, **k: None)
+    monkeypatch.setattr(board.ThreadingHTTPServer, "serve_forever",
                         lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))
     monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)
     board.serve(8976)
     assert board.WRITES.enabled is False and board.WRITES.code == ""
+
+
+def test_guessing_the_code_locks_writes(mission):
+    """24 bits is ~16.7M values and the deny rules do not help: they match
+    shell commands, not an HTTP POST from a python one-liner. On loopback a
+    full sweep is hours, not years."""
+    from agent_mission.actions import MAX_WRONG
+    s = Session(enabled=True)
+    for _ in range(MAX_WRONG):
+        with pytest.raises(Unauthorised, match="wrong code"):
+            apply(s, "000000", "accept", "s", [_first(mission)])
+    with pytest.raises(Unauthorised, match="locked"):
+        apply(s, s.code, "accept", "s", [_first(mission)])   # even the RIGHT one
+    assert not mission.load().items[0].accepted
+
+
+def test_a_correct_code_clears_the_counter(mission):
+    from agent_mission.actions import MAX_WRONG
+    s = Session(enabled=True)
+    for _ in range(MAX_WRONG - 1):
+        with pytest.raises(Unauthorised):
+            apply(s, "000000", "accept", "s", [_first(mission)])
+    apply(s, s.code, "accept", "s", [_first(mission)])
+    assert s.wrong == 0, "a person who fat-fingered it once is not locked out"
+
+
+def test_a_bad_id_in_a_batch_does_not_hide_the_good_ones(mission):
+    """Each call writes its own event immediately, so raising partway through
+    left a prefix applied and told the caller only '400'."""
+    s = Session(enabled=True)
+    good = _first(mission)
+    out = apply(s, s.code, "accept", "s", [good, "not-an-id"])
+    assert out["ids"] == [good] and out["failed"][0]["id"] == "not-an-id"
+    assert out["ok"] is False
+    assert mission.load().items[0].accepted, "the good one still landed"

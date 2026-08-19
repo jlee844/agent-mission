@@ -468,3 +468,57 @@ def test_authority_is_still_refused_regardless_of_who_typed(store):
     """typed_by records; it never grants. An agent still cannot set a field."""
     with pytest.raises(ProtectedFieldError):
         store.set_protected("objective", "mine now", by="agent", typed_by="human")
+
+
+def test_a_truncated_log_line_does_not_destroy_the_mission(tmp_path):
+    """A log is appended to by processes that can be killed mid-write, so a
+    half-written final line is the normal failure. Parsing strictly made one
+    bad byte lose the whole mission -- and because the board loads every
+    session on its first request, one corrupt log took the board down for
+    everyone."""
+    st = MissionStore(tmp_path / "m")
+    st.create("s", "/repo", "a real goal", by="human")
+    i = st.propose("real work", by="human")["item_id"]
+    st.accept(i, by="human")
+    with st.log.open("a") as fh:
+        fh.write('{"kind":"created","by":"hum')      # killed mid-write
+
+    m = st.load()
+    assert m is not None and m.objective == "a real goal"
+    assert [x.text for x in m.items] == ["real work"]
+    assert st.damaged == 1, "the damage is counted, not hidden"
+
+
+def test_one_unreadable_session_does_not_take_down_the_board(tmp_path, monkeypatch):
+    from agent_mission import board
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setattr(board, "live", lambda: [])
+    ok = MissionStore(root_for("fine"))
+    ok.create("fine", "/repo", "readable", by="human")
+    bad = root_for("broken")
+    bad.mkdir(parents=True)
+    (bad / "events.jsonl").write_text("not json at all\n")
+
+    rows = board.snapshot()
+    assert [r["full"] for r in rows] == ["fine"]
+
+
+def test_delegating_as_an_agent_marks_the_child_fields_too(tmp_path, monkeypatch):
+    """create() recorded typed_by correctly; the three set_protected calls
+    right after it hardcoded human, so `why name` on a delegated child claimed
+    a person had typed it."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    st = MissionStore(root_for("p"))
+    st.create("p", "/repo", "parent goal", by="human")
+    st.set_protected("constraints", ["no network"], by="human")
+    iid = st.propose("a slice", by="human")["item_id"]
+    st.accept(iid, by="human")
+
+    _no_tty(monkeypatch)                       # an agent runs delegate
+    assert main(["delegate", iid, "--to", "the slice", "--session", "p"]) == 0
+    child = MissionStore(root_for("p.the-slice")).load()
+    assert child.typed_by_human is False
+    assert all(e.get("typed_by") == "agent" for e in
+               MissionStore(root_for("p.the-slice")).events()
+               if e["kind"] in ("created", "set"))

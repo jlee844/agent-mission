@@ -35,21 +35,37 @@ class Unauthorised(PermissionError):
     """Wrong code, or a read-only board."""
 
 
+# A short code is retypeable; 24 bits is also only ~16.7M values. A local
+# process can try them, and the deny rules do not help: they match shell
+# commands like `mission accept`, not an HTTP POST from a python one-liner.
+# On loopback that is hours, not years -- a realistic window for a board left
+# running through a long session. So wrong guesses have to cost something.
+MAX_WRONG = 5
+
+
 class Session:
     """The board's write capability. Absent = read-only."""
 
     def __init__(self, enabled: bool):
         self.enabled = enabled
-        # 6 hex chars: short enough to retype, and the attack it defends
-        # against is a process on this machine guessing, not a network.
+        # 6 hex chars: short enough for a person to retype from a terminal.
         self.code = secrets.token_hex(3) if enabled else ""
+        self.wrong = 0
 
     def check(self, given: str) -> None:
         if not self.enabled:
             raise Unauthorised("this board is read-only — run `mission board` "
                                "yourself in a terminal to enable writes")
+        if self.wrong >= MAX_WRONG:
+            raise Unauthorised(
+                f"locked after {MAX_WRONG} wrong codes — restart `mission board` "
+                "for a new one")
         if not given or not hmac.compare_digest(given, self.code):
-            raise Unauthorised("wrong code")
+            self.wrong += 1
+            left = MAX_WRONG - self.wrong
+            raise Unauthorised(f"wrong code ({left} attempt"
+                               f"{'' if left == 1 else 's'} left)")
+        self.wrong = 0
 
 
 def apply(session: Session, code: str, action: str, sid: str,
@@ -69,8 +85,16 @@ def apply(session: Session, code: str, action: str, sid: str,
         return {"ok": True, "did": "note"}
 
     fn = {"accept": st.accept, "done": st.complete, "remove": st.remove}[action]
-    done = []
+    # Per-id, like the CLI's _apply(): each call writes its own event
+    # immediately, so raising partway through left a prefix already applied and
+    # told the caller only "400". A bad id in a batch must not hide the ones
+    # that worked.
+    done, failed = [], []
     for i in ids:
-        fn(i, by="human")
-        done.append(i)
-    return {"ok": True, "did": action, "ids": done}
+        try:
+            fn(i, by="human")
+        except Exception as e:
+            failed.append({"id": i, "why": type(e).__name__})
+        else:
+            done.append(i)
+    return {"ok": not failed, "did": action, "ids": done, "failed": failed}
