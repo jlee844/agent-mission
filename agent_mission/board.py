@@ -171,13 +171,24 @@ def snapshot() -> list[dict]:
         r.setdefault("children", [])
     # One state per session, so the page never re-derives it and the sort,
     # the icon and the filters cannot disagree about what a card is.
+    from .doctor import review as _review
+    try:
+        lane = _review()
+    except Exception:
+        lane = []
+    per = {}
+    for f in lane:
+        per.setdefault(f["sid"], []).append({"what": f["what"],
+                                             "detail": f["detail"]})
     now = time.time()
     for r in rows:
+        r["review"] = per.get(r["full"], [])
         r["state"] = _state(r, now)
         r["needs_you"] = r["state"] in ("waiting", "nomission")
     # Sorted by who needs you, not by what you touched last: a session with
     # proposals waiting outranks one that is merely more recent.
-    order = {"waiting": 0, "nomission": 1, "working": 2, "idle": 3, "ended": 4}
+    order = {"review": 0, "waiting": 1, "nomission": 2, "working": 3,
+             "idle": 4, "ended": 5}
     # Ended sessions still sort last even when they are waiting on you: the
     # ask is worth surfacing, not worth putting above live work.
     return sorted(rows, key=lambda r: (r.get("ended", False),
@@ -198,6 +209,10 @@ def _state(r: dict, now: float) -> str:
     # ruled on is precisely the thing that gets lost, and hiding it from the
     # count was the first thing the strip got wrong -- it read "nothing is
     # waiting on you" above two cards saying "awaiting accept".
+    # A finding a person must re-read outranks a proposal waiting: one is
+    # something possibly wrong with the record, the other is ordinary work.
+    if r.get("review"):
+        return "review"
     if r["has_mission"] and r["pending_accept"]:
         return "waiting"
     if r.get("ended"):
@@ -407,6 +422,24 @@ border:1px solid var(--rule);border-radius:3px;padding:.16rem .45rem;background:
 .dot.nomission{background:var(--bad);opacity:.45}
 .dot.idle{background:var(--mut);opacity:.5}
 .dot.ended{background:var(--rule)}
+/* Review keeps the SAME accent as "waiting on you" -- one colour, one meaning
+   -- and a flag says which kind. A serious finding is rare (2 of 16 in the
+   real corpus), so unlike the earlier border experiment this lights up almost
+   nothing. If it ever lights up most of the board, the eligibility rule is
+   wrong, not the styling. */
+.dot.review{background:var(--bad);box-shadow:0 0 0 3px var(--badw)}
+.card.review{border-color:var(--bad)}
+.rev{border:1px solid var(--bad);background:var(--badw);border-radius:5px;
+padding:.5rem .7rem;margin:.6rem 0 .2rem;font-size:.82rem;line-height:1.5}
+.rev b{font-weight:600}
+.rev .d{color:var(--mut);font-size:.76rem;margin:.2rem 0 .4rem}
+.rev .acts{display:flex;gap:.4rem;flex-wrap:wrap}
+.rev .acts button{font-family:var(--mono);font-size:.66rem;padding:.16rem .45rem;
+border-radius:3px;border:1px solid var(--bad);background:none;color:var(--bad);
+cursor:pointer}
+.rev .acts button:hover{background:var(--bad);color:var(--bg)}
+.rev code{font-family:var(--mono);font-size:.72rem;background:var(--card);
+padding:.1rem .3rem;border-radius:3px;-webkit-user-select:all;user-select:all}
 .st{display:flex;align-items:center;gap:.4rem}
 /* No border tint for "waiting". On a real board five of six sessions had
    proposals outstanding, so every card lit up and the accent meant nothing
@@ -553,7 +586,8 @@ const passes = s =>
    || (FILTER === 'ended' && s.ended)
    // "needs you" is the only filter that is about YOUR attention rather than
    // the session's state: proposals waiting, or no mission written at all.
-   || (FILTER === 'todo'  && (s.pending_accept > 0 || !s.has_mission)));
+   || (FILTER === 'todo'  && (s.pending_accept > 0 || !s.has_mission
+                              || (s.review||[]).length)));
 
 async function tick(){
   let payload; try{ payload=await (await fetch('/data')).json() }catch(e){ return }
@@ -583,6 +617,9 @@ async function tick(){
   const strip  = document.getElementById('strip');
   const n = asks.reduce((t,s)=>t + s.pending_accept, 0);
   const bits = [];
+  const rev = all.reduce((t,s)=>t + (s.review||[]).length, 0);
+  if (rev) bits.push(`<span>⚑ <b>${rev}</b> need${rev>1?'':'s'} re-reading</span>`
+    + `<button class=go data-jump=todo>show</button>`);
   if (n) bits.push(`<span><b>${n}</b> proposal${n>1?'s':''} awaiting you`
     + ` in ${asks.length} session${asks.length>1?'s':''}</span>`
     + `<button class=go data-jump=todo>show</button>`);
@@ -605,7 +642,14 @@ async function tick(){
        <span>${s.ended?'ended':s.procs+' live here'}</span></div>
      ${s.has_mission? `
        <p class=obj>${esc(s.title)}</p>
-       ${s.named && s.objective?`<p class=objsub>${esc(s.objective)}</p>`:''}<!-- only when the mission has a real NAME: otherwise the title is
+       ${s.named && s.objective?`<p class=objsub>${esc(s.objective)}</p>`:''}
+       ${(s.review||[]).map(f=>`<div class=rev>
+          <b>⚑ ${esc(f.what)}</b>
+          <div class=d>${esc(f.detail)}</div>
+          <div class=acts>${(WRITABLE&&CODE())?
+            `<button data-ack="${esc(f.what)}" data-s="${s.full}">mark read</button>`:''}
+            <span class=d>reading it is all this asks — the record does not change</span>
+          </div></div>`).join('')}<!-- only when the mission has a real NAME: otherwise the title is
      the objective trimmed, and printing both says it twice -->
        ${s.total? `<div class=bar><i style="width:${100*s.done/s.total}%"></i></div>
          <div class=sid><span>${s.done} of ${s.total} done</span>
@@ -679,6 +723,11 @@ document.getElementById('setup').addEventListener('click', async e=>{
   renderSetup();
 });
 document.getElementById('g').addEventListener('click', e=>{
+  const a = e.target.closest('[data-ack]');
+  if (a){
+    act('ack', a.dataset.s, [], a.dataset.ack);
+    return;
+  }
   const b = e.target.closest('[data-do]'); if(!b) return;
   const sid = b.dataset.s;
   if (b.dataset.do === 'note'){

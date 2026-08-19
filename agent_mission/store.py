@@ -358,6 +358,18 @@ class MissionStore:
         self._require_mission()
         return self._append("returned", by)
 
+    def acknowledge(self, finding: str, by: str) -> dict:
+        """"I have read this." Clears a finding without pretending it changed.
+
+        A duplicate `created` from two days ago is not undone by acknowledging
+        it -- but it should not shout forever either, or the lane it lives in
+        becomes the thing you learn to ignore.
+        """
+        if by != "human":
+            raise ProtectedFieldError("reading it is yours to say")
+        self._require_mission()
+        return self._append("acknowledged", by, finding=finding)
+
     def observe(self, fieldname: str, text: str, by: str = "agent") -> dict:
         if FIELD_AUTHORITY.get(fieldname) is not Authority.OBSERVABLE:
             raise ValueError(f"{fieldname} is not observable")

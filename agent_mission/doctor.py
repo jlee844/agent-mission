@@ -28,6 +28,36 @@ def _logs(base=None):
             yield d, [e for e in MissionStore(d).events()]
 
 
+# Only findings a person can CLOSE belong in the board's review lane. Nine of
+# the sixteen findings in the real corpus are unprovenanced writes -- true
+# statements about history that no action changes. A lane containing them
+# carries a permanent badge, and a permanent badge is one you stop seeing in a
+# day: the same failure as red once meaning three unrelated things.
+CLEARABLE = {"duplicate mission start", "written from another directory",
+             "damaged log", "agent-transcribed goal", "detour left open"}
+
+
+def review(base=None) -> list[dict]:
+    """What needs a human to re-read it, and can be cleared by one.
+
+    The eligibility rule IS the feature. If an item has no action that removes
+    it from this list, it does not belong in this list.
+    """
+    acked = _acknowledged(base)
+    return [f for f in findings(base)
+            if f["what"] in CLEARABLE
+            and (f["sid"], f["what"]) not in acked]
+
+
+def _acknowledged(base=None) -> set:
+    out = set()
+    for d, evs in _logs(base):
+        for e in evs:
+            if e.get("kind") == "acknowledged":
+                out.add((d.name, e.get("finding", "")))
+    return out
+
+
 def findings(base=None) -> list[dict]:
     out = []
     for d, evs in _logs(base):
@@ -70,6 +100,18 @@ def findings(base=None) -> list[dict]:
         m = MissionStore(d).load()
         if m is None:
             continue
+
+        # A detour nobody returned from. Declared, so this is a fact rather
+        # than a guess about whether attention wandered.
+        if m.detours:
+            opened = [e["at"] for e in evs if e.get("kind") == "detour"]
+            age = (time.time() - opened[-1]) / 3600 if opened else 0
+            if age >= 8:
+                out.append({
+                    "sid": sid, "level": "note", "what": "detour left open",
+                    "detail": f'"{m.detours[-1]}" — open {age:.0f}h. '
+                              f"`mission return` replays the goal",
+                })
 
         # 4. A goal the agent wrote down. Permitted, and worth re-reading.
         if not m.typed_by_human:

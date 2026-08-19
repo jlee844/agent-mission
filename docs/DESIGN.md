@@ -84,6 +84,31 @@ five cards, four of them its own children.
 agent move your progress backwards by making suggestions — one real board read
 `8/10` with every agreed task finished and two suggestions outstanding.
 
+## The review lane, and why it is two items and not sixteen
+
+`mission doctor` finds sixteen things wrong with the current corpus. The board's
+review lane shows **two**.
+
+The rule: an item belongs in the lane only if a person can *close* it. Nine of
+the sixteen are unprovenanced writes — events that really do predate
+provenance, and no action changes that. A lane containing them carries a badge
+that never clears, and a badge that never clears is one you stop seeing in
+about a day.
+
+That is the same failure as red once meaning a pending proposal, a failed tool
+call and a health warning at the same time. The fix then was one accent, one
+meaning; the fix here is one lane, one question: *what needs me to look at it
+and can be finished by my looking?*
+
+`acknowledge` exists for exactly that: it records "I have read this" and changes
+nothing else. A duplicate `created` from two days ago is not undone by
+acknowledging it — but it should not shout forever either.
+
+**No notification, no tab badge, no popup.** The signal is prominence inside a
+page you already have open: the card sorts first, keeps the same accent as
+"waiting on you", and carries a flag saying which kind. If that ever lights up
+most of the board, the eligibility rule is wrong — not the styling.
+
 ## Things deliberately not built
 
 - Drift detection, in any form. Closed with pre-registered stopping rules; see above.

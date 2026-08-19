@@ -93,6 +93,7 @@ rules. See [SECURITY.md](docs/SECURITY.md) for how, and for what that does
 | `import <file>` | land an external plan as proposals; diffs on re-import |
 | `delegate <id>` | give one accepted item its own session for a subagent |
 | `observe <field> <text>` | record evidence, a decision, or a note |
+| `doctor` | what is wrong with the missions themselves, not the install |
 | `board` | the shared board (`--stop`; run it yourself for write buttons) |
 | `setup --check` | which surfaces are installed, missing, or outdated |
 | — | the board's Setup panel installs the same five, behind the write code |

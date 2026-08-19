@@ -96,3 +96,72 @@ def test_a_damaged_log_is_reported_rather_than_hidden(tmp_path):
         fh.write('{"kind":"set","by":"hum\n')
     hit = [f for f in findings() if f["what"] == "damaged log"]
     assert hit and hit[0]["level"] == "serious"
+
+
+# ── the review lane: only what a person can close ───────────────────────────
+
+def test_the_lane_excludes_findings_nobody_can_clear():
+    """Nine of sixteen findings in the real corpus are unprovenanced writes --
+    true statements about history that no action changes. A lane containing
+    them carries a permanent badge, and a permanent badge is one you stop
+    seeing in a day."""
+    import json
+    from agent_mission.doctor import findings, review
+    st = MissionStore(root_for("s"))
+    st.create("s", "/repo", "a goal", by="human", typed_by="human")
+    with st.log.open("a") as fh:
+        fh.write(json.dumps({"kind": "set", "by": "human", "field": "name",
+                             "value": "old", "at": 1.0}) + "\n")
+    assert any(f["what"] == "unprovenanced writes" for f in findings())
+    assert review() == [], "reported on demand, never in the lane"
+
+
+def test_every_lane_item_has_something_that_removes_it():
+    """The eligibility rule IS the feature. An item with no closing action is
+    a permanent accusation."""
+    from agent_mission.doctor import CLEARABLE, review
+    st = MissionStore(root_for("s"))
+    st.create("s", "/repo", "the real goal", by="human", typed_by="human")
+    st.create("s", "/elsewhere", "a stray sentence", by="human", typed_by="human")
+    lane = review()
+    assert lane and all(f["what"] in CLEARABLE for f in lane)
+
+
+def test_acknowledging_clears_it_without_touching_the_record():
+    from agent_mission.doctor import findings, review
+    st = MissionStore(root_for("s"))
+    st.create("s", "/repo", "the real goal", by="human", typed_by="human")
+    st.create("s", "/repo", "a stray sentence", by="human", typed_by="human")
+    before = len(list(st.events()))
+    assert any(f["what"] == "duplicate mission start" for f in review())
+
+    st.acknowledge("duplicate mission start", by="human")
+    assert not any(f["what"] == "duplicate mission start" for f in review())
+    assert any(f["what"] == "duplicate mission start" for f in findings()), \
+        "still true, still reported by doctor -- reading it changed nothing"
+    assert len(list(st.events())) == before + 1, "one event added, none altered"
+    assert st.load().objective == "the real goal", "and the mission is intact"
+
+
+def test_only_a_human_can_say_they_read_it():
+    st = MissionStore(root_for("s"))
+    st.create("s", "/repo", "a goal", by="human", typed_by="human")
+    with pytest.raises(Exception):
+        st.acknowledge("duplicate mission start", by="agent")
+
+
+def test_a_detour_left_open_all_day_asks_to_be_closed():
+    import time
+    from agent_mission.doctor import review
+    st = MissionStore(root_for("s"))
+    st.create("s", "/repo", "a goal", by="human", typed_by="human")
+    st.detour("chasing a flaky test")
+    assert not any(f["what"] == "detour left open" for f in review()), \
+        "a fresh detour is ordinary work"
+
+    ev = st.log.read_text().splitlines()
+    import json
+    last = json.loads(ev[-1]); last["at"] = time.time() - 9 * 3600
+    st.log.write_text("\n".join(ev[:-1] + [json.dumps(last)]) + "\n")
+    hit = [f for f in review() if f["what"] == "detour left open"]
+    assert hit and "mission return" in hit[0]["detail"]
