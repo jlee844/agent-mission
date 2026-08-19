@@ -920,8 +920,12 @@ def cmd_check(a) -> int:
     rows = _surfaces_shared(a)
     print()
     for r in rows:
-        print(f"  {'✓' if r['ok'] else '·'} {r['name']:<16} "
-              f"{'installed' if r['ok'] else 'missing':<10} {r['detail']}")
+        # "missing" and "outdated" are different problems with the same fix,
+        # and calling an outdated copy "missing" reads as a lie when the file
+        # is plainly there.
+        state = r.get("state") or ("installed" if r["ok"] else "missing")
+        print(f"  {'✓' if r['ok'] else '·'} {r['name']:<16} {state:<10} "
+              f"{r['detail']}")
     missing = [r["name"] for r in rows if not r["ok"]]
     if missing:
         print(f"\n  {len(missing)} missing — `mission setup` in a terminal "

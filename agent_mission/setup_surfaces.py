@@ -78,9 +78,22 @@ def status(settings: str | None = None, dest: str | None = None) -> list[dict]:
     wrapper = home() / "statusline.sh"
     hooks = json.dumps(data.get("hooks", {}).get("SessionStart", []))
     cmd_file = cd / "mission.md"
+    # Existence is not currency. The command file is a COPY, so it goes stale
+    # every time the repo's version changes -- and it was reported "installed"
+    # while five sections behind, which is how other sessions kept working from
+    # a picture of the tool that no longer matched it.
+    try:
+        fresh = cmd_file.read_text(encoding="utf-8") == \
+            _template().read_text(encoding="utf-8")
+    except OSError:
+        fresh = False
     return [
-        {"name": "slash command", "ok": cmd_file.exists(),
-         "detail": str(cmd_file)},
+        {"name": "slash command", "ok": cmd_file.exists() and fresh,
+         "state": "current" if fresh else
+                  ("outdated" if cmd_file.exists() else "missing"),
+         "detail": str(cmd_file) if fresh else
+                   (f"{cmd_file} — `mission setup --force` updates it"
+                    if cmd_file.exists() else str(cmd_file))},
         {"name": "deny rules", "ok": all(r in deny for r in DENY_RULES),
          "detail": f"{sum(r in deny for r in DENY_RULES)}/{len(DENY_RULES)}"},
         {"name": "statusline",

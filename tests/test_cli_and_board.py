@@ -1001,3 +1001,27 @@ def test_the_tier_rule_is_stated_as_a_rule_not_a_list():
     for prop in ("idempotent", "diff before it applies", "backed up"):
         assert prop in sec
     assert "no setup route at all" in sec, "and the read-only guarantee"
+
+
+def test_an_outdated_slash_command_is_not_reported_as_installed(tmp_path,
+                                                                monkeypatch,
+                                                                capsys):
+    """The command file is a COPY. It went five sections stale -- detours,
+    `mission help`, "never report the plan from memory" -- while --check said
+    "installed", which is how other sessions kept working from a picture of
+    the tool that no longer matched it."""
+    import json as J
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
+    settings = tmp_path / "settings.json"
+    settings.write_text(J.dumps({}))
+    dest = tmp_path / "c"
+    dest.mkdir()
+    (dest / "mission.md").write_text("an older version of the command file")
+
+    assert main(["setup", "--check", "--settings", str(settings),
+                 "--dest", str(dest)]) == 1
+    out = capsys.readouterr().out
+    assert "outdated" in out and "--force" in out
+    assert "missing" not in out.split("slash command")[1].split("\n")[0], \
+        "the file is plainly there — calling it missing reads as a lie"
