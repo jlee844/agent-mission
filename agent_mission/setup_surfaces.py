@@ -64,6 +64,32 @@ def _write(path: Path, data: dict) -> str:
     return backup.name
 
 
+ORIGINAL_MARK = "# mission-original: "
+
+
+def wrapper_path() -> Path:
+    return home() / "statusline.sh"
+
+
+def wrapped_original() -> str:
+    """The command our wrapper wraps, read back from the wrapper itself.
+
+    Without this, re-running setup wrapped the wrapper: the settings value is a
+    PATH, so "does it already include mission whereami" was false, and the new
+    wrapper called the old one -- which was itself. One --force turned a working
+    statusline into infinite recursion and lost the original command, because
+    only settings.json was backed up and the original lived inside the file
+    being overwritten.
+    """
+    w = wrapper_path()
+    if not w.exists():
+        return ""
+    for line in w.read_text(encoding="utf-8").splitlines():
+        if line.startswith(ORIGINAL_MARK):
+            return line[len(ORIGINAL_MARK):].strip()
+    return ""
+
+
 def _template() -> Path:
     return Path(__file__).resolve().parent.parent / "commands" / "mission.md"
 
@@ -97,8 +123,10 @@ def status(settings: str | None = None, dest: str | None = None) -> list[dict]:
         {"name": "deny rules", "ok": all(r in deny for r in DENY_RULES),
          "detail": f"{sum(r in deny for r in DENY_RULES)}/{len(DENY_RULES)}"},
         {"name": "statusline",
-         "ok": "mission whereami" in sl_cmd or (wrapper.exists()
-                                                and str(wrapper) in sl_cmd),
+         "ok": ("mission whereami" in sl_cmd
+                or (wrapper.exists() and str(wrapper) in sl_cmd
+                    and str(wrapper) not in wrapper.read_text(errors="replace")
+                    .split("input=$(cat)")[0].split(ORIGINAL_MARK)[-1])),
          "detail": sl_cmd[:70] or "not set"},
         {"name": "re-anchor hook", "ok": "mission whereami --full" in hooks,
          "detail": "SessionStart"},
@@ -127,6 +155,9 @@ def plan(name: str, settings: str | None = None,
         cur = data.get("statusLine") or {}
         inner = cur.get("command") if isinstance(cur, dict) else str(cur)
         if inner and "mission whereami" in inner:
+            return {"changes": [], "why": "already current"}
+        if inner and str(wrapper_path()) in inner:
+            # Already ours. Re-wrapping would nest it inside itself.
             return {"changes": [], "why": "already current"}
         if inner:
             return {"changes": [
@@ -177,13 +208,16 @@ def install(name: str, settings: str | None = None,
     elif name == "statusline":
         cur = data.get("statusLine") or {}
         inner = cur.get("command") if isinstance(cur, dict) else str(cur)
+        if inner and str(wrapper_path()) in inner:
+            inner = wrapped_original()      # never wrap our own wrapper
         if inner:
-            w = home() / "statusline.sh"
+            w = wrapper_path()
             w.write_text(
                 "#!/bin/sh\n"
                 "# Written by `mission setup`. Your original statusline command\n"
                 "# is preserved verbatim below; `mission whereami` is appended.\n"
                 "# Statuslines are ONE line, so both halves are flattened.\n"
+                f"{ORIGINAL_MARK}{inner}\n"
                 "input=$(cat)\n"
                 f"mine=$(printf '%s' \"$input\" | {inner} 2>/dev/null | tr '\\n' ' ')\n"
                 "goal=$(mission whereami 2>/dev/null)\n"

@@ -1087,3 +1087,56 @@ def test_proposals_render_above_the_agreed_plan():
     assert "waiting on you</h3>" in PAGE
     assert PAGE.index("class=asks") < PAGE.index("<ul class=chk>${agreed"), \
         "the asking block is emitted before the agreed list"
+
+
+def test_setup_never_wraps_its_own_wrapper(tmp_path, monkeypatch, at_a_keyboard):
+    """One `mission setup --force` on an already-wrapped statusline produced a
+    script that called itself -- infinite recursion -- and lost the original
+    command, because only settings.json was backed up and the original lived
+    inside the file being overwritten."""
+    import json as J
+    import subprocess
+    from agent_mission import setup_surfaces as S
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
+    settings = tmp_path / "settings.json"
+    settings.write_text(J.dumps({"statusLine": {
+        "type": "command", "command": "printf 'branch: main'"}}))
+    args = ["setup", "--force", "--settings", str(settings),
+            "--dest", str(tmp_path / "c")]
+
+    main(args)
+    main(args)          # the second run is the one that broke it
+    main(args)
+
+    body = [l for l in S.wrapper_path().read_text().splitlines()
+            if l.startswith("mine=")][0]
+    assert str(S.wrapper_path()) not in body, "it must not call itself"
+    assert "printf 'branch: main'" in body, "the original survives re-runs"
+    assert S.wrapped_original() == "printf 'branch: main'"
+
+    out = subprocess.run(["sh", str(S.wrapper_path())], input="{}",
+                         capture_output=True, text=True, timeout=5).stdout
+    assert "branch: main" in out and "\n" not in out.strip()
+
+
+def test_the_cli_and_the_board_share_one_setup_implementation(monkeypatch,
+                                                              tmp_path):
+    """C10 claimed this and it was not true: the board called setup_surfaces
+    while cmd_setup kept its own copy. They drifted -- only one had the
+    self-reference check -- and the CLI's copy wrapped its own wrapper."""
+    import json as J
+    from agent_mission import setup_surfaces as S
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
+    settings = tmp_path / "settings.json"
+    settings.write_text(J.dumps({}))
+
+    called = []
+    real = S.install
+    monkeypatch.setattr(S, "install",
+                        lambda *a, **k: (called.append(a[0]), real(*a, **k))[1])
+    main(["setup", "--settings", str(settings), "--dest", str(tmp_path / "c")])
+    assert "statusline" in called and "deny rules" in called, \
+        "the CLI goes through setup_surfaces, not a private copy"

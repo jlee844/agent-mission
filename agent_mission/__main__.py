@@ -1213,10 +1213,34 @@ def cmd_setup(a) -> int:
         dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
         print(f"\n  installed {dest}")
     print("  type /mission in any Claude Code session\n")
-    rc = _install_deny_rules(a)
-    _offer_statusline(a)
-    _offer_hooks(a)
-    return rc
+    # One implementation, two front-ends -- which C10 claimed and this did not
+    # honour: the board called setup_surfaces while the CLI kept its own copy.
+    # They drifted, and the CLI's copy wrapped its own wrapper because only it
+    # was missing the self-reference check.
+    from . import setup_surfaces as S
+    if not _at_a_keyboard():
+        rows = [r for r in S.status(getattr(a, "settings", None),
+                                    getattr(a, "dest", None)) if not r["ok"]]
+        if rows:
+            print("  these are not installed:\n")
+            for r in rows:
+                print(f"    {r['name']}")
+            print("\n  run `mission setup` yourself in a terminal.\n")
+        return 0
+    for name in S.SURFACES:
+        if name == "slash command":
+            continue                       # handled above, honours --force
+        out = S.install(name, getattr(a, "settings", None),
+                        getattr(a, "dest", None))
+        if out["applied"]:
+            for line in out["applied"]:
+                print(f"  → {line}")
+            if out["backup"]:
+                print(f"    backup: {out['backup']}")
+        else:
+            print(f"  {name}: {out['why'] or 'nothing to do'}")
+    print()
+    return 0
 
 
 def _settings_path(a) -> Path:
