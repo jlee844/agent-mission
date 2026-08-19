@@ -882,13 +882,18 @@ def cmd_setup(a) -> int:
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / "mission.md"
     if dest.exists() and not a.force:
-        print(f"  {dest} already exists — `mission setup --force` to overwrite")
-        return 1
-    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-    print(f"\n  installed {dest}")
+        # NOT a return. One surface already being present used to abort the
+        # whole run, so `mission setup` printed an instruction and installed
+        # nothing else -- which is precisely the failure this command exists
+        # to prevent. Every surface is attempted on every run.
+        current = dest.read_text(encoding="utf-8")
+        same = current == src.read_text(encoding="utf-8")
+        print(f"\n  slash command already installed"
+              f"{'' if same else ' (older version — --force to update)'}")
+    else:
+        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        print(f"\n  installed {dest}")
     print("  type /mission in any Claude Code session\n")
-    print("  Without this, typing 'mission init' into a session is read as an")
-    print("  instruction and the agent goes and does something else entirely.\n")
     rc = _install_deny_rules(a)
     _offer_statusline(a)
     _offer_hooks(a)

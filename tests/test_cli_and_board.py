@@ -158,14 +158,23 @@ def test_setup_installs_the_slash_command(tmp_path):
     assert (tmp_path / "mission.md").exists()
 
 
-def test_setup_refuses_to_clobber_without_force(tmp_path):
+def test_setup_refuses_to_clobber_without_force(tmp_path, monkeypatch):
+    """It must not overwrite an edited command file -- but it must also not
+    STOP, which it used to: one present surface aborted the other four."""
+    import json as J
     from agent_mission.__main__ import main
-    (tmp_path).mkdir(parents=True, exist_ok=True)
-    (tmp_path / "mission.md").write_text("mine", encoding="utf-8")
-    assert main(["setup", "--dest", str(tmp_path)]) == 1
-    assert (tmp_path / "mission.md").read_text() == "mine"
-    assert main(["setup", "--dest", str(tmp_path), "--force"]) == 0
-    assert (tmp_path / "mission.md").read_text() != "mine"
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
+    settings = tmp_path / "settings.json"
+    settings.write_text(J.dumps({}))
+    dest = tmp_path / "c"
+    dest.mkdir()
+    (dest / "mission.md").write_text("mine", encoding="utf-8")
+
+    assert main(["setup", "--dest", str(dest), "--settings", str(settings)]) == 0
+    assert (dest / "mission.md").read_text() == "mine", "not clobbered"
+    assert main(["setup", "--dest", str(dest), "--settings", str(settings),
+                 "--force"]) == 0
+    assert (dest / "mission.md").read_text() != "mine", "--force updates it"
 
 
 def test_init_can_be_written_from_a_file(tmp_path, monkeypatch):
@@ -891,3 +900,27 @@ def test_the_bookmark_points_at_the_live_port_and_says_so_when_down(tmp_path,
     assert "http://127.0.0.1:8979/" in page
     assert 'mode: "no-cors"' in page, "file:// origin is null; a plain fetch is refused"
     assert "not running" in page and "mission board" in page
+
+
+def test_one_installed_surface_does_not_abort_the_rest(tmp_path, monkeypatch,
+                                                       capsys, at_a_keyboard):
+    """`mission setup` on a machine that already had the slash command printed
+    'use --force' and stopped -- installing none of the other four surfaces.
+    The one command whose entire contract is 'this is always the complete fix'
+    was the one that told you to type something else."""
+    import json as J
+    from agent_mission.__main__ import DENY_RULES, main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
+    settings = tmp_path / "settings.json"
+    settings.write_text(J.dumps({}))
+    dest = tmp_path / "c"
+    dest.mkdir()
+    (dest / "mission.md").write_text("an older version")
+
+    assert main(["setup", "--settings", str(settings), "--dest", str(dest)]) == 0
+    data = J.loads(settings.read_text())
+    assert all(r in data["permissions"]["deny"] for r in DENY_RULES)
+    assert data["statusLine"], "and the statusline"
+    assert data["hooks"]["SessionStart"], "and the hook"
+    out = capsys.readouterr().out
+    assert "already installed" in out and "older version" in out
