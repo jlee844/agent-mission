@@ -2,7 +2,7 @@
 
 **The goal, beside the work, that the agent cannot quietly rewrite.**
 
-[![tests](https://img.shields.io/badge/tests-140%20passing-0E6E68)](tests/)
+[![tests](https://img.shields.io/badge/tests-147%20passing-0E6E68)](tests/)
 [![python](https://img.shields.io/badge/python-3.9%20–%203.14-0E6E68)](pyproject.toml)
 [![context cost](https://img.shields.io/badge/always--on%20context-47%20tokens-0E6E68)](commands/mission.md)
 [![deps](https://img.shields.io/badge/dependencies-none-0E6E68)](pyproject.toml)
@@ -216,7 +216,7 @@ This is the whole design.
 | 🟢 **observable** | decisions, evidence, notes | agent records freely |
 
 ```bash
-mission observe evidence "140 tests pass on 3.9 through 3.14"
+mission observe evidence "147 tests pass on 3.9 through 3.14"
 mission observe notes "the eval set is the bottleneck, not the model"
 ```
 
@@ -262,7 +262,7 @@ and `mission show` says it above the plan:
 `typed_by` records; it never grants. An agent still cannot `set`, `accept`,
 `done`, `remove` or `add`.
 
-There are 140 tests and most of them guard exactly this.
+There are 147 tests and most of them guard exactly this.
 
 **The honest scope of that guarantee.** The store has always refused agent
 writes. The *CLI* could not tell who typed the command, so it passed
@@ -429,7 +429,7 @@ reading, and nothing is silently rewritten. `AGENT_MISSION_HOME` moves it.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && python -m pytest tests/ -q     # 140 tests, no network
+pip install -e ".[dev]" && python -m pytest tests/ -q     # 147 tests, no network
 ```
 
 ## Status
@@ -437,7 +437,7 @@ pip install -e ".[dev]" && python -m pytest tests/ -q     # 140 tests, no networ
 Not on PyPI yet — install from source as above. Session discovery is Claude
 Code specific; the store and the board are not.
 
-**Python 3.9 through 3.14**, all 140 tests passing on each. The floor is 3.9
+**Python 3.9 through 3.14**, all 147 tests passing on each. The floor is 3.9
 because that is the Python macOS ships: the package originally declared 3.10+,
 which would have told a user on stock macOS Python that it was unsupported
 while it ran fine.

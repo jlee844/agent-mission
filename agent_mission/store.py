@@ -108,11 +108,12 @@ class Node:
 
     @property
     def total(self) -> int:
-        return len(self.leaves)
+        # Same rule as Mission.total_count: agreed work only.
+        return sum(1 for lf in self.leaves if lf.accepted)
 
     @property
     def complete(self) -> bool:
-        """A branch is done when its leaves are; a leaf when it is ticked."""
+        """A branch is done when its agreed leaves are; a leaf when ticked."""
         return self.done_count == self.total and self.total > 0
 
 
@@ -142,6 +143,10 @@ class Mission:
     # worth showing, because "is this really your goal" is the question this
     # whole tool exists to keep answerable.
     typed_by_human: bool = True
+    # Declared side quests, innermost last. Never inferred: F34 killed five
+    # attempts to detect drift, and the honest residue is that the agent says
+    # when it is going off, rather than a detector guessing.
+    detours: list[str] = field(default_factory=list)
 
     @property
     def items(self) -> list[Item]:
@@ -201,7 +206,14 @@ class Mission:
 
     @property
     def total_count(self) -> int:
-        return len(self.leaves)
+        """Only AGREED work counts. A proposal is not yet part of the plan.
+
+        Counting proposals here meant the agent could move the human's progress
+        backwards by suggesting things: one real board read 8/10 with every
+        agreed task finished and two suggestions outstanding. The pending count
+        is reported separately, which is where an unanswered proposal belongs.
+        """
+        return sum(1 for lf in self.leaves if lf.accepted)
 
     @property
     def pending(self) -> list[Item]:
@@ -321,6 +333,16 @@ class MissionStore:
         self._require(item_id)
         return self._append("removed", by, item_id=item_id)
 
+    def detour(self, label: str, by: str = "agent") -> dict:
+        """Declare a side quest. Observable: recording is not deciding."""
+        self._require_mission()
+        return self._append("detour", by, label=label)
+
+    def ret(self, by: str = "agent") -> dict:
+        """Close the innermost detour. A no-op on an empty stack, not an error."""
+        self._require_mission()
+        return self._append("returned", by)
+
     def observe(self, fieldname: str, text: str, by: str = "agent") -> dict:
         if FIELD_AUTHORITY.get(fieldname) is not Authority.OBSERVABLE:
             raise ValueError(f"{fieldname} is not observable")
@@ -396,6 +418,11 @@ class MissionStore:
                             gone.add(d["id"])
                             changed = True
                 m.checklist = [d for d in m.checklist if d["id"] not in gone]
+            elif k == "detour":
+                m.detours.append(ev["label"])
+            elif k == "returned":
+                if m.detours:
+                    m.detours.pop()
             elif k == "observed":
                 getattr(m, ev["field"]).append(ev["value"])
         return m

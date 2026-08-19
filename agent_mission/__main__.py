@@ -466,6 +466,94 @@ def cmd_delegate(a) -> int:
     return 0
 
 
+def cmd_detour(a) -> int:
+    """Declare a side quest. The agent may do this freely.
+
+    Drifting into a subgoal is normal work, not a failure. The failure is
+    coming back up with nothing that says what the bigger goal was. So this
+    records the detour instead of guessing at one -- five attempts to DETECT
+    drift all failed (F34), and the honest residue is that going off is
+    something you say, not something a detector infers.
+    """
+    sid = resolve_session(a.session, getattr(a, "cwd", None))
+    st = _store(sid)
+    st.detour(a.label, by="human" if _at_a_keyboard() else "agent")
+    depth = len(st.load().detours)
+    print(f"  detour ({depth} deep): {a.label}")
+    print("  `mission return` when you climb back up")
+    return 0
+
+
+def cmd_return(a) -> int:
+    """Close the innermost detour, and replay the goal you left behind."""
+    sid = resolve_session(a.session, getattr(a, "cwd", None))
+    st = _store(sid)
+    m = st.load()
+    if m is None:
+        raise NoMissionError(sid)
+    if not m.detours:
+        print("  no detour open — nothing to return from")
+        return 0
+    left = m.detours[-1]
+    st.ret(by="human" if _at_a_keyboard() else "agent")
+    m = st.load()
+
+    # The point of the whole command: the guards you set at the start, replayed
+    # at the moment you come back, rather than trusted to memory.
+    print(f"\n  back from: {left}\n")
+    print(f"  {m.title}")
+    print(f"  {m.objective}\n")
+    if m.detours:
+        print(f"  still inside: {m.detours[-1]} ({len(m.detours)} deep)\n")
+    for label, vals in (("DONE WHEN", m.success_criteria),
+                        ("CONSTRAINTS", m.constraints),
+                        ("NOT DOING", m.non_goals)):
+        if vals:
+            print(f"  {label}")
+            for v in vals:
+                print(f"    · {v}")
+            print()
+    nxt = [i for i in m.leaves if i.accepted and not i.done]
+    if nxt:
+        print(f"  NEXT\n    [ ] {nxt[0].id}  {nxt[0].text}\n")
+    return 0
+
+
+def cmd_whereami(a) -> int:
+    """One line, for a statusline. Never fails, never blocks.
+
+    The moment you have drifted is exactly the moment you do not think to run
+    `mission show`. So the goal has to come to the person rather than wait to
+    be asked for, and a statusline is the only surface that is always there.
+
+    Constraints that follow from that: one line, no colour, fast, and exit 0
+    on every path including "no mission" and "the log is corrupt". A statusline
+    that can fail is a statusline that gets removed.
+    """
+    try:
+        sid = resolve_session(a.session, getattr(a, "cwd", None))
+        m = _store(sid).load()
+    except Exception:
+        print("")                       # silent rather than noisy or broken
+        return 0
+    if m is None:
+        print("no mission — mission init")
+        return 0
+
+    bits = [m.title if len(m.title) <= 40 else m.title[:37].rsplit(" ", 1)[0] + "…"]
+    if m.total_count:
+        bits.append(f"{m.done_count}/{m.total_count}")
+    if m.detours:
+        top = m.detours[-1]
+        deep = f" ({len(m.detours)} deep)" if len(m.detours) > 1 else ""
+        bits.append(f"detour: {top}{deep}")
+    n = len(m.unaccepted)
+    if n:
+        bits.append(f"{n} proposal{'' if n == 1 else 's'} waiting")
+    print(" · ".join(bits))
+    return 0
+
+
 def cmd_observe(a) -> int:
     """Record evidence, a decision, or a note. The one write needing no gate.
 
@@ -915,6 +1003,19 @@ def main(argv: list[str] | None = None) -> int:
         f for f, au in FIELD_AUTHORITY.items() if au is Authority.OBSERVABLE))
     ob.add_argument("text")
     ob.set_defaults(fn=cmd_observe)
+
+    dt = sub.add_parser("detour", parents=[common],
+                        help="declare a side quest (the agent may do this)")
+    dt.add_argument("label")
+    dt.set_defaults(fn=cmd_detour)
+
+    rt = sub.add_parser("return", parents=[common],
+                        help="close the detour and replay the goal you left")
+    rt.set_defaults(fn=cmd_return)
+
+    wa = sub.add_parser("whereami", parents=[common],
+                        help="one line: goal, progress, detour, what is waiting")
+    wa.set_defaults(fn=cmd_whereami)
 
     pd = sub.add_parser("pending", parents=[common],
                         help="what is awaiting your accept, and how to clear it")

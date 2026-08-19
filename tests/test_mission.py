@@ -522,3 +522,107 @@ def test_delegating_as_an_agent_marks_the_child_fields_too(tmp_path, monkeypatch
     assert all(e.get("typed_by") == "agent" for e in
                MissionStore(root_for("p.the-slice")).events()
                if e["kind"] in ("created", "set"))
+
+
+# ── detours: declared, never inferred ────────────────────────────────────────
+
+def test_a_detour_nests_and_returns(store):
+    """Drifting into a subgoal is normal work. The failure is climbing back up
+    with nothing that says what the bigger goal was."""
+    store.detour("chasing a flaky test")
+    store.detour("why is pytest slow")
+    assert store.load().detours == ["chasing a flaky test", "why is pytest slow"]
+    store.ret()
+    assert store.load().detours == ["chasing a flaky test"]
+    store.ret()
+    assert store.load().detours == []
+
+
+def test_returning_with_nothing_open_is_not_an_error(tmp_path, monkeypatch, capsys):
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    MissionStore(root_for("s")).create("s", "/repo", "goal", by="human")
+    assert main(["return", "--session", "s"]) == 0
+    assert "nothing to return from" in capsys.readouterr().out
+
+
+def test_the_agent_may_declare_a_detour_without_a_terminal(tmp_path, monkeypatch):
+    """Observable tier: recording is not deciding. This is the honest channel
+    for 'I am going on a side quest', which today it takes silently."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    MissionStore(root_for("s")).create("s", "/repo", "goal", by="human")
+    _no_tty(monkeypatch)
+    assert main(["detour", "reading the parser", "--session", "s"]) == 0
+    assert MissionStore(root_for("s")).load().detours == ["reading the parser"]
+
+
+def test_returning_replays_the_guards_you_set_at_the_start(
+        tmp_path, monkeypatch, capsys):
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    st = MissionStore(root_for("s"))
+    st.create("s", "/repo", "Ship list sharing", by="human")
+    st.set_protected("constraints", ["no schema migration"], by="human")
+    st.set_protected("success_criteria", ["lists sync both ways"], by="human")
+    i = st.propose("Wire the sheet", by="human")["item_id"]
+    st.accept(i, by="human")
+    st.detour("a side quest")
+
+    main(["return", "--session", "s"])
+    out = capsys.readouterr().out
+    assert "Ship list sharing" in out
+    assert "no schema migration" in out, "the guards come back with the goal"
+    assert "lists sync both ways" in out
+    assert "Wire the sheet" in out, "and what you were on"
+
+
+# ── whereami: one line, never fails ──────────────────────────────────────────
+
+def test_whereami_is_one_line_in_every_state(tmp_path, monkeypatch, capsys):
+    """A statusline that can fail is a statusline that gets removed."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["whereami"]) == 0
+    assert capsys.readouterr().out.strip() == "no mission — mission init"
+
+    st = MissionStore(root_for("s"))
+    st.create("s", str(tmp_path), "Ship it", by="human")
+    st.set_protected("name", "Ship it", by="human")
+    i = st.propose("one", by="human")["item_id"]
+    st.accept(i, by="human")
+    st.propose("an idea", by="agent")
+    st.detour("a side quest")
+
+    assert main(["whereami", "--session", "s"]) == 0
+    line = capsys.readouterr().out.strip()
+    assert "\n" not in line, "exactly one line"
+    assert "Ship it" in line and "0/1" in line
+    assert "detour: a side quest" in line and "1 proposal waiting" in line
+
+
+def test_whereami_survives_a_corrupt_log(tmp_path, monkeypatch, capsys):
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    d = root_for("s")
+    d.mkdir(parents=True)
+    (d / "events.jsonl").write_text("not json\n")
+    assert main(["whereami", "--session", "s"]) == 0
+    assert "Traceback" not in capsys.readouterr().out
+
+
+def test_a_proposal_does_not_move_your_progress_backwards(store):
+    """An agent suggesting work must not change how far along the human is.
+    One real board read 8/10 with every agreed task finished and two
+    suggestions outstanding."""
+    i = store.propose("agreed work", by="human")["item_id"]
+    store.accept(i, by="human")
+    store.complete(i, by="human")
+    assert (store.load().done_count, store.load().total_count) == (1, 1)
+
+    store.propose("an idea the agent had", by="agent")
+    m = store.load()
+    assert (m.done_count, m.total_count) == (1, 1), "still finished"
+    assert len(m.unaccepted) == 1, "and the suggestion is reported separately"

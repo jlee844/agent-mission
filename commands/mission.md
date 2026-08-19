@@ -176,6 +176,24 @@ mission version
 It prints the build and every subcommand that exists right now. If something
 there is unfamiliar, your picture is older than the tool.
 
+## Say when you go off, and say when you come back
+
+Drifting into a subgoal is normal work, not a failure. The failure is climbing
+back up with nothing that says what the bigger goal was.
+
+```bash
+mission detour "chasing the flaky test in store.py"
+mission return
+```
+
+**You may run both freely** — recording is not deciding, and this is the honest
+channel for a side quest you would otherwise take silently. `return` prints the
+objective, the constraints, and the item you were on, which is the reminder the
+person actually needs at that moment. Nesting is fine.
+
+Do not infer a detour from what you are doing. Declare one when you choose to
+go off, or leave it alone.
+
 ## Never report the plan from memory
 
 The human accepts, ticks and commits **in their own terminal**, where you cannot
