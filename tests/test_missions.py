@@ -185,3 +185,19 @@ def test_an_unattached_session_is_offered_the_goals_that_exist(tmp_path,
     out = capsys.readouterr().out
     assert "not attached" in out and "mission attach career-hub" in out
     assert "Ship the career pages" in out
+
+
+def test_the_reanchor_hook_offers_attach_not_init(monkeypatch, capsys):
+    """The hook told a session with no goal to run `mission init` -- creating a
+    SECOND goal for work that already has one. The duplicate-mission failure,
+    recommended by the tool itself."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "fresh")
+    _legacy("s1", "Career hub", "Ship the career pages")
+    M.migrate()
+
+    assert main(["whereami", "--full"]) == 0
+    out = capsys.readouterr().out
+    assert "NOT ATTACHED" in out and "mission attach" in out
+    assert "career-hub" in out and "Ship the career pages" in out
+    assert "mission init" not in out, "never advise a second goal"

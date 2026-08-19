@@ -691,6 +691,22 @@ def cmd_whereami(a) -> int:
     on every path including "no mission" and "the log is corrupt". A statusline
     that can fail is a statusline that gets removed.
     """
+    if getattr(a, "full", False) and not getattr(a, "on", None):
+        # The re-anchor hook runs here. For a session with no goal yet it used
+        # to say "mission init", which creates a SECOND goal for work that
+        # already has one -- the duplicate-mission failure, recommended by the
+        # tool itself. Offer what exists instead.
+        from . import missions as M
+        sid_now = current_session_id()
+        if sid_now and not M.attachments().get(sid_now):
+            live = [(mid, st.load()) for mid, st in M.all_missions()]
+            live = [(mid, m) for mid, m in live if m and not m.archived]
+            if live:
+                print("NOT ATTACHED: this session has no goal yet. Ask which one, "
+                      "then run `mission attach <name>`. Existing goals:")
+                for mid, m in live[:6]:
+                    print(f"  {mid} — {(m.objective or '')[:64]}")
+                return 0
     try:
         sid = _resolve(a)
     except NoSessionError as e:
