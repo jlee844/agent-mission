@@ -123,9 +123,18 @@ def _mission_target(a) -> tuple[str, str] | None:
     FOR. It is not consulted here at all.
     """
     from . import missions as M
-    on = getattr(a, "on", None)
+    on = getattr(a, "on", None) or getattr(a, "into", None)
     if on:
-        return M.find(on), "explicit"
+        try:
+            return M.find(on), "explicit"
+        except NoSessionError as e:
+            if e.candidates:
+                raise           # ambiguous in the new layout; never widen it
+            # A goal that was never migrated is still a goal. If `--on` only
+            # reached the new layout, the one routing flag would have a hole
+            # exactly where someone's oldest plans live -- and the fix would be
+            # "run migrate first", which is a second instruction to follow.
+            return find_session(on), "explicit"
     sid = current_session_id()
     if sid:
         mid = M.attachments().get(sid)
@@ -135,12 +144,13 @@ def _mission_target(a) -> tuple[str, str] | None:
 
 
 def _resolve_with_path(a) -> tuple[str, str]:
-    """The session, and HOW it was chosen: explicit, env, or cwd.
+    """The session, and HOW it was chosen: explicit or env. Never cwd.
 
     The path matters as much as the answer. An app-attached terminal exports
     CLAUDE_CODE_SESSION_ID, so a human typing there resolves by `env` while
     believing they resolved by `cwd` -- which is how a career objective landed
-    on the Tripnom mission and then renamed it.
+    on the Tripnom mission and then renamed it. The cwd branch that made that
+    belief plausible is gone; see resolve_session.
     """
     given = getattr(a, "session", None)
     if given:
@@ -152,15 +162,15 @@ def _resolve_with_path(a) -> tuple[str, str]:
             return given, "explicit"
     if current_session_id():
         return current_session_id(), "env"
-    return resolve_session(None, getattr(a, "cwd", None)), "cwd"
+    return resolve_session(None), "named"
 
 
 def _resolve(a):
     """One resolver, mission-first.
 
     `--on <name>` always wins; then the mission this session is attached to;
-    only then the legacy session-keyed store. cwd never routes a write -- see
-    _mission_target and C11c.
+    only then the legacy session-keyed store. The working directory is not
+    consulted anywhere in this chain -- see resolve_session for what it cost.
 
     Nobody types a uuid. --into accepted a name from the day it shipped while
     --session, the flag every human-only command needs, took only the full id.
@@ -178,7 +188,7 @@ def _resolve(a):
             # exactly this case: the session it is about to create has no
             # events yet, so name resolution has nothing to match.
             return given
-    return resolve_session(given, getattr(a, "cwd", None))
+    return resolve_session(given)
 
 
 HUMAN_ENV = "AGENT_MISSION_I_AM_HUMAN"
@@ -890,14 +900,18 @@ def cmd_add(a) -> int:
 
 
 def cmd_propose(a) -> int:
-    # --into lets a REVIEWING session put an item on a WORKING session's plan.
-    # The authority model needs nothing new: a proposal is inert until a person
+    # A REVIEWING session may put an item on a WORKING session's plan. The
+    # authority model needs nothing new: a proposal is inert until a person
     # accepts it, so a peer proposing is no more dangerous than the worker
     # proposing into its own mission. Without it, a second session's findings
     # reach the plan only by the human retyping them, which is the friction
     # that stranded 61 of 152 proposals.
-    if getattr(a, "into", None):
-        sid, via = find_session(a.into), "explicit"
+    #
+    # That used to be `--into`, a second router on the one command that already
+    # had three. It is `--on` now; --into still works and is hidden.
+    hit = _mission_target(a)
+    if hit:
+        sid, via = hit
     else:
         sid, via = _resolve_with_path(a)
     a._via = via
@@ -1471,11 +1485,13 @@ def _build() -> argparse.ArgumentParser:
     # `mission show --session X` is what anyone actually types, and a
     # top-level-only flag rejects it.
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--session", default=None,
-                        help="session id (default: this one)")
-    common.add_argument("--cwd", default=".")
-    common.add_argument("--on", metavar="MISSION",
+    common.add_argument("--on", metavar="GOAL",
                         help="which goal this is about, by name")
+    # Provenance and disambiguation, not routing. `--on` is the one address a
+    # person types; four targeting flags on one command was the complexity this
+    # pass exists to remove, so these two stay working and stay out of --help.
+    common.add_argument("--session", default=None, help=argparse.SUPPRESS)
+    common.add_argument("--cwd", default=".", help=argparse.SUPPRESS)
     common.add_argument("--all", action="store_true",
                         help="show finished items too (hidden by default)")
 
@@ -1505,8 +1521,7 @@ def _build() -> argparse.ArgumentParser:
     pr = sub.add_parser("propose", parents=[common])
     pr.add_argument("text")
     pr.add_argument("--under", default=None, metavar="ID")
-    pr.add_argument("--into", metavar="SESSION",
-                    help="another session's mission, by id prefix or name")
+    pr.add_argument("--into", metavar="GOAL", help=argparse.SUPPRESS)
     pr.set_defaults(fn=cmd_propose)
     ac = sub.add_parser("accept", parents=[common])
     ac.add_argument("item_id", nargs="*", metavar="ID")
@@ -1666,12 +1681,31 @@ def main(argv: list[str] | None = None) -> int:
         # to route around.
         import shlex
         ran = list(argv if argv is not None else sys.argv[1:])
-        ran = [x for x in ran if not x.startswith("--session")]
+        # Drop any addressing the person already tried, VALUE INCLUDED. Only
+        # the flag was stripped before, so a failed `--on tripnom` rebuilt as
+        # `mission set objective ... tripnom --on career-hub` -- a paste that
+        # fails on a stray positional.
+        drop, kept, skip = {"--session", "--on", "--into"}, [], False
+        for x in ran:
+            if skip:
+                skip = False
+                continue
+            if x in drop:
+                skip = True
+                continue
+            if any(x.startswith(d + "=") for d in drop):
+                continue
+            kept.append(x)
+        ran = kept
         print(f"\n  {e}\n")
-        for sid, title in e.candidates:
+        for addr, title in e.candidates:
             print(f"    {title}")
+            # Quote the address too. A goal named "mission two" rebuilt as
+            # `--on mission two`, where the shell hands the command a stray
+            # positional and the paste fails on the line that exists to be
+            # pasted.
             print(f"      mission {' '.join(shlex.quote(x) for x in ran)} "
-                  f"--session {sid}\n")
+                  f"{e.flag} {shlex.quote(addr)}\n")
         if not e.candidates:
             print()
         return 1

@@ -414,53 +414,68 @@ def test_a_person_in_their_own_terminal_gets_a_message_not_a_traceback(
 
     assert main(["accept", "abc12345"]) == 1
     out = capsys.readouterr().out
-    assert "no session id" in out and "--session" in out
+    assert "mission init" in out, "no goals at all is a state, and it says so"
     assert "Traceback" not in out
 
 
-def test_the_mission_for_this_directory_is_found_without_an_id(
+def test_no_code_path_resolves_a_target_from_the_working_directory(
         tmp_path, monkeypatch):
-    from agent_mission.session import resolve_session
-    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    repo = tmp_path / "repo"
-    (repo / "deep" / "nested").mkdir(parents=True)
-    _mission_at(tmp_path, "sess-a", str(repo), "The repo mission")
+    """C11c, finished. cwd used to route writes: the missions recorded for this
+    directory, deepest match first. It ran once for real -- a career objective
+    was written onto the Tripnom mission and renamed it, because both were
+    opened at the Mission Control root.
 
-    # From the root, and from three directories down: a session opened at the
-    # repo root owns the work you are doing inside it.
-    assert resolve_session(None, str(repo)) == "sess-a"
-    assert resolve_session(None, str(repo / "deep" / "nested")) == "sess-a"
-
-
-def test_the_deepest_mission_wins(tmp_path, monkeypatch):
-    from agent_mission.session import resolve_session
-    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    repo = tmp_path / "repo"
-    sub = repo / "sub"
-    sub.mkdir(parents=True)
-    _mission_at(tmp_path, "sess-root", str(repo), "Root")
-    _mission_at(tmp_path, "sess-sub", str(sub), "Subproject")
-
-    assert resolve_session(None, str(sub)) == "sess-sub", "the specific one"
-    assert resolve_session(None, str(repo)) == "sess-root"
-
-
-def test_ambiguity_asks_instead_of_guessing(tmp_path, monkeypatch):
-    """Two sessions open on the same directory is the normal case this tool
-    exists for. Picking one silently would tick the wrong plan."""
+    A session is opened where the work can REACH what it needs. That says what
+    it can SEE, never what it is FOR."""
+    import inspect
+    from agent_mission import session as S
     from agent_mission.session import NoSessionError, resolve_session
     monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     repo = tmp_path / "repo"
-    repo.mkdir()
-    _mission_at(tmp_path, "sess-a", str(repo), "First")
-    _mission_at(tmp_path, "sess-b", str(repo), "Second")
+    (repo / "deep").mkdir(parents=True)
+    _mission_at(tmp_path, "sess-a", str(repo), "The repo mission")
+
+    # Standing exactly on the mission's own directory is the friendliest case
+    # the old router had, and it must still refuse.
+    for where in (repo, repo / "deep"):
+        with pytest.raises(NoSessionError):
+            resolve_session(None, str(where))
+
+    src = inspect.getsource(S.resolve_session)
+    assert "m.cwd" not in src and "startswith" not in src, \
+        "the directory matcher is back"
+
+
+def test_the_refusal_names_your_goals_so_the_fix_is_a_paste(
+        tmp_path, monkeypatch):
+    """A refusal is only as good as what it hands you next."""
+    from agent_mission.session import NoSessionError, resolve_session
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    _mission_at(tmp_path, "sess-a", str(tmp_path), "First")
+    _mission_at(tmp_path, "sess-b", str(tmp_path), "Second")
 
     with pytest.raises(NoSessionError) as e:
-        resolve_session(None, str(repo))
-    assert {c[0] for c in e.value.candidates} == {"sess-a", "sess-b"}
+        resolve_session(None, str(tmp_path))
+    assert e.value.flag == "--on", "one routing flag, and it is the name one"
+    labels = " ".join(c[1] for c in e.value.candidates)
+    assert "First" in labels and "Second" in labels
+    assert "active" in labels, "and when each was last touched"
+
+
+def test_on_addresses_a_goal_that_was_never_migrated(tmp_path, monkeypatch,
+                                                     capsys):
+    """One routing flag means one, including into the old layout. Otherwise the
+    fix for an un-migrated goal is `run migrate first` -- a second instruction
+    to follow, which setup exists to abolish."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    _mission_at(tmp_path, "sess-old", str(tmp_path), "Legacy goal")
+
+    assert main(["show", "--on", "Legacy"]) == 0
+    assert "Legacy goal" in capsys.readouterr().out
 
 
 def test_a_delegated_mission_attaches_to_its_parent(tmp_path, monkeypatch):
@@ -939,18 +954,38 @@ def test_one_installed_surface_does_not_abort_the_rest(tmp_path, monkeypatch,
     assert "already installed" in out and "older version" in out
 
 
-def test_the_readme_documents_how_a_session_is_resolved():
-    """Three findable problems in one complaint: --session missing from the
-    first `set` example (it is the normal path for every human-only command),
-    no statement of the resolution order anywhere, and a Limitations line that
-    said "Claude Code specific" when the truth is it works outside too — which
-    is exactly where the ambiguity lives."""
+def test_the_readme_tells_one_routing_story():
+    """It told three at once. A "cwd never routes a write" line sat forty lines
+    above a section documenting the cwd router, whose worked example rebuilt an
+    `accept` -- a write -- from directory candidates. The prose was right about
+    the design and wrong about the code, so the code was the thing to fix."""
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
-    assert "Which mission does a command mean?" in readme
-    first_set = readme[readme.index("mission set objective"):][:120]
-    assert "--session" in first_set, "the first set example shows it"
-    assert "Claude Code specific" not in readme
-    assert "counting ancestors" in readme and "refuses" in readme
+    assert "Names route, sessions speak, directories inform." in readme
+    for gone in ("Which mission does a command mean?", "counting ancestors",
+                 "Claude Code specific", "matched from the working directory"):
+        assert gone not in readme, f"the old routing story survives: {gone!r}"
+
+    # No human-facing example addresses a goal by session id.
+    for line in readme.splitlines():
+        if line.strip().startswith("mission ") or line.startswith("| `"):
+            assert "--session" not in line, f"--session in an example: {line}"
+
+
+def test_the_commands_table_lists_every_live_command():
+    """A stranger scanning the table has to see the current shape of the
+    product. attach/missions/archive/migrate shipped with the inversion and the
+    table still described the version before it."""
+    import re
+    from agent_mission.__main__ import main
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    table = readme[readme.index("| command | what it does |"):]
+    listed = {w for row in table.splitlines() if row.startswith("| `")
+              for w in re.findall(r"`([a-z]+)", row.split("|")[1])}
+
+    main(["version"])
+    from agent_mission.__main__ import _SUBCOMMANDS
+    missing = {c for c in _SUBCOMMANDS if c not in listed} - {"help", "version"}
+    assert not missing, f"live commands missing from the README table: {missing}"
 
 
 def test_help_reads_usage_for_a_command_the_agent_cannot_run(capsys):
@@ -986,9 +1021,10 @@ def test_the_refusal_rebuilds_the_command_you_ran(tmp_path, monkeypatch, capsys)
 
     assert main(["pending"]) == 1
     out = capsys.readouterr().out
-    assert "mission pending --session one" in out
-    assert "mission pending --session two" in out
+    assert "mission pending --on 'mission one'" in out
+    assert "mission pending --on 'mission two'" in out
     assert "active" in out, "and when each was last touched"
+    assert "--session" not in out, "one routing flag in anything a person reads"
 
 
 def test_session_accepts_a_name_not_only_a_uuid(tmp_path, monkeypatch, capsys):
@@ -1171,3 +1207,54 @@ def test_the_readme_lists_the_surfaces_setup_actually_installs():
         assert name in line, f"{name!r} missing from the install line"
     for stale in ("Stop hook", "five surfaces"):
         assert stale not in readme, f"README still advertises {stale!r}"
+
+
+def test_one_addressing_flag_reaches_the_human(capsys):
+    """`propose` carried --session, --cwd, --on and --into at once. Four
+    targeting flags on one command is the thing this pass removes; the other
+    three still work, and none of them is offered."""
+    from agent_mission.__main__ import main
+    for cmd in ("propose", "accept", "set", "show"):
+        assert main(["help", cmd]) == 0
+        out = capsys.readouterr().out
+        assert "--session" not in out, f"{cmd} --help offers --session"
+        assert "--into" not in out, f"{cmd} --help offers --into"
+        assert "--cwd" not in out, f"{cmd} --help offers --cwd"
+
+
+def test_into_still_works_and_means_on(tmp_path, monkeypatch, capsys):
+    """Hidden is not removed. Anything scripted against --into keeps running."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    _mission_at(tmp_path, "sess-a", str(tmp_path), "The goal")
+
+    assert main(["propose", "an idea", "--into", "The goal"]) == 0
+    capsys.readouterr()
+    assert main(["propose", "another", "--on", "The goal"]) == 0
+    out = capsys.readouterr().out
+    assert "proposed" in out
+
+
+def test_a_write_standing_in_the_missions_own_directory_still_refuses(
+        tmp_path, monkeypatch, capsys):
+    """The end-to-end form of the same rule. Standing exactly on the directory
+    a mission was opened in is the case the old router served best, and it is a
+    write, so it must ask which goal rather than answer from the floor."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _mission_at(tmp_path, "sess-a", str(repo), "The repo mission")
+    monkeypatch.chdir(repo)
+
+    assert main(["add", "a task"]) == 1
+    out = capsys.readouterr().out
+    assert "which goal?" in out
+    assert "--on" in out and "The repo mission" in out
+
+    # And the store is untouched: nothing was written on the way to refusing.
+    from agent_mission.store import MissionStore, root_for
+    assert not MissionStore(root_for("sess-a")).load().checklist

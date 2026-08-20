@@ -91,7 +91,7 @@ instruction to follow.
 | `whereami` | one line for a statusline (`--full` for the ~10-line re-anchor) |
 | `pending` | what awaits your accept, and the command that clears it |
 | `add` | add an agreed item (`--under <id>`) |
-| `propose` | suggest an item; inert until accepted (`--into <session>`) |
+| `propose` | suggest an item; inert until accepted (`--on <goal>` for another's plan) |
 | `accept` | accept proposals (`--pending`, `--under <id>`, or ids) |
 | `done` | tick agreed work (`--under <id>`, or ids) |
 | `remove` | drop items and their subtrees |
@@ -103,6 +103,10 @@ instruction to follow.
 | `delegate <id>` | give one accepted item its own session for a subagent |
 | `observe <field> <text>` | record evidence, a decision, or a note |
 | `doctor` | what is wrong with the missions themselves, not the install |
+| `attach` | point this session at a goal |
+| `missions` | every goal, and the sessions that served it |
+| `archive` | take a finished goal off the board (`--undo`) |
+| `migrate` | lift older session-keyed stores; safe to re-run |
 | `board` | the shared board (`--stop`; run it yourself for write buttons) |
 | `setup` / `setup --check` | install the surfaces; check which are live |
 | `version` | the build, and every command that exists right now |
@@ -110,14 +114,14 @@ instruction to follow.
 ## Goals move
 
 ```bash
-mission set objective "Ship list sharing AND the invite flow" --session 69426e5a
+mission set objective "Ship list sharing AND the invite flow" --on list-sharing
 mission set name "List sharing + invites"
 ```
 
 Every edit is a new event, so the old value stays and `mission why objective`
-still answers. The agent is refused on all of these. `--session` is in the first
-example because you type these in **your own terminal**, where it is often
-needed — see below.
+still answers. The agent is refused on all of these — you type them in **your
+own terminal**, which is why the goal is named: nothing there knows which
+session you meant.
 
 ## Missions are goals; sessions attach to them
 
@@ -131,14 +135,16 @@ mission set objective "..." --on career    # from anywhere, any terminal
 mission missions               # every goal, and the sessions that served it
 ```
 
-**The name routes; the session only speaks.** `--on <name>` is the address. The
-session id says *who is writing*, never *what is meant* — and the working
-directory says neither.
-
-That last part is deliberate. A session is opened where the work can *reach*
-what it needs, which for a coordination repo is the root — while the goal lives
-three folders down. **cwd tells you what a session can see, not what it is
-for**, so it never routes a write.
+**Names route, sessions speak, directories inform.** `--on <name>` is the only
+address — it reaches goals in either storage layout, so nothing has to be
+migrated first. The session id in your environment says *who is writing*, never
+*what is meant*. The working directory says neither, and is not consulted: a
+session is opened where the work can *reach* what it needs, which for a
+coordination repo is the root, while the goal lives three folders down. That
+router existed once and cost a plan — a career objective landed on an unrelated
+mission and renamed it, because both were opened at the same root. When nothing
+names a goal, `mission` refuses and lists yours, each with the command that
+addresses it.
 
 The board shows **one card per goal**, with the sessions that served it listed
 inside and their measured activity summed. One goal spanning four sessions used
@@ -153,35 +159,6 @@ A finished goal keeps its log forever and stops competing for your attention.
 Archiving is a statement about attention, not about history — one throwaway
 experiment with four unaccepted proposals was outranking three live sessions.
 On the board it is a hover control on the card header.
-
-## Which mission does a command mean?
-
-Inside Claude Code the session id is in the environment, so nothing needs
-saying. In **your own terminal** — where every human-only command has to be
-typed — it is not, so `mission` resolves it from the directory you are standing
-in:
-
-1. `--session` if you passed one. It takes a **mission name or an id prefix**,
-   not only the full uuid.
-2. The `CLAUDE_CODE_SESSION_ID` of the session you are inside.
-3. The missions recorded for this directory, **counting ancestors** — you are
-   usually in a subfolder of the session's root. Deepest match wins, so a
-   mission opened in a subproject beats one opened at the repo root.
-4. A tie **refuses**, and prints your own command back once per candidate:
-
-```
-several missions cover this directory — say which:
-
-  Career hub, live locally  ·  active 11h ago
-    mission accept --pending --session 69426e5a-a75f-448b-aa45-c3f80eabd2b1
-
-  Mission board for live sessions  ·  active 18h ago
-    mission accept --pending --session be17144b-d3be-41dd-a02a-c6ef71292e3f
-```
-
-It refuses rather than picking the most recent, because two sessions on one
-directory is the normal case here and guessing would tick the wrong plan.
-Breaking the tie on recency is guessing with extra steps.
 
 ## One board, and where it lives
 
@@ -199,10 +176,11 @@ dead URL.
 
 ## Limitations
 
-- **Session discovery works two ways, and the second is fuzzy.** Inside Claude
-  Code the id comes from the environment and is exact. In your own terminal it
-  is matched from the working directory, and when several missions share a
-  directory tree the command refuses rather than guessing — see above.
+- **Outside Claude Code you have to name the goal.** Inside it, the session id
+  is in the environment and its attachment answers everything. In your own
+  terminal nothing does, so `--on <name>` is required — and it autocompletes
+  nothing, which is why `init` asks for a short name you will recognise. The
+  refusal lists your goals with the command for each, so it costs a paste.
 - **Progress is measured or marked, never inferred.** There is no drift
   detection here, on purpose — [DESIGN.md](docs/DESIGN.md) says what was tried.
 - **The event log is a plain file.** An agent with shell access can append a

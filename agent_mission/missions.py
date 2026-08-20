@@ -110,6 +110,46 @@ def find(name: str, base=None) -> str:
     return cands[0][0]
 
 
+def choices(base=None, limit: int = 8) -> list[tuple[str, str]]:
+    """Every goal you could mean, as (name, label), most recently touched first.
+
+    A refusal is only as good as what it hands you next. This is what turns
+    "say which goal" into a paste: the names are the addresses.
+    """
+    rows = []
+    seen = attachments(base)
+    for mid, st in all_missions(base):
+        m = st.load()
+        if m is None or m.archived:
+            continue
+        try:
+            when = st.log.stat().st_mtime
+        except OSError:
+            when = 0.0
+        rows.append((when, mid, m.title))
+    # Stores from before the inversion are still addressable -- `--on` falls
+    # back to find_session for them. Leaving them out would mean a person with
+    # nine un-migrated goals is told they have none, which is the one lie a
+    # refusal cannot afford.
+    for sid, st in legacy_stores(base):
+        m = st.load()
+        if m is None or m.archived or sid in seen:
+            continue
+        try:
+            when = st.log.stat().st_mtime
+        except OSError:
+            when = 0.0
+        rows.append((when, m.name or sid, m.title))
+    rows.sort(reverse=True)
+    out = []
+    for when, mid, title in rows[:limit]:
+        mins = int((time.time() - when) / 60)
+        ago = ("just now" if mins < 1 else f"{mins}m ago" if mins < 60
+               else f"{mins // 60}h ago")
+        out.append((mid, f"{title}  ·  active {ago}"))
+    return out
+
+
 def attach(session_id: str, mission_id: str, by: str = "human",
            base=None) -> dict:
     st = MissionStore(missions_root(base) / mission_id)

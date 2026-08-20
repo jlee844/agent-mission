@@ -163,72 +163,46 @@ class NoSessionError(Exception):
     traceback: the person is at a keyboard being asked to choose.
     """
 
-    def __init__(self, message: str, candidates: list[tuple[str, str]] | None = None):
+    def __init__(self, message: str, candidates: list[tuple[str, str]] | None = None,
+                 flag: str = "--on"):
         super().__init__(message)
         self.candidates = candidates or []
+        # Which flag addresses these candidates. `--on <name>` is the routing
+        # flag a person types; `--session` survives for provenance and appears
+        # in no human-facing message.
+        self.flag = flag
 
 
 def resolve_session(explicit: str | None, cwd: str | None = None) -> str:
-    """Which mission does this command mean?
+    """Which mission does this command mean? A name, or nothing.
 
-    Inside Claude Code the session id is in the environment. In a person's own
-    terminal it is NOT -- and the design sends them there for every human-only
-    command, so "no session id" is the normal case, not the edge case. It used
-    to be a TypeError from pathlib.
+    This used to fall back to the missions recorded for the current directory,
+    deepest match first. It was wrong in the way that costs you a plan: a
+    session is opened where the work can REACH what it needs -- the repo root,
+    for a coordination tree -- while the goal lives three folders down. So cwd
+    answered a question it does not know: what a session can SEE, offered as
+    what it is FOR.
 
-    So: fall back to the missions recorded for THIS directory, newest first.
-    One match is unambiguous. Several means asking, with the ids to hand.
+    It ran once for real. A career objective was written onto the Tripnom
+    mission and renamed it, because both were recorded under the same root.
+
+    So the router is gone. Resolution is `--on <name>`, then the session id in
+    the environment (which says who is SPEAKING, never what is meant), then a
+    refusal that lists your goals by name so the fix is a paste. `cwd` stays in
+    the signature only so callers need not care; it is not read.
     """
-    from .store import MissionStore, root_for            # circular at import time
-
     if explicit:
         return explicit
     env = current_session_id()
     if env:
         return env
-
-    here = str(Path(cwd or Path.cwd()).resolve())
-    home = root_for("x").parent
-    found: list[tuple[int, float, str, str]] = []
-    if home.exists():
-        for d in home.iterdir():
-            log = d / "events.jsonl"
-            if not d.is_dir() or not log.exists():
-                continue
-            m = MissionStore(d).load()
-            if not m or not m.cwd:
-                continue
-            # An ancestor counts. A session opened at the repo root is the one
-            # that owns the work you are doing three directories down, and
-            # requiring an exact match means the person standing in the
-            # subdirectory -- which is where they always are -- finds nothing.
-            if here == m.cwd or here.startswith(m.cwd.rstrip("/") + "/"):
-                found.append((len(m.cwd), log.stat().st_mtime, d.name, m.title))
-    if not found:
+    from . import missions as M                     # circular at import time
+    cands = M.choices()
+    if not cands:
         raise NoSessionError(
-            "no session id, and no mission recorded for this directory.\n"
-            "  Inside Claude Code the id is automatic. In your own terminal,\n"
-            "  pass --session <id>, or cd to the project the mission is for.")
-    # Deepest match first: a mission opened IN this directory beats one
-    # opened at the repo root. Then most recently touched.
-    found.sort(reverse=True)
-    # A mission opened IN this directory beats one opened at the repo root, so
-    # only a TIE at the deepest level is genuinely ambiguous. Two sessions on
-    # the same directory is the normal case this tool exists for, and guessing
-    # between them would tick the wrong plan. Breaking the tie on recency would
-    # be guessing with extra steps.
-    deepest = [f for f in found if f[0] == found[0][0]]
-    if len(deepest) == 1:
-        return deepest[0][2]
-    import time as _t
-    rich = []
-    for _, mtime, sid, title in deepest:
-        mins = int((_t.time() - mtime) / 60)
-        when = ("just now" if mins < 1 else
-                f"{mins}m ago" if mins < 60 else f"{mins // 60}h ago")
-        rich.append((sid, f"{title}  ·  active {when}"))
-    raise NoSessionError(
-        "several missions cover this directory — say which:", rich)
+            "no goal named, and none exist yet.\n"
+            "  `mission init` writes one — it takes a minute.")
+    raise NoSessionError("which goal? name it with --on:", cands)
 
 
 def find_session(needle: str, base=None) -> str:
@@ -261,5 +235,6 @@ def find_session(needle: str, base=None) -> str:
     if not cands:
         raise NoSessionError(f"no session matches {needle!r}")
     if len(cands) > 1:
-        raise NoSessionError(f"{needle!r} matches several — say which:", cands)
+        raise NoSessionError(f"{needle!r} matches several — say which:", cands,
+                             flag="--session")
     return cands[0][0]

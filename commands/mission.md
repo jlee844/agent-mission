@@ -215,8 +215,9 @@ too. To read the flags without running anything:
 mission help accept
 ```
 
-When you hand them a command, include `--session <id>` if more than one mission
-covers the directory, and prefer a name over a uuid — `--session` accepts either.
+**Always include `--on <name>`.** They type these in their own terminal, where
+nothing says which goal is meant — no session id, and the working directory is
+not consulted. A command without it refuses and makes them paste twice.
 
 ## Never report the plan from memory
 
@@ -245,7 +246,8 @@ was true *as of* rather than stating it flatly.
   it is waiting for them. Say so rather than killing it.
 - If `mission: command not found`, tell them to install it. Do not reimplement it.
 - **Goals move.** When they say something that changes the mission, offer
-  `mission set objective "..."` or `mission set success-criteria "a|b"` rather
+  `mission set objective "..." --on <name>` or
+  `mission set success-criteria "a|b" --on <name>` rather
   than letting the card go stale. Say what you are about to change and let them
   confirm — it is still their field.
 - You **may** run `mission propose "<text>"` at any time without asking —

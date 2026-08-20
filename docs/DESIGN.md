@@ -92,6 +92,33 @@ stop trusting with the plan.
 A `[x]` in the source imports **unticked**. The file says the work is finished;
 the file is not you.
 
+## One router, and it is the name
+
+Resolution used to have three answers: `--session`, the environment, and — when
+neither spoke — the missions recorded for the current directory, deepest match
+wins. The third was convenient and wrong. A session is opened where the work can
+*reach* what it needs; for a coordination tree that is the root, while the goal
+lives three folders down. So cwd answered a question it does not know, and
+answered it confidently.
+
+It cost a plan. A career objective was written onto an unrelated mission and
+renamed it, because both had been opened at the same root.
+
+The fix that did not work was documentation: for one release the README said
+"cwd never routes a write" forty lines above a section documenting the cwd
+router, whose worked example rebuilt an `accept` — a write — from directory
+candidates. **Prose describing the design while the code does something else is
+the worst of the three states**; the contradiction is at least visible while
+both are on the page. Deleting the section alone would have hidden it.
+
+So the router is gone, and `--on <name>` is the only address. It reaches both
+storage layouts, so nothing must be migrated first — a router with a hole where
+someone's oldest goals live is a router whose answer is "run migrate first",
+which is the second instruction `setup` exists to abolish. What is left of cwd
+is display: the card header shows where a session is standing, because that is
+genuinely useful and routes nothing. **Names route, sessions speak, directories
+inform.**
+
 ## Board decisions
 
 **One accent.** Colour means "this is waiting on you" and nothing else. It
