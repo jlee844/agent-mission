@@ -23,6 +23,30 @@ transcript: calls, files, test runs, failures) or **marked by a human**. A
 detour is **declared**, not detected. There is no similarity score anywhere in
 this tool, and adding one would be a regression.
 
+## Three touchpoints, and every feature names one
+
+A person touches this product in exactly three places: they **answer the
+interview once**, they **glance at the statusline**, and they **click on the
+board**. Every feature has to say which of the three it serves, and a feature
+that serves none of them is a feature for the agent — which means it belongs in
+the CLI and out of the README's first screen. **Humans use the board; agents use
+the CLI.**
+
+This is a subtraction rule, and it was written after the tool had grown twenty
+subcommands. It is what removed the Stop hook from `setup`: the statusline
+already carries the pending count continuously, so a second channel repeating it
+once per turn was a fourth touchpoint delivering the third one's information.
+It is also why `mission attach` needs no ceremony — the hook says a session
+serves no goal, the person answers in words, and the agent runs the command.
+
+The failure it guards against is the one every plan tool hits: the surface area
+grows one reasonable addition at a time, and nobody can say which additions a
+person actually uses. The count of touchpoints is the budget; the enforcement is
+a measurement gate written down in advance — one week of ordinary use with no
+feature work, then count real human invocations per command, and demote anything
+under two from the front page. Pre-registered, so the result cannot be argued
+with after the fact.
+
 ## The reminder, not the enforcement
 
 Drifting into a subgoal is normal work. The failure is climbing back up with

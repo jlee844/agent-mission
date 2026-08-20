@@ -12,55 +12,40 @@ You start a session with something in mind. Two hours later there are 800 tool
 calls, a summary written by the thing being summarised, and no easy answer to
 *what was this for, and is it done?*
 
-`mission` writes the goal down once, keeps it somewhere the agent cannot edit,
-and puts it back in front of you — on your statusline, after a compaction, and
-on one page showing every session you have running.
-
-![The mission board](docs/board.png)
-
-## Install
-
 ```bash
 git clone https://github.com/jlee844/agent-mission && cd agent-mission
 pip install -e .
 mission setup      # slash command, deny rules, statusline, re-anchor hook
 ```
 
-`setup` **finishes the job** rather than printing instructions — if you already
-have a statusline it writes a wrapper that runs yours *and* appends the goal,
-keeping your original verbatim. It backs up your settings, appends to hooks
-instead of replacing them, and refuses to touch anything unless a person is at
-the keyboard.
+## You touch this in three places
 
-```bash
-mission setup --check     # which surfaces are live here; exits 1 if any is missing
-```
+**1. Answer the interview, once.** In Claude Code, `/mission init` asks what done
+looks like, how you will know, and what you must not do on the way — one question
+at a time, each with a suggested answer you can just say yes to. Your agent
+transcribes; it does not author. (Outside Claude Code, `mission init` opens the
+same fields in your editor.)
 
-Or install them from the board: run `mission board` yourself, enter the write
-code, and a **Setup panel** lists the same five surfaces with an Install button
-each — showing the exact settings change before it applies, and backing the file
-up first. Both front ends call the same functions, so the board can never drift
-from what the terminal would have done.
-
-Re-running `mission setup` is always the complete fix. There is never a second
-instruction to follow.
-
-## Usage
-
-```bash
-mission init                 # interviews you, then writes it
-mission                      # the goal, the plan, measured activity
-mission whereami             # one line, for a statusline
-mission detour "chasing a flaky test"
-mission return               # replays the goal and the guards you set
-mission board                # every live session on one page
-```
+**2. Glance at your statusline.** The goal, the count, the detour you are on —
+without leaving what you are doing.
 
 ```
 Ship list sharing · 2/5 · detour: chasing a flaky test · 3 proposals waiting
 ```
 
-**Three levels of authority.** This is the whole design.
+**3. Click on the board.** `mission board` puts every session you have running
+on one page: its goal, its plan as a tree, and what it has **actually done** —
+calls, files, test runs, failures, read from the transcript rather than reported
+by the agent. A strip at the top answers the question you arrive with: *is
+anything waiting on me.* Run it yourself and it prints a write code, which turns
+on the accept, tick and note buttons; the agent never sees that code.
+
+![The mission board](docs/board.png)
+
+Everything else here is for the agent, or for scripting.
+**Humans use the board; agents use the CLI.**
+
+### Three levels of authority
 
 | level | fields | who writes |
 |---|---|---|
@@ -72,6 +57,30 @@ The agent cannot author a protected field, accept its own proposal, or tick an
 item — enforced in the store, at the terminal, and by Claude Code's own deny
 rules. See [SECURITY.md](docs/SECURITY.md) for how, and for what that does
 *not* cover.
+
+---
+
+# Agent & scripting reference
+
+## Setup
+
+`setup` **finishes the job** rather than printing instructions — if you already
+have a statusline it writes a wrapper that runs yours *and* appends the goal,
+keeping your original verbatim. It backs up your settings, appends to hooks
+instead of replacing them, and refuses to touch anything unless a person is at
+the keyboard.
+
+```bash
+mission setup --check     # which surfaces are live here; exits 1 if any is missing
+```
+
+Or install them from the board: enter the write code and a **Setup panel** lists
+the same surfaces with an Install button each — showing the exact settings change
+before it applies, and backing the file up first. Both front ends call the same
+functions, so the board can never drift from what the terminal would have done.
+
+Re-running `mission setup` is always the complete fix. There is never a second
+instruction to follow.
 
 ## Commands
 
@@ -95,9 +104,7 @@ rules. See [SECURITY.md](docs/SECURITY.md) for how, and for what that does
 | `observe <field> <text>` | record evidence, a decision, or a note |
 | `doctor` | what is wrong with the missions themselves, not the install |
 | `board` | the shared board (`--stop`; run it yourself for write buttons) |
-| `setup --check` | which surfaces are installed, missing, or outdated |
-| — | the board's Setup panel installs the same five, behind the write code |
-| `setup` | slash command, deny rules, statusline, hooks |
+| `setup` / `setup --check` | install the surfaces; check which are live |
 | `version` | the build, and every command that exists right now |
 
 ## Goals move
@@ -133,9 +140,9 @@ what it needs, which for a coordination repo is the root — while the goal live
 three folders down. **cwd tells you what a session can see, not what it is
 for**, so it never routes a write.
 
-The board now shows **one card per goal**, with the sessions that served it
-listed inside and their measured activity summed. One goal spanning four
-sessions used to read as four cards, each showing a slice.
+The board shows **one card per goal**, with the sessions that served it listed
+inside and their measured activity summed. One goal spanning four sessions used
+to read as four cards, each showing a slice.
 
 ```bash
 mission migrate               # lift older session-keyed stores; safe to re-run
@@ -176,16 +183,7 @@ It refuses rather than picking the most recent, because two sessions on one
 directory is the normal case here and guessing would tick the wrong plan.
 Breaking the tie on recency is guessing with extra steps.
 
-## The board
-
-`mission board` shows every running session: its goal, its plan as a tree, and
-what it has **actually done** — calls, files, test runs, failures, read from the
-transcript rather than reported by the agent. A strip at the top answers the
-question you arrive with: *is anything waiting on me.*
-
-Run it yourself in a terminal and it prints a write code, which turns on accept,
-tick and note buttons. The agent never sees that code — that is the point, and
-[SECURITY.md](docs/SECURITY.md) explains the mechanism.
+## One board, and where it lives
 
 **One board per store, and only one.** Starting a second finds the first and
 points you at it rather than splitting the truth in two — two boards for the

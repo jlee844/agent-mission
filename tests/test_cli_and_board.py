@@ -1140,3 +1140,34 @@ def test_the_cli_and_the_board_share_one_setup_implementation(monkeypatch,
     main(["setup", "--settings", str(settings), "--dest", str(tmp_path / "c")])
     assert "statusline" in called and "deny rules" in called, \
         "the CLI goes through setup_surfaces, not a private copy"
+
+
+def test_the_readme_puts_the_three_touchpoints_on_the_first_screen():
+    """C12e. The command table used to be the fourth thing a stranger read, so
+    the answer to "what is this for a person" was twenty rows of CLI flags. The
+    rule is one screen: the interview, the statusline, the board -- then a fold,
+    and everything an agent needs below it."""
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    fold = readme.index("# Agent & scripting reference")
+    human = readme[:fold]
+
+    assert len(human.splitlines()) <= 70, "the human half outgrew one screen"
+    for word in ("interview", "statusline", "board"):
+        assert word in human.lower(), f"{word} is not on the first screen"
+
+    # The reference half is below the fold, not above it.
+    assert "| command | what it does |" in readme[fold:]
+    assert "| command | what it does |" not in human
+    assert "Humans use the board; agents use the CLI." in human
+
+
+def test_the_readme_lists_the_surfaces_setup_actually_installs():
+    """It said five for as long as there were four -- the Stop hook was removed
+    from setup and the install line kept advertising it."""
+    from agent_mission.setup_surfaces import SURFACES
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    line = next(l for l in readme.splitlines() if l.startswith("mission setup "))
+    for name in SURFACES:
+        assert name in line, f"{name!r} missing from the install line"
+    for stale in ("Stop hook", "five surfaces"):
+        assert stale not in readme, f"README still advertises {stale!r}"
