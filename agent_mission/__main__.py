@@ -248,7 +248,7 @@ def _confirm_env_target(a, sid: str) -> bool:
         return False
     if answer in ("y", "yes"):
         return True
-    print("\n  nothing written. Name it instead:  --session <name-or-id>\n")
+    print("\n  nothing written. Name the goal instead:  --on <name>\n")
     return False
 
 

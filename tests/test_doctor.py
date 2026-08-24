@@ -39,14 +39,18 @@ def test_a_duplicate_mission_start_is_reported():
     assert any(f["level"] == "serious" for f in findings())
 
 
-def test_an_event_written_from_another_directory_is_reported():
-    """The fingerprint of a session working elsewhere writing in here -- which
-    is exactly how that duplicate arrived."""
+def test_writes_from_another_directory_are_counted_not_accused():
+    """This was the fingerprint of a misroute back when cwd ROUTED writes. It
+    does not route anything now -- `mission set ... --on career` from any
+    terminal is the documented normal case -- so the check reports a count and
+    stays out of the review lane. Left as `serious` and per-event, it put 40
+    identical rows on one mission and took the lane from 2 items to 42."""
     st = MissionStore(root_for("s"))
     st.create("s", "/repo/tripnom", "the goal", by="human", typed_by="human")
     st.create("s", "/repo/transcript-audit", "oops", by="human", typed_by="human")
     hit = [f for f in findings() if f["what"] == "written from another directory"]
-    assert hit and "transcript-audit" in hit[0]["detail"]
+    assert len(hit) == 1 and hit[0]["level"] == "note"
+    assert "1 write(s)" in hit[0]["detail"]
 
 
 def test_writes_with_no_provenance_are_counted():

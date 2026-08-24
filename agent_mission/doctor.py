@@ -19,13 +19,31 @@ from .store import MissionStore, root_for
 
 
 def _logs(base=None):
-    home = root_for("x", base).parent
-    if not home.exists():
-        return
-    for d in sorted(home.iterdir()):
-        log = d / "events.jsonl"
-        if d.is_dir() and log.exists():
-            yield d, [e for e in MissionStore(d).events()]
+    """Every mission worth checking, exactly once.
+
+    This walked `~/.agent-mission/*/` -- the pre-inversion layout. After the
+    inversion that set is the OLD copies: `migrate` writes the events into
+    `missions/<name>/` and leaves the session-keyed directory behind, frozen at
+    the moment it was lifted. So doctor was auditing ghosts and could not see a
+    single live mission. `career-hub` had 64 events; doctor read the 27 in its
+    abandoned twin and reported proposals that were accepted two days ago.
+
+    The board's review lane reads this, which is the part that mattered: the
+    one surface built to say "something needs you" was sourced from stale data.
+
+    Now: the missions, plus any legacy store nothing has lifted yet -- the same
+    already-migrated test `missions.choices()` uses, so the two agree.
+    """
+    from . import missions as M
+
+    for mid, st in M.all_missions(base):
+        yield st.root, [e for e in st.events()]
+
+    lifted = set(M.attachments(base))
+    for sid, st in M.legacy_stores(base):
+        if sid in lifted:
+            continue
+        yield st.root, [e for e in st.events()]
 
 
 # Only findings a person can CLOSE belong in the board's review lane. Nine of
@@ -33,9 +51,8 @@ def _logs(base=None):
 # statements about history that no action changes. A lane containing them
 # carries a permanent badge, and a permanent badge is one you stop seeing in a
 # day: the same failure as red once meaning three unrelated things.
-CLEARABLE = {"duplicate mission start", "written from another directory",
-             "damaged log", "agent-transcribed goal", "detour left open",
-             "stale goal"}
+CLEARABLE = {"duplicate mission start", "damaged log",
+             "agent-transcribed goal", "detour left open", "stale goal"}
 
 
 def review(base=None) -> list[dict]:
@@ -75,17 +92,29 @@ def findings(base=None) -> list[dict]:
                           f"the last one was invisible until the fold was fixed",
             })
 
-        # 2. An event written from a directory that is not this mission's. This
-        #    is the fingerprint of a session working elsewhere writing in here,
-        #    and it is exactly how the duplicate above arrived.
-        for e in evs:
-            c = e.get("cwd")
-            if c and home_cwd and c != home_cwd:
-                out.append({
-                    "sid": sid, "level": "serious",
-                    "what": "written from another directory",
-                    "detail": f"{e.get('kind')} came from {c}, not {home_cwd}",
-                })
+        # 2. Events written from somewhere other than this mission's directory.
+        #
+        #    This was `serious`, one finding PER EVENT, and clearable. All three
+        #    are now wrong, and the first real run proved it: career-hub alone
+        #    produced 40 identical rows and the review lane went from 2 items to
+        #    42 -- past the number the lane was pre-registered to refuse to ship
+        #    at ("if it shows 16, the eligibility rule is wrong").
+        #
+        #    The rule is wrong because C11c changed what cwd MEANS. It used to
+        #    route writes, so a foreign directory was the fingerprint of a
+        #    misroute. Now names route and `mission set ... --on career` from any
+        #    terminal is the documented normal case -- so this detector measures
+        #    the feature. One note, with a count, and nothing to close.
+        elsewhere = sum(1 for e in evs
+                        if e.get("cwd") and home_cwd
+                        and e.get("cwd") != home_cwd)
+        if elsewhere:
+            out.append({
+                "sid": sid, "level": "note",
+                "what": "written from another directory",
+                "detail": f"{elsewhere} write(s) came from outside {home_cwd} "
+                          f"— normal since goals are addressed by name",
+            })
 
         # 3. Protected writes with no record of who typed them.
         blind = sum(1 for e in evs
@@ -139,9 +168,12 @@ def findings(base=None) -> list[dict]:
             oldest = (time.time() - min(ages)) / 3600 if ages else 0
             out.append({
                 "sid": sid, "level": "todo", "what": "awaiting you",
+                # `--on <name>`, in full. It was `--session {sid[:8]}`, which
+                # truncated a mission NAME to eight characters -- "mltest-s" --
+                # so the one line here that exists to be pasted could not be.
                 "detail": f"{len(m.unaccepted)} proposal(s), oldest "
                           f"{oldest:.0f}h — `mission accept --pending "
-                          f"--session {sid[:8]}`",
+                          f"--on {sid}`",
             })
 
         # 6. A log with damage. events() skips unparseable lines and counts.

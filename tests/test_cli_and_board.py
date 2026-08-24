@@ -1258,3 +1258,74 @@ def test_a_write_standing_in_the_missions_own_directory_still_refuses(
     # And the store is untouched: nothing was written on the way to refusing.
     from agent_mission.store import MissionStore, root_for
     assert not MissionStore(root_for("sess-a")).load().checklist
+
+
+def test_no_remediation_command_the_user_reads_uses_session(tmp_path,
+                                                            monkeypatch, capsys):
+    """The Phase 4 acceptance said no --session in human-facing examples, and I
+    checked the docs but not the CLI's own output. `mission doctor` was printing
+    `--on`'s job as `--session {sid[:8]}` -- which truncated a mission NAME to
+    eight characters, so the line that exists to be pasted could not be."""
+    from agent_mission.__main__ import main
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    mid = "a-long-mission-name"
+    _mission_at(tmp_path, mid, str(tmp_path), "Long name")
+    from agent_mission.store import MissionStore, root_for
+    MissionStore(root_for(mid)).propose("something", by="agent")
+
+    main(["doctor"])
+    out = capsys.readouterr().out
+    assert "--session" not in out, "doctor still hands out --session"
+    assert f"--on {mid}" in out, "and the name is not truncated"
+
+
+def test_doctor_reads_the_live_missions_not_their_migrated_twins(
+        tmp_path, monkeypatch):
+    """`migrate` copies events into missions/<name>/ and leaves the old
+    session-keyed directory behind, frozen. doctor walked the old layout, so it
+    audited the twins and saw no live mission at all -- career-hub had 64 events
+    and doctor read the 27 in its abandoned copy, reporting proposals that were
+    accepted two days earlier. The board's review lane reads this."""
+    from agent_mission import doctor, missions as M
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    old = MissionStore(root_for("sess-a"))
+    old.create("sess-a", str(tmp_path), "the goal", by="human")
+    old.propose("stale, accepted since", by="agent")
+    M.migrate()
+
+    live = MissionStore(M.missions_root() / M.slug("the goal"))
+    live.accept(live.load().unaccepted[0].id, by="human")
+
+    seen = [d.name for d, _ in doctor._logs()]
+    assert "sess-a" not in seen, "the migrated twin is still being audited"
+    assert any(s != "sess-a" for s in seen), "and the live mission is not"
+    assert not [f for f in doctor.findings() if f["what"] == "awaiting you"], \
+        "doctor reported a proposal that was accepted on the live mission"
+
+
+def test_the_review_lane_holds_its_pre_registered_bound(tmp_path, monkeypatch):
+    """The lane shipped with a rule written before the data: if it shows what
+    `doctor` shows, the eligibility rule is wrong and it should not ship.
+
+    Fixing doctor's scan sent it from 2 items to 42 -- 40 of them one row per
+    event of "written from another directory" on a single mission. That check
+    was written when cwd ROUTED writes, so a foreign directory meant a misroute.
+    Names route now and `--on` from any terminal is the documented normal case,
+    so the detector had started measuring the feature."""
+    from agent_mission import doctor
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    st = MissionStore(root_for("s"))
+    st.create("s", "/home/repo", "the goal", by="human")
+    for i in range(30):
+        st.context_cwd = "/somewhere/else"
+        st.observe("notes", f"n{i}", by="agent")
+
+    rows = [f for f in doctor.findings()
+            if f["what"] == "written from another directory"]
+    assert len(rows) <= 1, "one row per mission, with a count -- not per event"
+    assert not [r for r in doctor.review()
+                if r["what"] == "written from another directory"], \
+        "nothing a person cannot close belongs in the lane"
