@@ -294,8 +294,27 @@ def cmd_init(a) -> int:
     if not sid:
         print("  no session id. Run inside Claude Code, or pass --session.")
         return 1
-    st = _store(sid, a)
-    existing = st.load()
+    # One session, several goals -- the model's own promise. `init --on
+    # <new-name>` creates a SIBLING goal and re-attaches, instead of refusing
+    # because the session already serves one. The old workaround was a
+    # synthetic seed session id plus migrate plus attach: three commands
+    # where the promise says one.
+    new_goal_mid = None
+    if getattr(a, "on", None):
+        from . import missions as M
+        try:
+            M.find(a.on)
+        except Exception:
+            new_goal_mid = M.slug(a.on)
+            d = M.missions_root() / new_goal_mid
+            d.mkdir(parents=True, exist_ok=True)
+            st = MissionStore(d)
+            st.context_cwd = str(Path(getattr(a, "cwd", ".") or ".").resolve())
+            st.context_via = via
+            existing = None
+    if new_goal_mid is None:
+        st = _store(sid, a)
+        existing = st.load()
     if existing and not a.force:
         print(f"  a mission already exists for {short_id(sid)}. `mission` to see it, "
               f"`mission init --force` to start over.")
@@ -361,7 +380,12 @@ def cmd_init(a) -> int:
         ev = st.propose(text, by="human", parent=parent)
         st.accept(ev["item_id"], by="human")
         stack.append((indent, ev["item_id"]))
-    print(f"\n  mission set for {short_id(sid)}\n")
+    if new_goal_mid is not None:
+        from . import missions as M
+        M.attach(sid, new_goal_mid, by="human")
+        print(f"\n  new goal {new_goal_mid} — {short_id(sid)} attached\n")
+    else:
+        print(f"\n  mission set for {short_id(sid)}\n")
     # Start/join the board BEFORE showing: otherwise the mission prints
     # "board: not running" and the next line says it just started one.
     _announce_board(a)

@@ -27,10 +27,26 @@ def current_session_id() -> str | None:
 
 
 def transcript_for(session_id: str) -> Path | None:
+    """Newest transcript wins, across ALL project directories.
+
+    Claude Code files transcripts per working directory, so a session resumed
+    from a different cwd writes into a DIFFERENT project folder. Taking the
+    first glob hit read whichever dir sorted first -- a live session showed
+    dead on the board (dimmed, numbers frozen) while its real transcript grew
+    elsewhere. Seen live: 5fd98e2e, written seconds earlier, reported dead."""
     if not PROJECTS.exists():
         return None
     hits = list(PROJECTS.glob(f"*/{session_id}.jsonl"))
-    return hits[0] if hits else None
+    if not hits:
+        return None
+
+    def mtime(pth: Path) -> float:
+        try:
+            return pth.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    return max(hits, key=mtime)
 
 
 def live() -> list[dict]:

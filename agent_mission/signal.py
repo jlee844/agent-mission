@@ -67,9 +67,21 @@ def notifications_wanted() -> bool:
     return (_home() / "notify-optin").exists()
 
 
+def _contract_path() -> Path:
+    return Path(os.environ.get("AGENT_MISSION_CONTRACT",
+                               Path.home() / ".claude" / "commands" / "mission.md"))
+
+
 def check(sid: str, base=None) -> list[str]:
     """One line per mission whose pending count ROSE since this session last
-    looked. Empty list almost always — silence is the normal output."""
+    looked. Empty list almost always — silence is the normal output.
+
+    Also the one channel that reaches a LIVE conversation: hooks and the
+    contract otherwise land only at session boundaries, so a long session
+    runs whatever format was current when it started — five upgrades in four
+    days meant every long conversation was stale. First look baselines the
+    installed contract's mtime; a later change emits ONE line telling the
+    agent to re-read, then goes silent until the next upgrade."""
     state = _load(sid)
     seen = state.get("counts", {})
     now_counts: dict = {}
@@ -90,6 +102,21 @@ def check(sid: str, base=None) -> list[str]:
                 f"a proposal landed on {m.title}: “{title}”{more} — "
                 f"accept on the board or "
                 f"`mission accept --pending --on {mid}`")
+
+    try:
+        cm = _contract_path().stat().st_mtime
+    except OSError:
+        cm = 0.0
+    if cm:
+        baseline = state.get("contract_mtime")
+        if baseline is None:
+            state["contract_mtime"] = cm
+        elif cm > baseline + 1e-6:
+            state["contract_mtime"] = cm
+            lines.append(
+                "the mission contract was upgraded mid-session — run "
+                "`mission whereami --full` and follow the protocol it prints; "
+                "it supersedes what you read at session start")
 
     # Shrink and repeat both update the floor silently, so a decline never
     # re-fires and the next rise is measured from where the person left it.
