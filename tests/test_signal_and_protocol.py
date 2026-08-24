@@ -221,9 +221,15 @@ def test_board_at_a_tty_replaces_a_read_only_board(monkeypatch, tmp_path,
                         lambda port, writable=None: calls.append("serve"))
     monkeypatch.setattr(MM.sys.stdout, "isatty", lambda: True)
 
+    freed = []
+    monkeypatch.setattr(D, "_free",
+                        lambda port: bool(freed) or freed.append(1) or False)
     monkeypatch.setattr(D, "identify", lambda port: {"writes": False})
     MM.main(["board"])
     assert calls == ["stop", "serve"], "read-only is replaced, not reused"
+    assert freed, ("the bind waits for the old board to actually die -- "
+                   "signalling it and binding in the same instant lost the "
+                   "race on the first real run (Errno 48)")
 
     calls.clear()
     monkeypatch.setattr(D, "identify", lambda port: {"writes": True})

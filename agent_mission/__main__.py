@@ -1552,6 +1552,20 @@ def cmd_board(a) -> int:
             # upgraded in place -- the code must print to THIS terminal.
             board_stop()
             print("  replacing the read-only board with a writable one…")
+            # The stop is a signal; the death is not instant. Binding right
+            # away lost the race on the first real run -- Errno 48, a
+            # traceback in the face of the person following the instructions.
+            from .daemon import _free
+            for _ in range(50):            # up to ~5s
+                if _free(a.port):
+                    break
+                time.sleep(0.1)
+            else:
+                print(f"  the old board (pid {rec.get('pid')}) is not letting"
+                      f" go of port {a.port}."
+                      f"\n  kill it yourself, then rerun:  "
+                      f"kill -9 {rec.get('pid')}")
+                return 1
         serve(a.port)                      # blocks; ctrl-c to stop
         return 0
 
