@@ -42,7 +42,7 @@ Run it in your own terminal and it prints a write code; enter it once and
 accept/tick/note are buttons. The agent never sees that code. A `report`
 button packages anything that goes wrong for pasting straight to Claude.
 
-![The mission board](docs/board.png)
+![A proposal lands, the strip lights, you accept, the plan grows](docs/demo.gif)
 
 Everything below the line is for the agent, or for scripting.
 **Humans use the board; agents use the CLI.**
