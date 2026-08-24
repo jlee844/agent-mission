@@ -15,7 +15,7 @@ calls, a summary written by the thing being summarised, and no easy answer to
 ```bash
 git clone https://github.com/jlee844/agent-mission && cd agent-mission
 pip install -e .
-mission setup      # slash command, deny rules, statusline, re-anchor hook
+mission setup      # slash command, deny rules, statusline, re-anchor hook, attention hook
 ```
 
 ## You touch this in three places
@@ -32,6 +32,10 @@ without leaving what you are doing.
 ```
 Ship list sharing · 2/5 · detour: chasing a flaky test · 3 proposals waiting
 ```
+
+And when something *newly* needs you — a proposal just landed — one line
+arrives in the conversation itself, with the link. Edge-triggered: it fires on
+the change, never repeats, and is silent otherwise.
 
 **3. Click on the board.** `mission board` puts every session you have running
 on one page: its goal, its plan as a tree, and what it has **actually done** —
@@ -82,6 +86,12 @@ functions, so the board can never drift from what the terminal would have done.
 Re-running `mission setup` is always the complete fix. There is never a second
 instruction to follow.
 
+Two surfaces are opt-in, never installed by default: `mission setup
+--auto-board` appends one guarded line to your shell rc so the board starts
+**writable** at login (one code paste per day, buttons thereafter), and
+`--notify` turns on an OS notification when a proposal lands — edge-triggered,
+at most one per 10 minutes, off unless you know you ignore terminals.
+
 ## Commands
 
 | command | what it does |
@@ -103,6 +113,7 @@ instruction to follow.
 | `delegate <id>` | give one accepted item its own session for a subagent |
 | `observe <field> <text>` | record evidence, a decision, or a note |
 | `doctor` | what is wrong with the missions themselves, not the install |
+| `signal` | one line if something newly awaits you; silent otherwise (for hooks) |
 | `attach` | point this session at a goal |
 | `missions` | every goal, and the sessions that served it |
 | `archive` | take a finished goal off the board (`--undo`) |

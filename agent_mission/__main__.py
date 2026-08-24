@@ -753,6 +753,19 @@ def cmd_whereami(a) -> int:
             print(f"ON DETOUR: {m.detours[-1]} ({len(m.detours)} deep)")
         if m.unaccepted:
             print(f"AWAITING THE HUMAN: {len(m.unaccepted)} proposal(s)")
+        # C15: injection is not behavior. Days of real use showed every agent
+        # reading this payload, mentioning the goal, and polishing untracked
+        # anyway -- the contract said what an agent MAY do, never what it
+        # SHOULD do at a decision point. So the payload carries the protocol.
+        print("PROTOCOL: before sizable work, check it against the plan above"
+              " and say the judgment in one line."
+              "\nPROTOCOL: on the plan -> name the item and proceed."
+              " Off-plan but more pressing -> say why, `mission propose` it,"
+              " continue."
+              "\nPROTOCOL: plan seems righter -> push back once with the"
+              " reason; the human's answer settles it."
+              "\nPROTOCOL: never work untracked silently — every divergence is"
+              " a proposal or a declared detour.")
         return 0
 
     bits = [m.title if len(m.title) <= 40 else m.title[:37].rsplit(" ", 1)[0] + "…"]
@@ -771,6 +784,33 @@ def cmd_whereami(a) -> int:
     if rec:
         bits.append(f"http://127.0.0.1:{rec['port']}")
     print(" · ".join(bits))
+    return 0
+
+
+def cmd_signal(a) -> int:
+    """C14-1: the edge-triggered attention line, run by a UserPromptSubmit hook.
+
+    Prints one line per mission whose pending count ROSE since this session
+    last looked, and nothing otherwise — the hook injects stdout into the
+    conversation, so silence has to be the normal case or this becomes the
+    wallpaper C12d removed. Never fails: a hook that can break a prompt is a
+    hook that gets uninstalled.
+    """
+    try:
+        from . import signal as S
+        from .daemon import running as board_running
+        sid = current_session_id() or "terminal"
+        lines = S.check(sid)
+        if lines:
+            rec = board_running()
+            url = f"http://127.0.0.1:{rec['port']}" if rec else ""
+            for ln in lines:
+                print(ln)
+            if url:
+                print(f"board: {url}")
+            S.notify(lines, url)
+    except Exception:
+        pass
     return 0
 
 
@@ -1190,11 +1230,14 @@ def cmd_check(a) -> int:
     for r in rows:
         # "missing" and "outdated" are different problems with the same fix,
         # and calling an outdated copy "missing" reads as a lie when the file
-        # is plainly there.
-        state = r.get("state") or ("installed" if r["ok"] else "missing")
+        # is plainly there. An opt-in surface that is off is a third thing:
+        # a choice not yet made, which is not a problem at all -- counting it
+        # as missing would make a fresh, correct install exit 1 forever.
+        state = r.get("state") or ("installed" if r["ok"] else
+                                   ("off" if r.get("opt_in") else "missing"))
         print(f"  {'✓' if r['ok'] else '·'} {r['name']:<16} {state:<10} "
               f"{r['detail']}")
-    missing = [r["name"] for r in rows if not r["ok"]]
+    missing = [r["name"] for r in rows if not r["ok"] and not r.get("opt_in")]
     if missing:
         print(f"\n  {len(missing)} missing — `mission setup` in a terminal "
               f"installs everything.\n")
@@ -1241,7 +1284,15 @@ def cmd_setup(a) -> int:
                 print(f"    {r['name']}")
             print("\n  run `mission setup` yourself in a terminal.\n")
         return 0
-    for name in S.SURFACES:
+    wanted = list(S.SURFACES)
+    # Opt-in surfaces install only when their flag is given. One starts a
+    # server from the shell rc, the other pops OS notifications -- neither may
+    # arrive as a side effect of "install the tool".
+    if getattr(a, "auto_board", False):
+        wanted.append("auto-board")
+    if getattr(a, "notify", False):
+        wanted.append("notifications")
+    for name in wanted:
         if name == "slash command":
             continue                       # handled above, honours --force
         out = S.install(name, getattr(a, "settings", None),
@@ -1464,6 +1515,16 @@ def cmd_board(a) -> int:
     if a.stop:
         print("  stopped" if board_stop() else "  no board running")
         return 0
+    if getattr(a, "rc", False):
+        # The shell-rc path (C15b). Every new terminal runs this line, so the
+        # normal case is "a board is already up" and it has to cost nothing
+        # and say nothing. When none is up, serve in THIS shell: stdout is the
+        # login terminal's tty, so the board comes up writable and prints its
+        # code to the one place only a person can read.
+        if board_running():
+            return 0
+        serve(a.port)
+        return 0
     if a.foreground:
         serve(a.port)
         return 0
@@ -1547,6 +1608,12 @@ def _build() -> argparse.ArgumentParser:
                     help="skip the SessionStart re-anchor hook")
     su.add_argument("--no-permissions", action="store_true",
                     help="skip the Claude Code deny rules")
+    su.add_argument("--auto-board", action="store_true",
+                    help="append `mission board --rc &` to your shell rc: the "
+                         "board starts writable at login, one code per day")
+    su.add_argument("--notify", action="store_true",
+                    help="OS notification when a proposal lands (edge-"
+                         "triggered, max one per 10 min; off by default)")
     su.add_argument("--settings", default=None,
                     help="settings.json to edit (default ~/.claude/settings.json)")
     su.set_defaults(fn=cmd_setup)
@@ -1579,6 +1646,10 @@ def _build() -> argparse.ArgumentParser:
     dg.add_argument("--to", default=None, metavar="NAME",
                     help="short name for the child mission")
     dg.set_defaults(fn=cmd_delegate)
+
+    sg = sub.add_parser("signal", parents=[common],
+                        help="one line if something newly awaits you (hook)")
+    sg.set_defaults(fn=cmd_signal)
 
     ob = sub.add_parser("observe", parents=[common],
                         help="record evidence, a decision, or a note")
@@ -1615,6 +1686,7 @@ def _build() -> argparse.ArgumentParser:
     bd.add_argument("--port", type=int, default=8976)
     bd.add_argument("--open", action="store_true", help="open it in your browser")
     bd.add_argument("--stop", action="store_true")
+    bd.add_argument("--rc", action="store_true", help=argparse.SUPPRESS)
     bd.add_argument("--foreground", action="store_true",
                     help=argparse.SUPPRESS)   # used by the spawner
     bd.set_defaults(fn=cmd_board)

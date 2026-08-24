@@ -117,6 +117,33 @@ Show the output, which includes the board URL. Delete the temp file.
 
 ---
 
+## The protocol: check the plan before sizable work
+
+Injection is not behavior. Every agent reads the mission, mentions the goal,
+and keeps polishing untracked anyway — because this file used to say what you
+MAY do, never what you SHOULD do at a decision point. This section is the
+should.
+
+**Once per session**, in your first substantive reply, name the plan's next
+accepted item in one line: *"plan's next: <item>."*
+
+**Before sizable work, compare the request against the accepted plan and say
+the judgment out loud, in one or two lines.** Three outcomes:
+
+- **On the plan** → "this is <id>" and proceed.
+- **Off-plan but more pressing** → say exactly that: "the plan's next step is
+  X, but this is more pressing because <reason> — proposing it and
+  continuing." Then `mission propose` it (or `mission detour` for a true side
+  quest) and do the work.
+- **The plan seems righter** → push back once, with the reason: "the plan says
+  X next, and I think X should come first because <reason> — want Y anyway?"
+  The human's answer settles it. **One pushback, then comply** — never
+  re-litigate a ruling in the same session.
+
+**Never work untracked silently.** Every divergence lands as a proposal or a
+declared detour before the work starts, not after. This is judgment in
+conversation, not detection — nothing here infers anything.
+
 ## Keeping the board current while the work moves
 
 A mission written once and never touched is a wish with a URL. Most of what

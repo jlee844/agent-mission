@@ -1,4 +1,4 @@
-"""The five surfaces, installed by one implementation with two front-ends.
+"""The surfaces, installed by one implementation with two front-ends.
 
 `mission setup` in a terminal and the board's Setup panel must do the same
 thing, or the board quietly drifts from what the CLI would have done and you
@@ -27,8 +27,27 @@ DENY_RULES = [f"Bash(mission {c}:*)" for c in
               ("set", "accept", "done", "remove", "add")]
 STATUSLINE = {"type": "command", "command": "mission whereami"}
 HOOK_CMD = "mission whereami --full 2>/dev/null || true"
+# C14-1: the edge-triggered attention line. UserPromptSubmit injects stdout
+# into the conversation, and `mission signal` prints only when something
+# TRANSITIONED to waiting -- silent otherwise, so it cannot become wallpaper.
+SIGNAL_CMD = "mission signal 2>/dev/null || true"
 SURFACES = ("slash command", "deny rules", "statusline",
-            "re-anchor hook")
+            "re-anchor hook", "attention hook")
+
+# Opt-in surfaces. Not in SURFACES because `mission setup` must never install
+# them unasked: one starts a server from your shell rc, the other pops OS
+# notifications -- both are the person's call, made with a flag, not a default.
+OPT_IN = ("auto-board", "notifications")
+
+RC_MARK = "# mission auto-board"
+RC_LINE = (f"{RC_MARK} (added by `mission setup --auto-board`; "
+           "delete to remove)\n"
+           "command -v mission >/dev/null 2>&1 && mission board --rc &\n")
+
+
+def rc_path() -> Path:
+    return Path(os.environ.get("AGENT_MISSION_RC",
+                               Path.home() / ".zshrc"))
 
 
 def home() -> Path:
@@ -130,6 +149,17 @@ def status(settings: str | None = None, dest: str | None = None) -> list[dict]:
          "detail": sl_cmd[:70] or "not set"},
         {"name": "re-anchor hook", "ok": "mission whereami --full" in hooks,
          "detail": "SessionStart"},
+        {"name": "attention hook",
+         "ok": "mission signal" in json.dumps(
+             data.get("hooks", {}).get("UserPromptSubmit", [])),
+         "detail": "UserPromptSubmit — one line when something newly awaits"},
+        {"name": "auto-board", "opt_in": True,
+         "ok": rc_path().exists() and RC_MARK in rc_path().read_text(
+             encoding="utf-8", errors="replace"),
+         "detail": f"{rc_path()} — opt in with `mission setup --auto-board`"},
+        {"name": "notifications", "opt_in": True,
+         "ok": (home() / "notify-optin").exists(),
+         "detail": "off by default — opt in with `mission setup --notify`"},
     ]
 
 
@@ -171,6 +201,24 @@ def plan(name: str, settings: str | None = None,
             return {"changes": [], "why": "already current"}
         return {"changes": [f"hooks.SessionStart += {HOOK_CMD} "
                             f"(keeping your {len(start)})"], "why": ""}
+    if name == "attention hook":
+        ups = data.get("hooks", {}).get("UserPromptSubmit", [])
+        if any(SIGNAL_CMD in json.dumps(h) for h in ups):
+            return {"changes": [], "why": "already current"}
+        return {"changes": [f"hooks.UserPromptSubmit += {SIGNAL_CMD} "
+                            f"(keeping your {len(ups)})"], "why": ""}
+    if name == "auto-board":
+        rc = rc_path()
+        if rc.exists() and RC_MARK in rc.read_text(encoding="utf-8",
+                                                   errors="replace"):
+            return {"changes": [], "why": "already current"}
+        return {"changes": [f"append to {rc}: mission board --rc &"], "why": ""}
+    if name == "notifications":
+        f = home() / "notify-optin"
+        if f.exists():
+            return {"changes": [], "why": "already current"}
+        return {"changes": [f"write {f} (OS notification on new proposals, "
+                            f"max one per 10 min)"], "why": ""}
     if name == "board bookmark":
         f = home() / "board.html"
         return ({"changes": [], "why": "already current"} if f.exists()
@@ -195,6 +243,23 @@ def install(name: str, settings: str | None = None,
         from .daemon import running, write_bookmark
         rec = running()
         write_bookmark(rec["port"] if rec else 8976)
+        return {"applied": p["changes"], "why": "", "backup": None}
+    if name == "auto-board":
+        rc = rc_path()
+        old = rc.read_text(encoding="utf-8", errors="replace") \
+            if rc.exists() else ""
+        backup = None
+        if rc.exists():
+            b = rc.with_name(rc.name + f".bak-mission-{int(time.time())}")
+            b.write_text(old, encoding="utf-8")
+            backup = b.name
+        tail = "" if (not old or old.endswith("\n")) else "\n"
+        rc.write_text(old + tail + RC_LINE, encoding="utf-8")
+        return {"applied": p["changes"], "why": "", "backup": backup}
+    if name == "notifications":
+        (home() / "notify-optin").write_text(
+            "OS notifications on new proposals. Delete this file to turn off.\n",
+            encoding="utf-8")
         return {"applied": p["changes"], "why": "", "backup": None}
 
     data = _read(sp)
@@ -233,6 +298,10 @@ def install(name: str, settings: str | None = None,
     elif name == "re-anchor hook":
         data.setdefault("hooks", {}).setdefault("SessionStart", []).append(
             {"hooks": [{"type": "command", "command": HOOK_CMD, "timeout": 5}]})
+    elif name == "attention hook":
+        data.setdefault("hooks", {}).setdefault("UserPromptSubmit", []).append(
+            {"hooks": [{"type": "command", "command": SIGNAL_CMD,
+                        "timeout": 5}]})
 
     backup = _write(sp, data)
     return {"applied": p["changes"], "why": "", "backup": backup}
