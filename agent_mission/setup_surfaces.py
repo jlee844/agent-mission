@@ -174,6 +174,21 @@ def plan(name: str, settings: str | None = None,
                 _template().read_text(encoding="utf-8"):
             return {"changes": [], "why": "already current"}
         return {"changes": [f"write {f}"], "why": ""}
+    # These two never touch settings.json, so they must not be blocked by its
+    # absence -- which is exactly the state of a CI runner and a fresh machine.
+    # They sat below this guard once and "install" silently did nothing there.
+    if name == "auto-board":
+        rc = rc_path()
+        if rc.exists() and RC_MARK in rc.read_text(encoding="utf-8",
+                                                   errors="replace"):
+            return {"changes": [], "why": "already current"}
+        return {"changes": [f"append to {rc}: mission board --rc &"], "why": ""}
+    if name == "notifications":
+        f = home() / "notify-optin"
+        if f.exists():
+            return {"changes": [], "why": "already current"}
+        return {"changes": [f"write {f} (OS notification on new proposals, "
+                            f"max one per 10 min)"], "why": ""}
     if data is None:
         return {"changes": [], "why": f"cannot read {sp}"}
     if name == "deny rules":
@@ -207,18 +222,6 @@ def plan(name: str, settings: str | None = None,
             return {"changes": [], "why": "already current"}
         return {"changes": [f"hooks.UserPromptSubmit += {SIGNAL_CMD} "
                             f"(keeping your {len(ups)})"], "why": ""}
-    if name == "auto-board":
-        rc = rc_path()
-        if rc.exists() and RC_MARK in rc.read_text(encoding="utf-8",
-                                                   errors="replace"):
-            return {"changes": [], "why": "already current"}
-        return {"changes": [f"append to {rc}: mission board --rc &"], "why": ""}
-    if name == "notifications":
-        f = home() / "notify-optin"
-        if f.exists():
-            return {"changes": [], "why": "already current"}
-        return {"changes": [f"write {f} (OS notification on new proposals, "
-                            f"max one per 10 min)"], "why": ""}
     if name == "board bookmark":
         f = home() / "board.html"
         return ({"changes": [], "why": "already current"} if f.exists()

@@ -125,13 +125,17 @@ def test_auto_board_appends_once_and_backs_up(tmp_path, monkeypatch):
     rc.write_text("export EDITOR=vim\n")
     monkeypatch.setenv("AGENT_MISSION_RC", str(rc))
 
-    out = S.install("auto-board")
-    assert out["applied"] and out["backup"]
+    # A machine with no ~/.claude/settings.json -- CI, and any fresh install.
+    # This surface never touches settings, so their absence must not block it;
+    # it did, because the plan() branch sat below the cannot-read guard, and
+    # the developer machine could not reproduce it.
+    out = S.install("auto-board", settings=str(tmp_path / "no-such.json"))
+    assert out["applied"] and out["backup"], out["why"]
     text = rc.read_text()
     assert text.startswith("export EDITOR=vim\n"), "the original is intact"
     assert "mission board --rc &" in text
 
-    again = S.install("auto-board")
+    again = S.install("auto-board", settings=str(tmp_path / "no-such.json"))
     assert again["applied"] == [] and again["why"] == "already current"
     assert rc.read_text() == text, "running it twice changes nothing"
 
