@@ -1221,7 +1221,19 @@ def serve(port: int = 8976, writable: bool | None = None) -> None:
         except Exception:
             writable = False
     WRITES = Session(enabled=bool(writable))
-    srv = ThreadingHTTPServer(("127.0.0.1", port), _H)
+    class _Quiet(ThreadingHTTPServer):
+        # The writable board runs in the PERSON'S terminal now, and every
+        # browser reload that drops a connection mid-response printed a
+        # 30-line BrokenPipeError traceback into it. A closed pipe is the
+        # client's business; a real error still prints.
+        def handle_error(self, request, client_address):
+            import sys as _s
+            exc = _s.exc_info()[1]
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+                return
+            super().handle_error(request, client_address)
+
+    srv = _Quiet(("127.0.0.1", port), _H)
     srv.daemon_threads = True
     # The server writes its own record, because it is the only thing that knows
     # it is up and which pid it is. Written by the LAUNCHER, a board started any
