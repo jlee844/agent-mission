@@ -1205,7 +1205,10 @@ def test_the_readme_lists_the_surfaces_setup_actually_installs():
     line = next(l for l in readme.splitlines() if l.startswith("mission setup "))
     for name in SURFACES:
         assert name in line, f"{name!r} missing from the install line"
-    for stale in ("Stop hook", "five surfaces"):
+    # "Stop hook" was on this list while no such surface existed (C12d cut
+    # it). C16 shipped a REAL one -- the claim verifier -- so the stale claim
+    # to guard against is now the count, not the phrase.
+    for stale in ("five surfaces", "four surfaces"):
         assert stale not in readme, f"README still advertises {stale!r}"
 
 

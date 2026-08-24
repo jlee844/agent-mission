@@ -541,7 +541,7 @@ def cmd_import(a) -> int:
 
     print(f"\n  {p.name}: {len(added)} proposed, {skipped} already in the plan")
     for iid, r in added:
-        print(f"    [?] {iid}  {'  ' * r.depth}{r.text}")
+        print(f"    [+] {iid}  {'  ' * r.depth}{r.text}")
     ticked = [iid for iid, r in added if r.checked]
     if ticked:
         # The file says these are finished. The file is not you.
@@ -787,6 +787,59 @@ def cmd_whereami(a) -> int:
     return 0
 
 
+def cmd_claims(a) -> int:
+    """C16: the claim verifier as a Stop hook. Reads the hook payload on
+    stdin, checks only the claims made since last time, and speaks only when
+    something is unbacked. Exits 0 on EVERY path -- unparseable transcript,
+    no session, foreign format, weird cwd -- because a verifier that can
+    break a turn is worse than no verifier (whereami's bar).
+    """
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        tpath = payload.get("transcript_path") or ""
+        sid = payload.get("session_id") or (Path(tpath).stem if tpath else "")
+        if not tpath or not Path(tpath).exists():
+            return 0
+        from . import claims as C
+        home = Path(os.environ.get("AGENT_MISSION_HOME",
+                                   Path.home() / ".agent-mission"))
+        sdir = home / "claims"
+        safe = "".join(ch for ch in sid if ch.isalnum() or ch in "-_")[:64] or "x"
+        state_p = sdir / f"{safe}.json"
+        try:
+            seen = set(json.loads(state_p.read_text(encoding="utf-8")))
+        except Exception:
+            seen = set()
+        findings, keys = [], set()
+        for c in C.iter_claims(Path(tpath), sid, tail_bytes=400_000):
+            key = f"{c.block_index}:{c.sentence[:60]}"
+            keys.add(key)
+            if key in seen:
+                continue
+            v = C.verify(c, cwd=payload.get("cwd") or "")
+            seen.add(key)
+            if v.status in C.REPORT:
+                findings.append(v)
+        try:
+            sdir.mkdir(parents=True, exist_ok=True)
+            tmp = state_p.with_suffix(f".tmp{os.getpid()}")
+            tmp.write_text(json.dumps(sorted(seen)[-400:]), encoding="utf-8")
+            tmp.replace(state_p)
+        except OSError:
+            pass
+        if findings:
+            out = [f"{len(findings)} claim{'s' if len(findings) > 1 else ''} "
+                   f"nothing backs:"]
+            for v in findings[:6]:
+                out.append(f'  · "{v.sentence[:110]}"')
+                out.append(f"    {v.status} — {v.detail[:110]}")
+            print(json.dumps({"systemMessage": "\n".join(out),
+                              "continue": True, "suppressOutput": True}))
+    except Exception:
+        pass
+    return 0
+
+
 def cmd_signal(a) -> int:
     """C14-1: the edge-triggered attention line, run by a UserPromptSubmit hook.
 
@@ -842,7 +895,7 @@ def cmd_pending(a) -> int:
         return 0
     print(f"\n  {len(waiting)} awaiting you in {m.title}\n")
     for i in waiting:
-        print(f"    [?] {i.id}  {i.text}")
+        print(f"    [+] {i.id}  {i.text}")
     print(f"\n    mission accept --pending"
           f"{'' if not a.session else ' --session ' + a.session}\n")
     return 0
@@ -886,7 +939,7 @@ def _print_tree(nodes, depth: int = 0, prefix: str = "",
     for n, last in ((n, i == len(nodes) - 1) for i, n in enumerate(nodes)):
         item = n.item
         mark = "x" if (n.complete if n.children else item.done) else (
-            " " if item.accepted else "?")
+            " " if item.accepted else "+")
         elbow = "" if depth == 0 else ("└─ " if last else "├─ ")
         roll = f"   {n.done_count}/{n.total}" if n.children else ""
         # A delegated item is being worked on in another session. Without this
@@ -1689,6 +1742,10 @@ def _build() -> argparse.ArgumentParser:
     dg.add_argument("--to", default=None, metavar="NAME",
                     help="short name for the child mission")
     dg.set_defaults(fn=cmd_delegate)
+
+    cl = sub.add_parser("claims", parents=[common],
+                        help="verify recent completion claims against disk (hook)")
+    cl.set_defaults(fn=cmd_claims)
 
     sg = sub.add_parser("signal", parents=[common],
                         help="one line if something newly awaits you (hook)")

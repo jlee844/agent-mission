@@ -133,12 +133,22 @@ def mission_rows() -> list[dict]:
             continue
         calls = files = tests = fails = 0
         sess = []
+        claims_bad, claims_checked = [], 0
         for sid in M.sessions_of(mid):
             tp = transcript_for(sid)
             a = activity(tp) if tp else None
             if a:
                 calls += a.calls; files += len(a.files)
                 tests += a.tests; fails += a.failures
+            # C16: the tail of each LIVE session's transcript, checked against
+            # disk. Live only -- an ended session's claims were either caught
+            # at the time or are history, and scanning every transcript ever
+            # would make the 4s refresh pay for the archive.
+            if tp and sid in live_ids:
+                from .claims import scan as _claims_scan
+                r = _claims_scan(tp, sid, cwd=m.cwd or "")
+                claims_checked += r["checked"]
+                claims_bad.extend(r["reportable"])
             sess.append({"id": short_id(sid), "full": sid,
                          "live": sid in live_ids,
                          "calls": a.calls if a else 0})
@@ -154,6 +164,8 @@ def mission_rows() -> list[dict]:
             "ended": not any(x["live"] for x in sess),
             "has_mission": True,
             "calls": calls, "files": files, "tests": tests, "failures": fails,
+            "claims_checked": claims_checked,
+            "claims_bad": claims_bad[:4],
             "asks": [], "topfiles": [], "models": [], "model_changed": False,
             "repeats": 0, "exact_repeats": 0, "worst_repeat": None,
             "collisions": [], "children": [],
@@ -345,13 +357,13 @@ def _state(r: dict, now: float) -> str:
 PAGE = """<!doctype html><meta charset=utf-8><title>Missions</title>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <style>
-:root{--bg:#F6F7F6;--card:#fff;--ink:#16191B;--mut:#626B6E;--rule:#DCE1DF;--soft:#EDF0EE;
---ok:#0E6E68;--bad:#8E3B2F;--okw:#E4EFEE;--badw:#F5E7E4;
+:root{--bg:#F7F7F8;--card:#fff;--ink:#151518;--mut:#66666E;--rule:#DEDEE3;--soft:#EEEEF2;
+--ok:#5A5AD8;--bad:#92661C;--okw:#EBEBFB;--badw:#F7EDD8;
 --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
 --mono:ui-monospace,"SF Mono",Menlo,monospace}
-@media(prefers-color-scheme:dark){:root{--bg:#0F1313;--card:#151A19;--ink:#E7ECE9;
---mut:#8B9591;--rule:#242C2A;--soft:#1B2220;--ok:#54BCB3;--bad:#D8836F;
---okw:#142A28;--badw:#2B1B18}}
+@media(prefers-color-scheme:dark){:root{--bg:#0B0B0D;--card:#131316;--ink:#EDEDF0;
+--mut:#84848D;--rule:#222228;--soft:#1A1A20;--ok:#8B8BF5;--bad:#F5B942;
+--okw:#191930;--badw:#221A0A}}
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;
 margin:0;padding:1.3rem 1.5rem 4rem;-webkit-font-smoothing:antialiased}
@@ -438,6 +450,7 @@ padding-left:.6rem;display:flex;align-items:center;gap:.4rem}
   .chk li.hued.branch .box{color:hsl(var(--grp) 48% 60%)}
   .chk li.hued .mini i{background:hsl(var(--grp) 45% 55%)}
 }
+.claims{color:var(--mut);font-size:.72rem;margin-top:.3rem;line-height:1.5}
 .chk li.hued.done .box{color:var(--ok)}
 .chk li.hued.prop .box{color:var(--bad)}
 .box{font-family:var(--mono);color:var(--mut);flex:none}
@@ -679,7 +692,7 @@ function row(i,flat,sid){
   return `<li style="${hu}" class="${i.branch?'branch':''} ${
       i.done?'done':(i.ok?'':'prop')} ${typeof i.hue==='number'?'hued':''}">
     ${guides}${elbow}
-    <span class=box>${i.done?'▪':(i.ok?'▫':'?')}</span>
+    <span class=box>${i.done?'▪':(i.ok?'▫':'+')}</span>
     <span class=txt title="${esc(i.t)}">${esc(i.t)}</span>
     ${i.roll?`<span class=roll><span class=mini><i style="width:${i.pct}%"></i></span>${i.roll}</span>`:''}
     ${(WRITABLE && CODE() && !i.done)?
@@ -954,6 +967,11 @@ async function tick(){
         <button data-do=note data-s="${s.full}">save</button></div>`:''}
      <div class=meta>${s.calls.toLocaleString()} calls · ${s.files} files ·
        ${s.tests} test runs · <span class=warn>${s.failures} failed</span>
+       ${(s.claims_bad&&s.claims_bad.length)?`<div class=claims>${
+           s.claims_bad.length} claim${s.claims_bad.length>1?'s':''} nothing backs${
+           s.claims_bad.map(c=>`<br>· “${esc(c.sentence.slice(0,90))}” — ${esc(c.detail.slice(0,80))}`).join('')
+         }</div>`
+        :(s.claims_checked?`<div class=claims>${s.claims_checked} claims checked against disk — all backed</div>`:'')}
        ${s.topfiles.length?`<br>${s.topfiles.slice(0,3).map(f=>esc(f.f)+' '+f.n+'x').join(' · ')}`:''}</div>
    </div>`).join('') : (all.length? '' : '<p class=none>No live sessions.</p>');
 }

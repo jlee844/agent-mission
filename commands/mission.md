@@ -160,7 +160,7 @@ caught it.
 mission propose "Fold finished items away on the board"
 ```
 
-It lands as `[?]`, inert until they accept, and it is on the card from the
+It lands as `[+]`, inert until they accept, and it is on the card from the
 moment they asked rather than after you remember. Then do the work.
 
 **What goes on the board, and what does not.** The test is whether the message
@@ -179,8 +179,19 @@ turns into "do that", propose it *then*. Adding every question to the plan
 inflates it with things that were never asked for, and a plan you stop trusting
 is one you stop reading.
 
-When you are unsure, propose it and say you were unsure. A `[?]` they delete
+When you are unsure, propose it and say you were unsure. A `[+]` they delete
 costs one command; work that never appears costs them the ability to check.
+
+**State completion by naming the artifact.** A Stop hook checks completion
+claims against the disk, and a claim that names its evidence is checkable on
+any corpus, in anyone's phrasing:
+
+> done: 237 tests pass (tests/test_claims.py)
+> done: the resolver refuses ties (agent_mission/session.py)
+
+Write `done: <what> (<artifact>)` when you finish something real — the
+parenthesised path or file is what gets verified. Prose still works; it is
+just checked with blunter tools.
 
 **When you finish one, say which id and let them tick it.**
 

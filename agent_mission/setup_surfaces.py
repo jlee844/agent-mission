@@ -31,8 +31,14 @@ HOOK_CMD = "mission whereami --full 2>/dev/null || true"
 # into the conversation, and `mission signal` prints only when something
 # TRANSITIONED to waiting -- silent otherwise, so it cannot become wallpaper.
 SIGNAL_CMD = "mission signal 2>/dev/null || true"
+# C16: the claim verifier. Silent when everything checks out (98%+ of turns on
+# the corpus it was born on -- a one-corpus number), so unlike the Stop hook
+# C12d removed, this is not a second channel repeating the statusline: it
+# speaks only when a claim and the disk disagree. Self-locating: `mission` on
+# PATH, no absolute paths, any cwd.
+CLAIMS_CMD = "mission claims 2>/dev/null || true"
 SURFACES = ("slash command", "deny rules", "statusline",
-            "re-anchor hook", "attention hook")
+            "re-anchor hook", "attention hook", "claim hook")
 
 # Opt-in surfaces. Not in SURFACES because `mission setup` must never install
 # them unasked: one starts a server from your shell rc, the other pops OS
@@ -153,6 +159,10 @@ def status(settings: str | None = None, dest: str | None = None) -> list[dict]:
          "ok": "mission signal" in json.dumps(
              data.get("hooks", {}).get("UserPromptSubmit", [])),
          "detail": "UserPromptSubmit — one line when something newly awaits"},
+        {"name": "claim hook",
+         "ok": "mission claims" in json.dumps(
+             data.get("hooks", {}).get("Stop", [])),
+         "detail": "Stop — speaks only when a claim and the disk disagree"},
         {"name": "auto-board", "opt_in": True,
          "ok": rc_path().exists() and RC_MARK in rc_path().read_text(
              encoding="utf-8", errors="replace"),
@@ -222,6 +232,12 @@ def plan(name: str, settings: str | None = None,
             return {"changes": [], "why": "already current"}
         return {"changes": [f"hooks.UserPromptSubmit += {SIGNAL_CMD} "
                             f"(keeping your {len(ups)})"], "why": ""}
+    if name == "claim hook":
+        stops = data.get("hooks", {}).get("Stop", [])
+        if any(CLAIMS_CMD in json.dumps(h) for h in stops):
+            return {"changes": [], "why": "already current"}
+        return {"changes": [f"hooks.Stop += {CLAIMS_CMD} "
+                            f"(keeping your {len(stops)})"], "why": ""}
     if name == "board bookmark":
         f = home() / "board.html"
         return ({"changes": [], "why": "already current"} if f.exists()
@@ -305,6 +321,10 @@ def install(name: str, settings: str | None = None,
         data.setdefault("hooks", {}).setdefault("UserPromptSubmit", []).append(
             {"hooks": [{"type": "command", "command": SIGNAL_CMD,
                         "timeout": 5}]})
+    elif name == "claim hook":
+        data.setdefault("hooks", {}).setdefault("Stop", []).append(
+            {"hooks": [{"type": "command", "command": CLAIMS_CMD,
+                        "timeout": 10}]})
 
     backup = _write(sp, data)
     return {"applied": p["changes"], "why": "", "backup": backup}

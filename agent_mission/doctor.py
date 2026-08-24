@@ -161,6 +161,34 @@ def findings(base=None) -> list[dict]:
                 "detail": "`mission why objective` shows what it recorded",
             })
 
+        # C16b-4. Extractor blindness, reported where the user can see it.
+        # A verifier that extracts nothing is indistinguishable from one that
+        # found nothing wrong -- unless something says "zero claims came out
+        # of a session that plainly wrapped work up". The patterns were tuned
+        # on ONE corpus; this is how a different corpus finds out, locally.
+        try:
+            from .session import transcript_for
+            from . import missions as _Mx
+            from .claims import iter_claims as _ic
+            for _sid in _Mx.sessions_of(sid):
+                _tp = transcript_for(_sid)
+                if not _tp:
+                    continue
+                n = sum(1 for _ in _ic(_tp, _sid, tail_bytes=200_000))
+                if n == 0 and _tp.stat().st_size > 100_000:
+                    out.append({
+                        "sid": sid, "level": "note",
+                        "what": "no claims extracted",
+                        "detail": f"session {_sid[:8]} has a sizeable "
+                                  f"transcript and zero extractable claims — "
+                                  f"the extractor may be blind to its "
+                                  f"phrasing. ~/.agent-mission/"
+                                  f"claim-patterns.txt extends it",
+                    })
+                    break              # one note per mission, not per session
+        except Exception:
+            pass
+
         # 5. Proposals nobody has ruled on, with the age of the oldest.
         if m.unaccepted:
             ages = [e["at"] for e in evs if e.get("kind") == "proposed"

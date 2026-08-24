@@ -10,13 +10,12 @@ you cannot quietly forget it.**
 
 Two hours into a session there are 800 tool calls, a summary written by the
 thing being summarised, and no easy answer to *what was this for, and is it
-done?* `mission` writes the goal down once, somewhere the agent cannot edit,
-and keeps putting it back in front of you. Built for **Claude Code**;
-Cursor / VS Code planned.
+done?* `mission` writes the goal down once, somewhere the agent cannot
+edit, and keeps putting it back in front of you. Built for **Claude Code**.
 
 ```bash
 pip install git+https://github.com/jlee844/agent-mission
-mission setup      # slash command, deny rules, statusline, re-anchor hook, attention hook
+mission setup      # slash command, deny rules, statusline, re-anchor hook, attention hook, claim hook
 ```
 
 ## You touch this in three places
@@ -31,8 +30,9 @@ each with a suggested answer. Your agent transcribes; it never authors.
 Ship list sharing · 2/5 · detour: chasing a flaky test · 3 proposals waiting
 ```
 
-When something *newly* needs you, one line lands in the conversation itself,
-with the link. Edge-triggered: it fires on the change and is silent otherwise.
+When something *newly* needs you, one line lands in the conversation, with
+the link — and when a completion claim is not backed by the disk, a hook says
+so in the turn it happened. Both edge-triggered, both silent otherwise.
 
 **3. Click on the board.** `mission board` — every goal on one page: the plan
 as a tree, subgoals colour-grouped by domain, and what each session **actually
@@ -102,6 +102,7 @@ one per 10 minutes).
 | `observe` | record evidence, a decision, or a note |
 | `import <file>` / `delegate <id>` | land an external plan as proposals / spin one item into a subagent session |
 | `signal` | one line if something newly awaits you; silent otherwise (for hooks) |
+| `claims` | verify recent completion claims against the disk; silent when backed (for hooks) |
 | `doctor` | what is wrong with the missions themselves, not the install |
 | `board` | the shared board; at a tty it is writable (`--stop`) |
 | `setup` / `help <cmd>` / `version` | install; usage without running; the build + every live command |
