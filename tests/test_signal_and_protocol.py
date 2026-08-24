@@ -319,3 +319,29 @@ def test_the_page_recovers_from_a_board_restart_by_itself():
     from agent_mission.board import PAGE
     assert "reconn" in PAGE and "retrying" in PAGE
     assert "gone.remove()" in PAGE
+
+
+def test_a_branch_proposal_can_be_accepted_from_the_page():
+    """The career-hub dead end: one proposal with six children. accept-all
+    accepted the children; the PARENT was a branch row, branches had no
+    accept button, and the waiting list filtered branches out -- so the card
+    said "1 awaiting accept" forever above a button that collected zero
+    targets and silently returned. String-guarded on the page source."""
+    from agent_mission.board import PAGE
+    # The accept button is gated on !i.done only; tick stays leaf-only.
+    assert "WRITABLE && CODE() && !i.done)" in PAGE
+    assert "ask=v.filter(i=>!i.ok)" in PAGE, "branches show in waiting-on-you"
+    assert "found nothing to accept" in PAGE, "and the empty case says so"
+
+
+def test_the_page_carries_the_report_loop():
+    """A click that does nothing leaves the person with no thread to pull:
+    the evidence is in a console they never open. The page keeps its last 20
+    failures, toasts the newest, and the report button packages the lot for
+    pasting to Claude -- clipboard, not an endpoint, so it stays a person
+    handing evidence to their own agent."""
+    from agent_mission.board import PAGE
+    for needle in ("note_err", "unhandledrejection", "build_report",
+                   "PROBLEM REPORT", "paste this whole block"):
+        assert needle in PAGE, f"report loop lost {needle!r}"
+    assert "ERRS.length>20" in PAGE, "the ring is bounded"

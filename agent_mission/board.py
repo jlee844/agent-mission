@@ -549,6 +549,16 @@ border:1px solid var(--rule);border-radius:3px;background:none;color:var(--mut);
 
 /* The strip answers "is anything waiting on me" without reading a single
    card, which is the question you actually arrive with. */
+#errtoast{position:fixed;bottom:1rem;left:50%;transform:translate(-50%,150%);
+  transition:transform .25s;z-index:98;max-width:34rem;font-size:.8rem;
+  background:var(--card);border:1px solid var(--bad);color:var(--ink);
+  border-radius:7px;padding:.55rem .9rem;box-shadow:0 4px 14px #0004}
+#errtoast.up{transform:translate(-50%,0)}
+#repout{position:fixed;inset:10% 15%;z-index:97;overflow:auto;background:var(--card);
+  border:1px solid var(--rule);border-radius:9px;padding:1rem 1.2rem;font-size:.8rem}
+#repout pre{background:var(--soft);padding:.7rem;border-radius:5px;overflow:auto;
+  font-size:.68rem;line-height:1.5;user-select:all}
+#repout button{font-family:var(--mono);cursor:pointer}
 #reconn{position:fixed;top:0;left:0;right:0;z-index:99;text-align:center;
   font:600 .78rem/2.2 var(--mono);background:var(--bad);color:#fff;opacity:.92}
 #strip{border:1px solid var(--rule);background:var(--card);border-radius:7px;
@@ -628,12 +638,14 @@ flex:none;width:9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   </div>
   <span class=spacer></span>
   <button class=chip id=dense aria-pressed=false>compact</button>
+  <button class=chip id=report aria-pressed=false title="collect what just went wrong, for pasting to Claude">report</button>
   <span id=age></span>
 </header>
 <div id=strip></div>
 <div id=setup hidden></div>
 <div class=grid id=g></div>
 <div id=code hidden></div>
+<div id=repout hidden></div>
 <p class=none id=empty hidden>Nothing matches that.</p>
 <script>
 const esc=t=>(t||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
@@ -670,9 +682,9 @@ function row(i,flat,sid){
     <span class=box>${i.done?'▪':(i.ok?'▫':'?')}</span>
     <span class=txt title="${esc(i.t)}">${esc(i.t)}</span>
     ${i.roll?`<span class=roll><span class=mini><i style="width:${i.pct}%"></i></span>${i.roll}</span>`:''}
-    ${(WRITABLE && CODE() && !i.done && !i.branch)?
+    ${(WRITABLE && CODE() && !i.done)?
        (!i.ok? `<button class="act ok" data-do=accept data-s="${sid}" data-i="${i.id}">accept</button>`
-             : `<button class=act data-do=done data-s="${sid}" data-i="${i.id}">tick</button>`)
+             : (!i.branch? `<button class=act data-do=done data-s="${sid}" data-i="${i.id}">tick</button>`:''))
       :''}
   </li>`;
 }
@@ -683,13 +695,60 @@ let WRITABLE=false;
 // nothing else on this machine can obtain it.
 const CODE = () => localStorage.getItem('mission-code') || '';
 
+// ---- the customer-service loop ----------------------------------------
+// When a click does nothing, the person has no thread to pull: the evidence
+// is in a console they never open, on a page that cannot file its own bug.
+// So the page keeps the last 20 things that went wrong, shows the newest as
+// a toast, and the report button packages the lot for PASTING TO CLAUDE --
+// the agent then reads the code, not the person. Clipboard, not an endpoint:
+// a report the page could POST is a report an agent could fabricate or
+// harvest, and this must stay a person handing evidence to their own agent.
+const ERRS = [];
+function note_err(msg){
+  ERRS.push({at:new Date().toISOString().slice(11,19), msg:String(msg).slice(0,300)});
+  if (ERRS.length>20) ERRS.shift();
+  let t = document.getElementById('errtoast');
+  if(!t){ t=document.createElement('div'); t.id='errtoast'; document.body.append(t); }
+  t.textContent = ERRS[ERRS.length-1].msg + ' — the report button (top right) packages this for Claude';
+  t.classList.add('up');
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('up'), 6000);
+}
+window.addEventListener('error', e=>note_err('js error: '+(e.message||e.type)));
+window.addEventListener('unhandledrejection', e=>note_err('unhandled: '+(e.reason&&e.reason.message||e.reason)));
+async function build_report(){
+  let ident={}; try{ ident=await (await fetch('/api/identity')).json() }catch(e){ ident={unreachable:true} }
+  const cards=[...document.querySelectorAll('.card')].map(c=>{
+    const t=c.querySelector('.obj'); const w=c.querySelector('.warn.ask');
+    return `${t?t.textContent.slice(0,40):'?'} | ${w?w.textContent.trim().slice(0,40):'no pending'}`});
+  return [
+    'MISSION BOARD PROBLEM REPORT (paste this whole block to Claude)',
+    `when: ${new Date().toISOString()}`,
+    `board: pid ${ident.pid||'?'} v${ident.version||'?'} writes=${ident.writes} `+
+      `${ident.unreachable?'UNREACHABLE':''}`,
+    `page: writable=${WRITABLE} code_entered=${!!CODE()}`,
+    `cards:`, ...cards.map(x=>'  '+x),
+    ERRS.length? 'recent problems (newest last):' : 'recent problems: none recorded',
+    ...ERRS.map(e=>`  ${e.at} ${e.msg}`),
+    'ask: inspect the board code for why the above happened',
+  ].join('\\n');
+}
+document.getElementById('report').addEventListener('click', async ()=>{
+  const txt = await build_report();
+  let ok=false; try{ await navigator.clipboard.writeText(txt); ok=true }catch(e){}
+  const o=document.getElementById('repout'); o.hidden=false;
+  o.innerHTML = `<b>${ok?'copied to clipboard':'clipboard blocked — copy the block below'}</b> — `+
+    `paste it into your Claude session and it will investigate.`+
+    `<pre>${esc(txt)}</pre><button onclick="this.parentElement.hidden=true">close</button>`;
+});
+// -----------------------------------------------------------------------
+
 async function act(action, session, ids, text){
   const r = await fetch('/', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({code: CODE(), action, session, ids, text: text||''})});
   if (!r.ok){
     const e = await r.json().catch(()=>({error:'failed'}));
     if (r.status === 403) localStorage.removeItem('mission-code');
-    alert(e.error || 'failed');
+    note_err(`${action} failed: ${e.error||r.status}`);
   }
   tick();
   return r.ok;
@@ -842,8 +901,8 @@ async function tick(){
          ${(s.pending_accept && !(WRITABLE&&CODE()))?`
            <div class=why>To accept them, in your own terminal:</div>
            <div class=howto>mission accept --pending --on ${esc(s.id)}</div>`:''}
-         ${(()=>{const v=visible(s.tree), ask=v.filter(i=>!i.ok&&!i.branch),
-                  agreed=v.filter(i=>i.ok||i.branch);
+         ${(()=>{const v=visible(s.tree), ask=v.filter(i=>!i.ok),
+                  agreed=v.filter(i=>i.ok);
             // Waiting-on-you sits ABOVE the agreed work. Mixed into the plan a
             // proposal reads as a task you have already signed up for, and the
             // one thing on a card that asks something of you should not have to
@@ -946,6 +1005,7 @@ document.getElementById('g').addEventListener('click', e=>{
     const card = b.closest('.card');
     const ids = [...card.querySelectorAll('[data-do=accept]')].map(x=>x.dataset.i);
     if (ids.length) act('accept', sid, ids);
+    else note_err('accept all found nothing to accept on this card — likely a bug worth reporting');
     return;
   }
   act(b.dataset.do, sid, [b.dataset.i]);
