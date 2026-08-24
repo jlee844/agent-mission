@@ -132,9 +132,13 @@ the judgment out loud, in one or two lines.** Three outcomes:
 
 - **On the plan** → "this is <id>" and proceed.
 - **Off-plan but more pressing** → say exactly that: "the plan's next step is
-  X, but this is more pressing because <reason> — proposing it and
-  continuing." Then `mission propose` it (or `mission detour` for a true side
-  quest) and do the work.
+  X, but this is more pressing because <reason>" — then pick the right record
+  BEFORE the work starts. The rule: **if it will be ticked when finished, it
+  is a proposal; if it will simply be over, it is a detour.**
+  - A deliverable the plan should carry → `mission propose "<it>"`, continue.
+  - A broken tool, a flaky test, an environment fix, an investigation — work
+    that serves the plan but is not plan-worthy →
+    `mission detour "<what pulled you off>"`, do it, then `mission return`.
 - **The plan seems righter** → push back once, with the reason: "the plan says
   X next, and I think X should come first because <reason> — want Y anyway?"
   The human's answer settles it. **One pushback, then comply** — never
@@ -230,7 +234,9 @@ objective, the constraints, and the item you were on, which is the reminder the
 person actually needs at that moment. Nesting is fine.
 
 Do not infer a detour from what you are doing. Declare one when you choose to
-go off, or leave it alone.
+go off, or leave it alone. And the tick rule from the protocol applies here
+too: a detour is work that will simply be *over* when done — if the plan
+should carry it as a tickable item, it is a proposal, not a detour.
 
 ## Composing a command they have to run themselves
 
