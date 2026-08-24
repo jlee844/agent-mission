@@ -251,3 +251,26 @@ def test_board_not_at_a_tty_still_detaches_read_only(monkeypatch, tmp_path,
     MM.main(["board"])
     out = capsys.readouterr().out
     assert "read-only from here" in out and "your own terminal" in out
+
+
+def test_board_actions_reach_a_migrated_mission(tmp_path, monkeypatch):
+    """The board addresses cards by mission id (missions/<id>/), and act()
+    resolved only the pre-inversion session layout -- so with the write code
+    finally working, the first Accept ever clicked answered "no mission".
+    Third member of one family: doctor audited the abandoned twins, choices()
+    forgot the legacy stores, and apply() forgot the migrated ones."""
+    from agent_mission import actions, missions as M
+    from agent_mission.store import MissionStore
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    st = MissionStore(M.missions_root() / "career-hub")
+    st.create("career-hub", "/repo", "the goal", by="human", typed_by="human")
+    pid = st.propose("an idea", by="agent")["item_id"]
+
+    sess = actions.Session(enabled=True)
+    out = actions.apply(sess, sess.code, "accept", "career-hub", ids=[pid])
+    assert out["ok"] and pid in out["ids"], out
+    assert st.load().leaves[0].accepted
+
+    out = actions.apply(sess, sess.code, "done", "career-hub", ids=[pid])
+    assert out["ok"]
+    assert st.load().leaves[0].done

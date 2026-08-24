@@ -83,25 +83,23 @@ def apply(session: Session, code: str, action: str, sid: str,
         from . import setup_surfaces as S
         return S.install(text)
 
-    st = MissionStore(root_for(sid))
+    # The board addresses cards by MISSION id -- missions/<id>/ -- and this
+    # resolved only the pre-inversion session layout, so every Accept clicked
+    # on a migrated mission answered "no mission". Third member of the same
+    # family: doctor audited the abandoned twins, choices() forgot the legacy
+    # stores, and now this. One rule everywhere: missions/ first, legacy as
+    # the fallback.
+    from . import missions as _M
+    d = _M.missions_root() / sid
+    st = MissionStore(d if d.exists() else root_for(sid))
     if st.load() is None:
         raise ValueError(f"no mission for {sid}")
 
     if action == "archive":
-        st = MissionStore(root_for(sid))
-        from . import missions as _M
-        d = _M.missions_root() / sid
-        if d.exists():
-            st = MissionStore(d)
-        if st.load() is None:
-            raise ValueError(f"no mission for {sid}")
         st.archive(by="human")
         return {"ok": True, "did": "archive"}
 
     if action == "ack":
-        st = MissionStore(root_for(sid))
-        if st.load() is None:
-            raise ValueError(f"no mission for {sid}")
         st.acknowledge(text, by="human")
         return {"ok": True, "did": "ack", "finding": text}
 
