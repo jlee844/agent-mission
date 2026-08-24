@@ -1528,6 +1528,33 @@ def cmd_board(a) -> int:
     if a.foreground:
         serve(a.port)
         return 0
+
+    # A person at a keyboard typing `mission board` wants the buttons. This
+    # used to hand them to ensure() anyway, which detaches the server with its
+    # stdout in a log file -- so every path a human was TOLD to use produced a
+    # read-only board, and the write code existed only on a flag nobody was
+    # told about. Jonathan followed the README twice and got no buttons twice.
+    try:
+        at_tty = sys.stdout.isatty()
+    except Exception:
+        at_tty = False
+    if at_tty:
+        rec = board_running()
+        if rec:
+            from .daemon import identify
+            ident = identify(int(rec.get("port", 0))) or {}
+            if ident.get("writes"):
+                print(f"\n  board: http://127.0.0.1:{rec['port']}"
+                      f"  (already running, writable)\n")
+                return 0
+            # Read-only, or too old to say. A person asking for the board
+            # wants the writable one, and the read-only one cannot be
+            # upgraded in place -- the code must print to THIS terminal.
+            board_stop()
+            print("  replacing the read-only board with a writable one…")
+        serve(a.port)                      # blocks; ctrl-c to stop
+        return 0
+
     rec = board_running()
     url = ensure_board(a.port)
     if not url:
@@ -1535,6 +1562,8 @@ def cmd_board(a) -> int:
         return 1
     print(f"\n  board: {url}"
           f"{'  (already running)' if rec else '  (started, runs in the background)'}")
+    print("  read-only from here — run `mission board` in your own terminal"
+          " for the buttons")
     print("  `mission board --stop` to shut it down\n")
     if a.open:
         subprocess.run(["open", url], check=False)

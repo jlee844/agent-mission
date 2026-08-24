@@ -979,6 +979,10 @@ class _H(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({
                 "mission_board": True, "pid": os.getpid(),
                 "home": str(_missions_home()), "version": __version__,
+                # Whether this board can take writes at all -- NOT the code.
+                # `mission board` at a tty reads this to decide between "use
+                # the one that is up" and "replace it with a writable one".
+                "writes": bool(WRITES and WRITES.enabled),
             }).encode(), "application/json")
         if self.path.startswith("/api/setup"):
             # C10c: a read-only board serves NO setup route at all. Hiding the

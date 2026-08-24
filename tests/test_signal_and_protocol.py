@@ -181,3 +181,67 @@ def test_the_attention_hook_is_a_default_surface(tmp_path, monkeypatch,
     ups = J.dumps(data["hooks"]["UserPromptSubmit"])
     assert "mission signal" in ups
     assert "echo mine" in ups, "appended, never replaced"
+
+
+def test_board_at_a_tty_serves_writable_not_detached(monkeypatch, tmp_path):
+    """Plain `mission board` handed a person to ensure(), which detaches the
+    server with stdout in a log file -- isatty False, read-only, no code. So
+    every path a human was TOLD to use produced a board with no buttons, and
+    the write code existed only behind --foreground, which no doc mentioned.
+    Followed twice, betrayed twice, on the real machine."""
+    from agent_mission import __main__ as MM
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    calls = []
+    monkeypatch.setattr(MM, "board_running", lambda: None)
+    monkeypatch.setattr(MM, "ensure_board",
+                        lambda port: calls.append(("ensure", port)) or "url")
+    import agent_mission.board as B
+    monkeypatch.setattr(B, "serve",
+                        lambda port, writable=None: calls.append(("serve", port)))
+    monkeypatch.setattr(MM.sys.stdout, "isatty", lambda: True)
+
+    MM.main(["board"])
+    assert calls == [("serve", 8976)], \
+        "a person at a keyboard gets the in-terminal, writable board"
+
+
+def test_board_at_a_tty_replaces_a_read_only_board(monkeypatch, tmp_path,
+                                                   capsys):
+    """The board that is up cannot be upgraded in place: its code must print
+    to the terminal the person is sitting at. So a read-only (or too-old-to-
+    say) board is stopped and replaced, and a writable one is pointed at."""
+    from agent_mission import __main__ as MM
+    import agent_mission.board as B
+    import agent_mission.daemon as D
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    calls = []
+    monkeypatch.setattr(MM, "board_running", lambda: {"port": 8976, "pid": 1})
+    monkeypatch.setattr(MM, "board_stop", lambda: calls.append("stop") or True)
+    monkeypatch.setattr(B, "serve",
+                        lambda port, writable=None: calls.append("serve"))
+    monkeypatch.setattr(MM.sys.stdout, "isatty", lambda: True)
+
+    monkeypatch.setattr(D, "identify", lambda port: {"writes": False})
+    MM.main(["board"])
+    assert calls == ["stop", "serve"], "read-only is replaced, not reused"
+
+    calls.clear()
+    monkeypatch.setattr(D, "identify", lambda port: {"writes": True})
+    MM.main(["board"])
+    assert calls == [], "a writable board is pointed at, never restarted"
+    assert "writable" in capsys.readouterr().out
+
+
+def test_board_not_at_a_tty_still_detaches_read_only(monkeypatch, tmp_path,
+                                                     capsys):
+    """The path `mission init` and agents use is unchanged -- and its output
+    now says the board it started has no buttons, instead of implying done."""
+    from agent_mission import __main__ as MM
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    monkeypatch.setattr(MM, "board_running", lambda: None)
+    monkeypatch.setattr(MM, "ensure_board", lambda port: "http://127.0.0.1:8976")
+    monkeypatch.setattr(MM.sys.stdout, "isatty", lambda: False)
+
+    MM.main(["board"])
+    out = capsys.readouterr().out
+    assert "read-only from here" in out and "your own terminal" in out
