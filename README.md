@@ -11,11 +11,11 @@ you cannot quietly forget it.**
 Two hours into a session there are 800 tool calls, a summary written by the
 thing being summarised, and no easy answer to *what was this for, and is it
 done?* `mission` writes the goal down once, somewhere the agent cannot edit,
-and keeps putting it back in front of you.
+and keeps putting it back in front of you. Built for **Claude Code**;
+Cursor / VS Code planned.
 
 ```bash
-git clone https://github.com/jlee844/agent-mission && cd agent-mission
-pip install -e .
+pip install git+https://github.com/jlee844/agent-mission
 mission setup      # slash command, deny rules, statusline, re-anchor hook, attention hook
 ```
 
@@ -58,6 +58,14 @@ Everything below the line is for the agent, or for scripting.
 Enforced in the store, at the terminal, and by Claude Code's deny rules —
 [SECURITY.md](docs/SECURITY.md) says how, and what that does *not* cover.
 
+### Why not just a TODO.md?
+
+- **Every plan file is agent-writable** — "done" is self-reported by the thing
+  being graded. Here, ticking is yours.
+- **A plan file stops at a file nothing reads back.** This one comes to you.
+- **Keep your planner:** `import` lands writing-plans / GSD / Kiro markdown as
+  proposals, and diffs on re-import.
+
 ---
 
 # Agent & scripting reference
@@ -68,6 +76,8 @@ Enforced in the store, at the terminal, and by Claude Code's deny rules —
 of replacing them, wraps an existing statusline keeping your original verbatim,
 and refuses to touch anything unless a person is at the keyboard. Re-running it
 is always the complete fix. `mission setup --check` shows what is live.
+(Contributing? `git clone` and `pip install -e ".[dev]"` instead of the
+one-liner.)
 
 Opt-in, never installed by default: `--auto-board` starts a writable board
 from your shell rc at login (one code paste per day, buttons thereafter);
@@ -109,9 +119,9 @@ mission accept --pending --on career
 
 The session id in the environment says *who is writing*, never what is meant.
 The working directory says neither and is not consulted — a cwd router existed
-once and wrote a career objective onto an unrelated mission. When nothing
-names a goal, `mission` refuses and lists yours, each with a paste-ready
-command.
+once, misrouted a real write, and died ([DESIGN.md](docs/DESIGN.md) has the
+post-mortem). When nothing names a goal, `mission` refuses and lists yours,
+each with a paste-ready command.
 
 ## The board, precisely
 
