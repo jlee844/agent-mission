@@ -274,3 +274,48 @@ def test_board_actions_reach_a_migrated_mission(tmp_path, monkeypatch):
     out = actions.apply(sess, sess.code, "done", "career-hub", ids=[pid])
     assert out["ok"]
     assert st.load().leaves[0].done
+
+
+def test_group_hues_are_deterministic_and_inherited():
+    """Colour is the GROUP: a child carries its top-level subgoal's hue, the
+    keyword table gives the usual domains the same hue on every mission, and
+    the fallback is a hash -- stable across processes, honest about being
+    arbitrary. A substring table is not a classifier: no scores, nothing
+    learned (the F34 law)."""
+    from agent_mission.board import DOMAIN_HUES, _hue
+    assert _hue("Backend API for lists") == 155
+    assert _hue("Frontend board display") == 210
+    assert _hue("Ship to the App Store") == 30
+    assert _hue("xyzzy plugh") == _hue("xyzzy plugh"), "hash path is stable"
+    hues = [h for h, _ in DOMAIN_HUES]
+    assert len(hues) == len(set(hues)), "two domains sharing a hue is a bug"
+
+
+def test_tree_rows_carry_the_parents_hue(tmp_path, monkeypatch):
+    from agent_mission.board import _tree
+    from agent_mission.store import MissionStore, root_for
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
+    st = MissionStore(root_for("s"))
+    st.create("s", "/repo", "goal", by="human", typed_by="human")
+    top = st.propose("Backend work", by="human")["item_id"]
+    st.accept(top, by="human")
+    kid = st.propose("polish the docs for it", parent=top, by="human")["item_id"]
+    st.accept(kid, by="human")
+
+    rows = _tree(st.load())
+    parent = next(r for r in rows if r["t"] == "Backend work")
+    child = next(r for r in rows if "polish" in r["t"])
+    assert parent["hue"] == 155
+    assert child["hue"] == 155, ("the child says 'docs' but the colour is the "
+                                 "group, so it inherits the subgoal's hue")
+
+
+def test_the_page_recovers_from_a_board_restart_by_itself():
+    """The board restarts under the page routinely -- every upgrade, every
+    switch to writable. The old catch silently returned, leaving a page that
+    looked alive and was three restarts stale. String-guard the recovery the
+    same way the JS syntax test works: the page must show the state and keep
+    polling, and remove the banner when the board answers again."""
+    from agent_mission.board import PAGE
+    assert "reconn" in PAGE and "retrying" in PAGE
+    assert "gone.remove()" in PAGE

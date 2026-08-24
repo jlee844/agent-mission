@@ -22,6 +22,37 @@ def _slug(cwd: str) -> str:
     return "-" + cwd.replace("/", "-").lstrip("-")
 
 
+# Group colour, chosen HERE so both renderers agree and nothing infers.
+# A subgoal names its domain more often than not; a small keyword table maps
+# the usual ones to a stable hue, so "backend" is the same green in every
+# mission on the board. Anything the table does not name hashes its own text
+# to a hue -- deterministic, stable across reorderings, and honest about
+# being arbitrary. First match wins; matching is a substring test, not a
+# classifier: no scores, no thresholds, nothing learned (the F34 law).
+DOMAIN_HUES = (
+    (155, ("backend", "back end", "server", "api", "db", "database",
+           "pipeline", "ingest")),
+    (210, ("frontend", "front end", "ui", "page", "board", "display",
+           "render", "css", "design", "layout")),
+    (265, ("test", "verify", "check", "review", "audit", "eval")),
+    (30,  ("ship", "release", "publish", "deploy", "submit", "upload",
+           "build and", "app store")),
+    (330, ("doc", "readme", "write", "spec", "plan", "polish", "word")),
+    (95,  ("feature", "adjust", "fix", "refactor", "clean")),
+)
+
+
+def _hue(text: str) -> int:
+    t = (text or "").lower()
+    for hue, words in DOMAIN_HUES:
+        if any(w in t for w in words):
+            return hue
+    # No table entry: hash the text itself. zlib.crc32 is stable across
+    # processes and Python versions, which hash() deliberately is not.
+    import zlib
+    return zlib.crc32(t.encode("utf-8")) % 360
+
+
 def _tree(m) -> list[dict]:
     """The plan as nested rows the page can render without re-deriving it.
 
@@ -30,11 +61,15 @@ def _tree(m) -> list[dict]:
     what is left fits on it; the finished rows stay one click away rather than
     disappearing, since "what did we already do" is a real question.
     """
-    def walk(nodes, depth=0, guides=(), hidden=False):
+    def walk(nodes, depth=0, guides=(), hidden=False, hue=None):
         out = []
         for idx, n in enumerate(nodes):
             last = idx == len(nodes) - 1
             done = n.complete if n.children else n.item.done
+            # Colour is the GROUP, so a child carries its top-level subgoal's
+            # hue: the point is telling the backend block from the frontend
+            # block at a glance, not painting every row its own shade.
+            h = hue if hue is not None else _hue(n.item.text)
             out.append({
                 "id": n.item.id, "t": n.item.text, "d": depth,
                 "done": done,
@@ -44,9 +79,10 @@ def _tree(m) -> list[dict]:
                 "pct": round(100 * n.done_count / n.total) if n.children and n.total else 0,
                 "guides": list(guides), "last": last,
                 "hid": hidden or done,
+                "hue": h,
             })
             out.extend(walk(n.children, depth + 1, (*guides, not last),
-                            hidden or done))
+                            hidden or done, h))
         return out
     return walk(m.tree())
 
@@ -385,6 +421,25 @@ overflow:hidden}
 padding-left:.6rem;display:flex;align-items:center;gap:.4rem}
 .chk .mini{width:2.4rem;height:3px;background:var(--soft);border-radius:2px;overflow:hidden}
 .chk .mini i{display:block;height:100%;background:var(--ok)}
+/* Group colour: hue = which subgoal a row belongs to, deterministic, set
+   server-side. Structure only -- guides, box, header, bar -- and muted, so
+   the single warm accent keeps its monopoly on "waiting on you". A proposal's
+   `?` stays accent-coloured even inside a hued group for exactly that
+   reason. */
+.chk li.hued .g{color:hsl(var(--grp) 22% 52% / .75)}
+.chk li.hued .box{color:hsl(var(--grp) 38% 48%)}
+.chk li.hued.branch .txt{color:hsl(var(--grp) 30% 42%)}
+.chk li.hued.branch .box{color:hsl(var(--grp) 45% 45%)}
+.chk li.hued .mini i{background:hsl(var(--grp) 40% 48%)}
+@media(prefers-color-scheme:dark){
+  .chk li.hued .g{color:hsl(var(--grp) 22% 48% / .8)}
+  .chk li.hued .box{color:hsl(var(--grp) 40% 58%)}
+  .chk li.hued.branch .txt{color:hsl(var(--grp) 42% 68%)}
+  .chk li.hued.branch .box{color:hsl(var(--grp) 48% 60%)}
+  .chk li.hued .mini i{background:hsl(var(--grp) 45% 55%)}
+}
+.chk li.hued.done .box{color:var(--ok)}
+.chk li.hued.prop .box{color:var(--bad)}
 .box{font-family:var(--mono);color:var(--mut);flex:none}
 /* Strike the TEXT, never the row: a row-level rule also struck the progress
    badge, so a finished branch read as "1/1" with a line through the number. */
@@ -494,6 +549,8 @@ border:1px solid var(--rule);border-radius:3px;background:none;color:var(--mut);
 
 /* The strip answers "is anything waiting on me" without reading a single
    card, which is the question you actually arrive with. */
+#reconn{position:fixed;top:0;left:0;right:0;z-index:99;text-align:center;
+  font:600 .78rem/2.2 var(--mono);background:var(--bad);color:#fff;opacity:.92}
 #strip{border:1px solid var(--rule);background:var(--card);border-radius:7px;
 padding:.6rem .9rem;margin-bottom:1.1rem;font-size:.85rem;display:flex;
 gap:1.1rem;align-items:center;flex-wrap:wrap}
@@ -601,7 +658,14 @@ function row(i,flat,sid){
   // against nothing.
   const guides = flat? '' : i.guides.slice(1).map(g=>`<span class=g>${g?'│':' '}</span>`).join('');
   const elbow  = (!flat && i.d)? `<span class=g>${i.last?'└':'├'}</span>` : '';
-  return `<li class="${i.branch?'branch':''} ${i.done?'done':(i.ok?'':'prop')}">
+  // The hue is the GROUP -- every row under one top-level subgoal shares it,
+  // so the backend block reads as one thing without reading a word. It is
+  // structure, never attention: desaturated, and only on the skeleton
+  // (guides, box, header, bar). The one warm accent still means exactly
+  // "waiting on you" and nothing else.
+  const hu = (typeof i.hue==='number')? `--grp:${i.hue}` : '';
+  return `<li style="${hu}" class="${i.branch?'branch':''} ${
+      i.done?'done':(i.ok?'':'prop')} ${typeof i.hue==='number'?'hued':''}">
     ${guides}${elbow}
     <span class=box>${i.done?'▪':(i.ok?'▫':'?')}</span>
     <span class=txt title="${esc(i.t)}">${esc(i.t)}</span>
@@ -692,7 +756,19 @@ const passes = s =>
                               || (s.review||[]).length)));
 
 async function tick(){
-  let payload; try{ payload=await (await fetch('/data')).json() }catch(e){ return }
+  // The board restarts under this page routinely -- every upgrade, and every
+  // switch from read-only to writable. The silent-return here left a page
+  // that looked alive and was three restarts stale, with nothing but console
+  // errors to say so. Say it on the page, keep polling, recover on our own.
+  let payload; try{ payload=await (await fetch('/data')).json() }
+  catch(e){
+    let b = document.getElementById('reconn');
+    if(!b){ b = document.createElement('div'); b.id='reconn';
+      b.textContent = 'board unreachable — it may be restarting; retrying…';
+      document.body.prepend(b); }
+    return;
+  }
+  const gone = document.getElementById('reconn'); if(gone) gone.remove();
   const all = payload.rows; WRITABLE = payload.writable;
   if (payload.home){
     const w = document.getElementById('strip');

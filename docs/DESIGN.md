@@ -125,6 +125,15 @@ inform.**
 previously also meant a failed tool call and a health warning — three unrelated
 facts competing for one alarm, so none of them read as urgent.
 
+The group hues added later do not break this rule, and the distinction is
+worth stating: **hue is structure, the accent is attention.** Every row under
+one top-level subgoal shares a muted hue — a keyword table gives the usual
+domains (backend, frontend, shipping, docs…) the same colour on every mission,
+and anything unnamed hashes its own text, deterministically. The hues live
+only on the tree's skeleton and are too desaturated to alarm; a proposal's
+`?` stays accent-coloured even inside a hued group. The table is a substring
+test, not a classifier — no scores, no thresholds, nothing learned.
+
 **Finished work sinks, then folds.** What is left is what you act on; it should
 not have to be found among ticked boxes.
 
