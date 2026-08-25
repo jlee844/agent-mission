@@ -802,12 +802,39 @@ def cmd_whereami(a) -> int:
     n = len(m.unaccepted)
     if n:
         bits.append(f"{n} proposal{'' if n == 1 else 's'} waiting")
+    ns = len(m.suggested)
+    if ns:
+        # C17: agreed work the agent says is finished. A different word from
+        # "waiting" because the action is different -- confirm, not rule.
+        bits.append(f"{ns} tick{'' if ns == 1 else 's'} suggested")
     # The link, re-read every render. A port hop updates it by construction,
     # which is the whole reason it is not printed once and remembered.
     rec = board_running()
     if rec:
         bits.append(f"http://127.0.0.1:{rec['port']}")
     print(" · ".join(bits))
+    return 0
+
+
+def cmd_claims_done(a) -> int:
+    """C17: suggest an item is finished, with the claim that would prove it.
+
+    Observable tier -- the agent may run this freely. It is the proposal flow
+    and the claim verifier composed: the text carries the legible format
+    (`done: <what> (<artifact>)`) bound to an item id, the board attaches the
+    disk's verdict, and the human's click is still the only thing that moves
+    the counter."""
+    mid, st = _target(a, "claims-done")
+    if mid is None:
+        return 1
+    who = "human" if _at_a_keyboard() else "agent"
+    try:
+        st.claim_done(a.item_id, a.text, by=who)
+    except ValueError as e:
+        print(f"  refused: {e}")
+        return 1
+    print(f"  suggested: [{a.item_id}] awaits the human's confirm on the board")
+    print(f"  → {_where(mid)}")
     return 0
 
 
@@ -963,7 +990,7 @@ def _print_tree(nodes, depth: int = 0, prefix: str = "",
     for n, last in ((n, i == len(nodes) - 1) for i, n in enumerate(nodes)):
         item = n.item
         mark = "x" if (n.complete if n.children else item.done) else (
-            " " if item.accepted else "+")
+            ("◦" if item.claimed_done else " ") if item.accepted else "+")
         elbow = "" if depth == 0 else ("└─ " if last else "├─ ")
         roll = f"   {n.done_count}/{n.total}" if n.children else ""
         # A delegated item is being worked on in another session. Without this
@@ -1766,6 +1793,13 @@ def _build() -> argparse.ArgumentParser:
     dg.add_argument("--to", default=None, metavar="NAME",
                     help="short name for the child mission")
     dg.set_defaults(fn=cmd_delegate)
+
+    cd = sub.add_parser("claims-done", parents=[common],
+                        help="suggest an accepted item is finished "
+                             "(claim text: done: <what> (<artifact>))")
+    cd.add_argument("item_id", metavar="ID")
+    cd.add_argument("text")
+    cd.set_defaults(fn=cmd_claims_done)
 
     cl = sub.add_parser("claims", parents=[common],
                         help="verify recent completion claims against disk (hook)")

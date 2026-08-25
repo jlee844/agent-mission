@@ -102,6 +102,7 @@ one per 10 minutes).
 | `observe` | record evidence, a decision, or a note |
 | `import <file>` / `delegate <id>` | land an external plan as proposals / spin one item into a subagent session |
 | `signal` | one line if something newly awaits you; silent otherwise (for hooks) |
+| `claims-done <id> <text>` | suggest an accepted item is finished; the board attaches the disk's verdict |
 | `claims` | verify recent completion claims against the disk; silent when backed (for hooks) |
 | `doctor` | what is wrong with the missions themselves, not the install |
 | `board` | the shared board; at a tty it is writable (`--stop`) |

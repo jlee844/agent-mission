@@ -85,6 +85,10 @@ class Item:
     proposed_by: str = "agent"
     accepted: bool = False
     parent: str | None = None
+    # C17: the agent's claim that this item is finished -- the legible-claim
+    # text, so the verifier can bind a disk verdict to this exact row. A
+    # SUGGESTION, never a state change: `done` still has one writer.
+    claimed_done: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -225,6 +229,12 @@ class Mission:
         """Agent-proposed items you have not signed off."""
         return [i for i in self.items if not i.accepted]
 
+    @property
+    def suggested(self) -> list[Item]:
+        """C17: agreed work the agent claims is finished, awaiting your tick."""
+        return [i for i in self.items
+                if i.accepted and not i.done and i.claimed_done]
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -348,6 +358,27 @@ class MissionStore:
         self._require(item_id)
         return self._append("completed", by, item_id=item_id)
 
+    def claim_done(self, item_id: str, text: str, by: str = "agent") -> dict:
+        """C17: the agent says an item is finished; the human still ticks.
+
+        Observable tier -- recording a claim is not deciding -- but only on an
+        item that is ACCEPTED and OPEN: claiming completion of a proposal
+        nobody agreed to would smuggle it toward the counter, and re-claiming
+        a finished item is noise. Idempotent per item: a new claim replaces
+        the old one, so a corrected claim does not stack."""
+        m = self.load()
+        if m is None:
+            raise NoMissionError(self.root.name)
+        d = next((d for d in m.checklist if d["id"] == item_id), None)
+        if d is None:
+            raise NoSuchItemError(item_id)
+        if not d.get("accepted"):
+            raise ValueError("not accepted — propose/accept it first; "
+                             "claims-done is for agreed work")
+        if d.get("done"):
+            raise ValueError("already ticked — nothing to suggest")
+        return self._append("claims_done", by, item_id=item_id, text=text)
+
     def remove(self, item_id: str, by: str) -> dict:
         """Drop an item from the plan. A soft delete: the event log keeps it.
 
@@ -466,6 +497,12 @@ class MissionStore:
                 for d in m.checklist:
                     if d["id"] == ev["item_id"]:
                         d["done"] = True
+                        # The human's real tick supersedes the suggestion.
+                        d["claimed_done"] = ""
+            elif k == "claims_done":
+                for d in m.checklist:
+                    if d["id"] == ev["item_id"] and not d["done"]:
+                        d["claimed_done"] = ev.get("text", "")
             elif k == "archived":
                 m.archived = True
             elif k == "unarchived":

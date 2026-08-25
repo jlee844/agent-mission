@@ -115,3 +115,23 @@ board down. This was not true until an outside review found it.
 
 **Everything is local.** The board binds `127.0.0.1`. Transcripts are read from
 `~/.claude/projects` and never leave the machine.
+
+## Claims-done, and what a disk verdict does not prove
+
+C17 lets an agent suggest an item is finished, carrying a claim the verifier
+checks against the filesystem. The honest limits:
+
+- **Disk corroboration is evidence, not proof.** A claim can name an artifact
+  that exists and still not satisfy the criterion — a file can be present and
+  wrong. The grey verdict tells you the agent's story is *consistent with*
+  the disk, never that the work is right.
+- **The sweep button is a convenience over your judgment, not a substitute.**
+  "Confirm all backed" ticks only rows whose every named artifact the server
+  itself re-verified — the page's opinion is not trusted — and unbacked rows
+  never sweep, because those are precisely the ones that need your eyes.
+- **No auto-confirm, ever. No timer promotes a suggestion.** `done` has one
+  writer, and the counter's meaning — *the human assessed this* — is the
+  product. A suggestion that ages is still a suggestion.
+- **The read-only board serves no confirm route.** The write endpoint refuses
+  before any action is parsed, so this is the absence of an endpoint, not the
+  absence of a button (the C10c rule).

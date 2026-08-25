@@ -182,6 +182,17 @@ is one you stop reading.
 When you are unsure, propose it and say you were unsure. A `[+]` they delete
 costs one command; work that never appears costs them the ability to check.
 
+**When YOU believe an item is finished, say so with `claims-done`.** It is
+observable-tier — run it freely — and it is a suggestion, never a tick:
+
+```bash
+mission claims-done 4a1c9e02 "done: 251 tests pass (tests/test_claims.py)"
+```
+
+The board attaches the disk's verdict to that row and the human confirms with
+one click. **Propose for new work, claims-done for finished work, `done`
+never** — the counter has one writer and it is not you.
+
 **State completion by naming the artifact.** A Stop hook checks completion
 claims against the disk, and a claim that names its evidence is checkable on
 any corpus, in anyone's phrasing:

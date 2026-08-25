@@ -61,11 +61,20 @@ def _tree(m) -> list[dict]:
     what is left fits on it; the finished rows stay one click away rather than
     disappearing, since "what did we already do" is a real question.
     """
+    from .claims import verdict_for as _verdict
+
     def walk(nodes, depth=0, guides=(), hidden=False, hue=None):
         out = []
         for idx, n in enumerate(nodes):
             last = idx == len(nodes) - 1
             done = n.complete if n.children else n.item.done
+            # C17: the agent's claims-done suggestion, with the DISK's verdict
+            # attached at render time -- so the row the human confirms shows
+            # the evidence, not the agent's confidence.
+            cd = None
+            if n.item.claimed_done and not done:
+                v = _verdict(n.item.claimed_done, cwd=m.cwd or "")
+                cd = {"text": n.item.claimed_done[:160], **v}
             # Colour is the GROUP, so a child carries its top-level subgoal's
             # hue: the point is telling the backend block from the frontend
             # block at a glance, not painting every row its own shade.
@@ -80,6 +89,7 @@ def _tree(m) -> list[dict]:
                 "guides": list(guides), "last": last,
                 "hid": hidden or done,
                 "hue": h,
+                "cd": cd,
             })
             out.extend(walk(n.children, depth + 1, (*guides, not last),
                             hidden or done, h))
@@ -451,6 +461,9 @@ padding-left:.6rem;display:flex;align-items:center;gap:.4rem}
   .chk li.hued .mini i{background:hsl(var(--grp) 45% 55%)}
 }
 .claims{color:var(--mut);font-size:.72rem;margin-top:.3rem;line-height:1.5}
+.verdict{color:var(--mut);font-size:.7rem;font-family:var(--mono)}
+.chk li.sugg .box{color:var(--ink)}
+.sweep button{margin-right:.4rem}
 .chk li.hued.done .box{color:var(--ok)}
 .chk li.hued.prop .box{color:var(--bad)}
 .box{font-family:var(--mono);color:var(--mut);flex:none}
@@ -689,15 +702,24 @@ function row(i,flat,sid){
   // (guides, box, header, bar). The one warm accent still means exactly
   // "waiting on you" and nothing else.
   const hu = (typeof i.hue==='number')? `--grp:${i.hue}` : '';
+  // C17: a claims-done row. The verdict is GREY -- a fact to read, never the
+  // alert accent -- and the button says "confirm": same done event, arriving
+  // pre-evidenced. The suggestion glyph is ◦, distinct from + proposals.
+  const cd = i.cd;
+  const cdline = cd? `<div class=verdict>agent says done — ${
+      cd.ok? `disk agrees (${cd.backed} claim${cd.backed>1?'s':''} backed)`
+       : cd.unbacked.length? `${cd.unbacked.length} claim${cd.unbacked.length>1?'s':''} NOT backed: ${esc(cd.unbacked[0].split('/').slice(-2).join('/'))}`
+       : `nothing checkable in the claim`}</div>` : '';
   return `<li style="${hu}" class="${i.branch?'branch':''} ${
-      i.done?'done':(i.ok?'':'prop')} ${typeof i.hue==='number'?'hued':''}">
+      i.done?'done':(i.ok?'':'prop')} ${typeof i.hue==='number'?'hued':''} ${cd?'sugg':''}"
+      ${cd&&cd.ok?`data-backed="${i.id}"`:''}>
     ${guides}${elbow}
-    <span class=box>${i.done?'▪':(i.ok?'▫':'+')}</span>
-    <span class=txt title="${esc(i.t)}">${esc(i.t)}</span>
+    <span class=box>${i.done?'▪':(cd?'◦':(i.ok?'▫':'+'))}</span>
+    <span class=txt title="${esc(i.t)}">${esc(i.t)}${cdline}</span>
     ${i.roll?`<span class=roll><span class=mini><i style="width:${i.pct}%"></i></span>${i.roll}</span>`:''}
     ${(WRITABLE && CODE() && !i.done)?
        (!i.ok? `<button class="act ok" data-do=accept data-s="${sid}" data-i="${i.id}">accept</button>`
-             : (!i.branch? `<button class=act data-do=done data-s="${sid}" data-i="${i.id}">tick</button>`:''))
+             : (!i.branch? `<button class=act data-do=done data-s="${sid}" data-i="${i.id}">${cd?'confirm':'tick'}</button>`:''))
       :''}
   </li>`;
 }
@@ -908,6 +930,8 @@ async function tick(){
      the objective trimmed, and printing both says it twice -->
        ${s.total? `<div class=bar><i style="width:${100*s.done/s.total}%"></i></div>
          <div class=sid><span>${s.done} of ${s.total} done</span>
+         ${(()=>{const nb=(s.tree||[]).filter(r=>r.cd&&r.cd.ok&&!r.hid).length;
+            return (WRITABLE&&CODE()&&nb)?`<span class=sweep><button class="act ok" data-do=sweep data-s="${s.full}">confirm all backed (${nb})</button></span>`:''})()}
          ${s.pending_accept?`<span class="warn ask">${s.pending_accept} awaiting accept${
    (WRITABLE&&CODE())?` <button class="act ok" data-do=acceptall data-s="${s.full}">accept all</button>`:''
  }</span>`:'<span></span>'}</div>
@@ -1017,6 +1041,10 @@ document.getElementById('g').addEventListener('click', e=>{
   if (b.dataset.do === 'note'){
     const inp = document.querySelector(`[data-note="${sid}"]`);
     if (inp && inp.value.trim()){ act('note', sid, [], inp.value); inp.value=''; }
+    return;
+  }
+  if (b.dataset.do === 'sweep'){
+    act('sweep', sid, []);
     return;
   }
   if (b.dataset.do === 'acceptall'){

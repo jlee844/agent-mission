@@ -361,3 +361,22 @@ def scan(path: Path, session_id: str, cwd: str = "",
     except Exception:
         pass
     return out
+
+
+def verdict_for(text: str, cwd: str = "") -> dict:
+    """C17: the disk's verdict on one claims-done suggestion.
+
+    The text is the legible format, possibly several `done: ... (artifact)`
+    clauses. Every named artifact is checked; a suggestion with NO checkable
+    artifact is honestly 'unchecked', never counted as backed -- an empty
+    claim sweeping into the counter would be C16's whole argument, lost.
+    """
+    arts = [m.group("artifact").strip() for m in _LEGIBLE.finditer(text or "")]
+    backed, unbacked = [], []
+    for a in arts:
+        p = Path(a)
+        if not p.is_absolute() and cwd:
+            p = Path(cwd) / a
+        (backed if p.exists() else unbacked).append(a)
+    return {"backed": len(backed), "unbacked": unbacked,
+            "ok": bool(backed) and not unbacked}

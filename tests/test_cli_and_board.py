@@ -979,8 +979,10 @@ def test_the_commands_table_lists_every_live_command():
     from agent_mission.__main__ import main
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
     table = readme[readme.index("| command | what it does |"):]
+    # [a-z-]: `claims-done` is one command, and a hyphen-blind extraction
+    # counted its first half and reported its second missing.
     listed = {w for row in table.splitlines() if row.startswith("| `")
-              for w in re.findall(r"`([a-z]+)", row.split("|")[1])}
+              for w in re.findall(r"`([a-z][a-z-]*)", row.split("|")[1])}
 
     main(["version"])
     from agent_mission.__main__ import _SUBCOMMANDS

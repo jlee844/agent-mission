@@ -103,6 +103,21 @@ def check(sid: str, base=None) -> list[str]:
                 f"accept on the board or "
                 f"`mission accept --pending --on {mid}`")
 
+        # C17: suggested ticks get the same edge treatment as proposals --
+        # announce the RISE, then silence. The action offered is the board,
+        # where the verdict is already attached to the row.
+        sugg = m.suggested
+        skey = f"sugg:{mid}"
+        sbefore = seen.get(skey, 0)
+        now_counts[skey] = len(sugg)
+        if len(sugg) > sbefore:
+            fresh = sugg[sbefore - len(sugg):]
+            title = fresh[-1].text[:70]
+            more = f" (+{len(fresh) - 1} more)" if len(fresh) > 1 else ""
+            lines.append(
+                f"the agent says an item on {m.title} is finished: "
+                f"“{title}”{more} — the board shows whether the disk agrees")
+
     try:
         cm = _contract_path().stat().st_mtime
     except OSError:

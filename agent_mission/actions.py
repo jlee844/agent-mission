@@ -29,7 +29,7 @@ import secrets
 from .store import MissionStore, root_for
 
 ACTIONS = ("accept", "done", "remove", "note", "setup", "ack",
-           "archive")
+           "archive", "sweep")
 
 
 class Unauthorised(PermissionError):
@@ -98,6 +98,23 @@ def apply(session: Session, code: str, action: str, sid: str,
     if action == "archive":
         st.archive(by="human")
         return {"ok": True, "did": "archive"}
+
+    if action == "sweep":
+        # C17b: confirm-all-backed. The client sends NO ids on purpose -- the
+        # server recomputes each verdict and ticks only what the DISK fully
+        # corroborates, so a tampered page cannot smuggle an unbacked row
+        # into the sweep. Unbacked rows are exactly the ones that need the
+        # human's eyes, so they never sweep; by=human because the code holder
+        # IS the human -- the click is the judgement, arriving pre-evidenced.
+        from .claims import verdict_for
+        m = st.load()
+        swept = []
+        for i in m.suggested:
+            if verdict_for(i.claimed_done, cwd=m.cwd or "").get("ok"):
+                st.complete(i.id, by="human")
+                swept.append(i.id)
+        return {"ok": True, "did": "sweep", "ids": swept,
+                "skipped": len(m.suggested) - len(swept)}
 
     if action == "ack":
         st.acknowledge(text, by="human")
