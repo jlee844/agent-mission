@@ -905,7 +905,13 @@ async function tick(){
   strip.innerHTML = bits.length? bits.join('')
     : '<span>Nothing is waiting on you.</span>';
   renderSetup();
-  document.getElementById('g').innerHTML = d.length? d.map(s=>`
+  // Re-rendering destroys the scroll position of every scrollable block
+  // inside a card, so a person reading a long plan was yanked back to the
+  // top every 4 seconds -- mid-scroll. Two defences: skip the render
+  // entirely when the data has not changed (the overwhelmingly common
+  // poll), and when it has, put every scrolled block back where it was.
+  const g = document.getElementById('g');
+  const html = d.length? d.map(s=>`
    <div class="card ${s.ended?'ended':''} ${s.state}">
      <div class=rowline><span class="dot ${s.state}" title="${s.state}"></span>
        <span class=rid>${esc(s.id)}</span>
@@ -998,7 +1004,15 @@ async function tick(){
         :(s.claims_checked?`<div class=claims>${s.claims_checked} claims checked against disk — all backed</div>`:'')}
        ${s.topfiles.length?`<br>${s.topfiles.slice(0,3).map(f=>esc(f.f)+' '+f.n+'x').join(' · ')}`:''}</div>
    </div>`).join('') : (all.length? '' : '<p class=none>No live sessions.</p>');
+  if (html === LAST_HTML) return;
+  LAST_HTML = html;
+  const scrolled = [...g.querySelectorAll('.chk')].map((el,n)=>[n, el.scrollTop])
+                     .filter(([,t])=>t>0);
+  g.innerHTML = html;
+  const chks = g.querySelectorAll('.chk');
+  for (const [n, t] of scrolled) if (chks[n]) chks[n].scrollTop = t;
 }
+let LAST_HTML = '';
 // The page re-renders every 4s, so an opened fold would snap shut under the
 // reader. Remember which cards are open. `toggle` does not bubble, hence the
 // capture listener -- and it is bound once, to a container render() never

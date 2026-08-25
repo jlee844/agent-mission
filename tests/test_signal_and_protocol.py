@@ -345,3 +345,14 @@ def test_the_page_carries_the_report_loop():
                    "PROBLEM REPORT", "paste this whole block"):
         assert needle in PAGE, f"report loop lost {needle!r}"
     assert "ERRS.length>20" in PAGE, "the ring is bounded"
+
+
+def test_the_page_does_not_yank_scroll_on_every_poll():
+    """The 4s tick rebuilt the cards' HTML unconditionally, and rebuilding
+    destroys the scroll position of every scrollable plan block -- a person
+    reading a long tree was pulled back to the top mid-scroll, every 4
+    seconds. The render is skipped when nothing changed, and when something
+    did, each scrolled block is put back where it was."""
+    from agent_mission.board import PAGE
+    assert "html === LAST_HTML" in PAGE, "unchanged polls must not re-render"
+    assert "scrollTop" in PAGE, "changed polls restore the scroll"
