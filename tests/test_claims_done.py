@@ -155,3 +155,36 @@ def test_the_contract_and_security_teach_it(tmp_path):
     for phrase in ("evidence, not proof", "No auto-confirm",
                    "unbacked rows", "no confirm route"):
         assert phrase in sec, f"SECURITY.md lost {phrase!r}"
+
+
+def test_pending_surfaces_suggestions_with_their_verdicts(st, tmp_path,
+                                                          monkeypatch, capsys):
+    """The first field session to use claims-done caught `pending` answering
+    "nothing awaiting you here" with six suggestions in the log -- while
+    claims-done itself said "awaits the human's confirm". Both kinds of
+    waiting are one list now, each suggestion with its evidence and the
+    disk's verdict."""
+    from agent_mission.__main__ import main
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    (tmp_path / "real.py").write_text("x\n")
+    iid = _accepted_item(st, "the work")
+    st.claim_done(iid, "done: shipped (real.py)", by="agent")
+
+    assert main(["pending", "--on", "g"]) == 0
+    out = capsys.readouterr().out
+    assert "nothing awaiting you" not in out
+    assert "[◦]" in out and "done: shipped (real.py)" in out
+    assert "disk agrees" in out
+    assert f"mission done {iid}" in out, "the command that clears it"
+
+
+def test_show_counts_suggestions_in_its_summary(st, tmp_path, monkeypatch,
+                                                capsys):
+    from agent_mission.__main__ import main
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    iid = _accepted_item(st)
+    st.claim_done(iid, "done: x (y)", by="agent")
+    assert main(["show", "--on", "g"]) == 0
+    out = capsys.readouterr().out
+    assert "suggested finished" in out
+    assert "[◦]" in out

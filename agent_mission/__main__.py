@@ -463,6 +463,9 @@ def cmd_show(a) -> int:
             print(f"    ({hidden} finished, hidden — `mission show --all`)")
         if m.unaccepted:
             print(f"\n    {len(m.unaccepted)} proposed, awaiting your accept")
+        if m.suggested:
+            print(f"    {len(m.suggested)} suggested finished — `mission "
+                  f"pending` shows the evidence, the board shows the verdict")
     if act:
         print(f"\n  MEASURED SO FAR")
         print(f"    {act.calls} tool calls · {len(act.files)} files changed · "
@@ -935,20 +938,43 @@ def cmd_observe(a) -> int:
 
 
 def cmd_pending(a) -> int:
-    """Everything waiting on you, with the command to clear it."""
+    """Everything waiting on you, with the command to clear it.
+
+    BOTH kinds: proposals awaiting your accept, and C17 suggestions awaiting
+    your confirm. The first field session to use claims-done caught this
+    command answering "nothing awaiting you here" with six suggestions in the
+    log -- while claims-done itself said "awaits the human's confirm". A tool
+    that contradicts its own advice trains you to trust neither half.
+    """
     sid = _resolve(a)
     m = _store(sid).load()
     if m is None:
         raise NoMissionError(sid)
-    waiting = m.unaccepted
-    if not waiting:
+    waiting, sugg = m.unaccepted, m.suggested
+    if not waiting and not sugg:
         print("\n  nothing awaiting you here.\n")
         return 0
-    print(f"\n  {len(waiting)} awaiting you in {m.title}\n")
+    print(f"\n  {len(waiting) + len(sugg)} awaiting you in {m.title}\n")
     for i in waiting:
         print(f"    [+] {i.id}  {i.text}")
-    print(f"\n    mission accept --pending"
-          f"{'' if not a.session else ' --session ' + a.session}\n")
+    if waiting:
+        print(f"\n    mission accept --pending"
+              f"{'' if not a.session else ' --session ' + a.session}")
+    if sugg:
+        from .claims import verdict_for
+        if waiting:
+            print()
+        for i in sugg:
+            v = verdict_for(i.claimed_done, cwd=m.cwd or "")
+            word = (f"disk agrees ({v['backed']} backed)" if v["ok"] else
+                    f"{len(v['unbacked'])} claim(s) NOT backed" if v["unbacked"]
+                    else "nothing checkable in the claim")
+            print(f"    [◦] {i.id}  {i.text}")
+            print(f"         says: {i.claimed_done[:90]}")
+            print(f"         {word}")
+        ids = " ".join(i.id for i in sugg)
+        print(f"\n    confirm on the board, or:  mission done {ids}")
+    print()
     return 0
 
 
