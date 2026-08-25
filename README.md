@@ -18,29 +18,29 @@ pip install git+https://github.com/jlee844/agent-mission
 mission setup      # slash command, deny rules, statusline, re-anchor hook, attention hook, claim hook
 ```
 
-## You touch this in three places
+## Your whole job
 
-**1. Answer the interview, once.** In Claude Code, `/mission init` asks what
-done looks like and what must not happen on the way — one question at a time,
-each with a suggested answer. Your agent transcribes; it never authors.
+| when | you do |
+|---|---|
+| once | answer the interview — `/mission init` asks what done looks like, one question at a time; your agent transcribes, never authors |
+| per login | paste the write code the board prints in your terminal — the agent never sees it |
+| when the strip lights | click **accept** on a proposed subgoal, **confirm** on a tick the disk corroborated |
 
-**2. Glance at your statusline.**
-
+Everything else runs itself. The statusline keeps the goal one glance away:
 ```
 Ship list sharing · 2/5 · detour: chasing a flaky test · 3 proposals waiting
 ```
 
-When something *newly* needs you, one line lands in the conversation, with
-the link — and when a completion claim is not backed by the disk, a hook says
-so in the turn it happened. Both edge-triggered, both silent otherwise.
+The mission re-anchors the agent after compaction; completion claims are checked
+against the disk **in the turn they are made**; finished items arrive as
+suggestions with the verdict attached — *"agent says done — disk agrees"* — and
+one line lands in the conversation only when something *newly* needs you.
+**Silence means on track.**
 
-**3. Click on the board.** `mission board` — every goal on one page: the plan
-as a tree, subgoals colour-grouped by domain, and what each session **actually
-did** (calls, files, test runs, failures — read from the transcript, not
-reported by the agent). A strip on top answers *is anything waiting on me*.
-Run it in your own terminal and it prints a write code; enter it once and
-accept/tick/note are buttons. The agent never sees that code. A `report`
-button packages anything that goes wrong for pasting straight to Claude.
+**The board is where you click.** `mission board` — every goal on one page: the
+plan as a tree, and what each session **actually did** (calls, files, tests —
+read from the transcript, not reported by the agent). A strip on top answers
+*is anything waiting on me*.
 
 ![A proposal lands, the strip lights, you accept, the plan grows](docs/demo.gif)
 
