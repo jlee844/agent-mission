@@ -147,6 +147,13 @@ table, not a classifier.
   not tamper-proofness.
 - **Not on PyPI.** Install from source.
 
+## Docs
+
+- [DESIGN.md](docs/DESIGN.md) — why it is shaped this way; the five dead drift detectors
+- [SECURITY.md](docs/SECURITY.md) — what is enforced, and the honest limits
+- [adversarial-testing.md](docs/adversarial-testing.md) — how the authority model got broken, twice, and what each break bought
+- [evidence.md](docs/evidence.md) — every unusual claim, mapped to the artifact that substantiates it
+
 ## Part of a set
 
 Four small tools that read what an AI coding session actually did, rather
