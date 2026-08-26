@@ -111,7 +111,7 @@ moves the counter except a human ruling on evidence:
 
 Integration is one line: Claude Code hooks → append-only event log
 (`~/.agent-mission/`) → statusline · signal · board · CLI. State is a fold
-over the log, so *why does it say this* is always answerable by reading.
+over the log, so *why does it say this* is always answerable from history.
 
 ## Setup
 
