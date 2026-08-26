@@ -8,10 +8,19 @@ you cannot quietly forget it.**
 [![deps](https://img.shields.io/badge/dependencies-none-0E6E68)](pyproject.toml)
 [![license](https://img.shields.io/badge/license-MIT-666)](LICENSE)
 
-Two hours into a session there are 800 tool calls, a summary written by the
-thing being summarised, and no easy answer to *what was this for, and is it
-done?* `mission` writes the goal down once, somewhere the agent cannot
-edit, and keeps putting it back in front of you. Built for **Claude Code**.
+`mission` is a zero-dependency Python CLI plus a local web board for Claude
+Code sessions. It separates three write authorities — **protected** objectives
+(human-authored), **proposed** work (agent-suggested, human-accepted), and
+**observable** state (evidence the agent records freely) — and verifies
+completion claims against the filesystem before a human confirms them.
+Integration: Claude Code hooks, a statusline, harness deny rules, the board.
+Architecture: [one diagram, below the fold](#architecture). Reproduce every
+claim: `pip install -e ".[dev]" && python -m pytest -q`.
+
+Why it exists: two hours into a session there are 800 tool calls, a summary
+written by the thing being summarised, and no easy answer to *what was this
+for, and is it done?* `mission` writes the goal down once, somewhere the
+agent cannot edit, and keeps putting it back in front of you.
 
 ```bash
 pip install git+https://github.com/jlee844/agent-mission
@@ -69,6 +78,37 @@ Enforced in the store, at the terminal, and by Claude Code's deny rules —
 ---
 
 # Agent & scripting reference
+
+## Architecture
+
+The whole design in one picture — write authority flows down, and nothing
+moves the counter except a human ruling on evidence:
+
+```
+                 human writes
+                      ▼
+        ┌─ PROTECTED ─────────────────┐
+        │ objective · criteria        │
+        │ constraints · non-goals     │
+        └─────────────┬───────────────┘
+        agent proposes ▼
+        ┌─ PROPOSED ──────────────────┐
+        │ checklist · strategy        │      inert until accepted
+        └─────────────┬───────────────┘
+         human accepts ▼
+        ┌─ OBSERVABLE ────────────────┐
+        │ evidence · decisions        │      agent records freely
+        │ detours · claims-done       │
+        └─────────────┬───────────────┘
+    disk corroborates  ▼
+        ┌─ TICK ──────────────────────┐
+        │ human confirms · by=human   │      one click, pre-evidenced
+        └─────────────────────────────┘
+```
+
+Integration is one line: Claude Code hooks → append-only event log
+(`~/.agent-mission/`) → statusline · signal · board · CLI. State is a fold
+over the log, so *why does it say this* is always answerable by reading.
 
 ## Setup
 

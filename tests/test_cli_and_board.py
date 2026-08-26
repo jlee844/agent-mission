@@ -1189,7 +1189,11 @@ def test_the_readme_puts_the_three_touchpoints_on_the_first_screen():
     fold = readme.index("# Agent & scripting reference")
     human = readme[:fold]
 
-    assert len(human.splitlines()) <= 70, "the human half outgrew one screen"
+    # 70 until 2026-08-26; +9 for the interviewer-facing technical summary an
+    # external review asked for (a conventional what-is-this block before the
+    # opinionated prose). The scannable-first rule still holds; the budget is
+    # a ceiling, not a target.
+    assert len(human.splitlines()) <= 80, "the human half outgrew one screen"
     for word in ("interview", "statusline", "board"):
         assert word in human.lower(), f"{word} is not on the first screen"
 
