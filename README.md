@@ -91,16 +91,19 @@ moves the counter except a human ruling on evidence:
         │ objective · criteria        │
         │ constraints · non-goals     │
         └─────────────┬───────────────┘
-        agent proposes ▼
+              agent proposes
+                      ▼
         ┌─ PROPOSED ──────────────────┐
         │ checklist · strategy        │      inert until accepted
         └─────────────┬───────────────┘
-         human accepts ▼
+                 human accepts
+                      ▼
         ┌─ OBSERVABLE ────────────────┐
         │ evidence · decisions        │      agent records freely
         │ detours · claims-done       │
         └─────────────┬───────────────┘
-    disk corroborates  ▼
+               disk corroborates
+                      ▼
         ┌─ TICK ──────────────────────┐
         │ human confirms · by=human   │      one click, pre-evidenced
         └─────────────────────────────┘
