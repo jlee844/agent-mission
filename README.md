@@ -91,7 +91,7 @@ moves the counter except a human ruling on evidence:
         │ objective · criteria        │
         │ constraints · non-goals     │
         └─────────────┬───────────────┘
-              agent proposes
+                agent proposes
                       ▼
         ┌─ PROPOSED ──────────────────┐
         │ checklist · strategy        │      inert until accepted
