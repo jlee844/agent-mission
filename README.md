@@ -9,18 +9,19 @@ you cannot quietly forget it.**
 [![license](https://img.shields.io/badge/license-MIT-666)](LICENSE)
 
 `mission` is a zero-dependency Python CLI plus a local web board for Claude
-Code sessions. It separates three write authorities — **protected** objectives
-(human-authored), **proposed** work (agent-suggested, human-accepted), and
-**observable** state (evidence the agent records freely) — and verifies
-completion claims against the filesystem before a human confirms them.
-Integration: Claude Code hooks, a statusline, harness deny rules, the board.
-Architecture: [one diagram, below the fold](#architecture). Reproduce every
-claim: `pip install -e ".[dev]" && python -m pytest -q`.
+Code sessions, built on three write authorities:
 
-Why it exists: two hours into a session there are 800 tool calls, a summary
-written by the thing being summarised, and no easy answer to *what was this
-for, and is it done?* `mission` writes the goal down once, somewhere the
-agent cannot edit, and keeps putting it back in front of you.
+- **protected** objectives — human-authored
+- **proposed** work — agent-suggested, human-accepted
+- **observable** state — evidence the agent records freely
+
+Completion claims are verified against the disk before a human confirms them.
+Integration: Claude Code hooks, statusline, deny rules, the board — architecture
+in [one diagram below the fold](#architecture). Reproduce every claim:
+`pip install -e ".[dev]" && python -m pytest -q`.
+
+Why it exists: 800 tool calls into a session, the summary is written by the
+thing being summarised, and nothing answers *what was this for — is it done?*
 
 ```bash
 pip install git+https://github.com/jlee844/agent-mission
