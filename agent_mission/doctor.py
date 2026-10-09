@@ -25,7 +25,7 @@ def _logs(base=None):
     inversion that set is the OLD copies: `migrate` writes the events into
     `missions/<name>/` and leaves the session-keyed directory behind, frozen at
     the moment it was lifted. So doctor was auditing ghosts and could not see a
-    single live mission. `career-hub` had 64 events; doctor read the 27 in its
+    single live mission. `docs-site` had 64 events; doctor read the 27 in its
     abandoned twin and reported proposals that were accepted two days ago.
 
     The board's review lane reads this, which is the part that mattered: the
@@ -95,7 +95,7 @@ def findings(base=None) -> list[dict]:
         # 2. Events written from somewhere other than this mission's directory.
         #
         #    This was `serious`, one finding PER EVENT, and clearable. All three
-        #    are now wrong, and the first real run proved it: career-hub alone
+        #    are now wrong, and the first real run proved it: docs-site alone
         #    produced 40 identical rows and the review lane went from 2 items to
         #    42 -- past the number the lane was pre-registered to refuse to ship
         #    at ("if it shows 16, the eligibility rule is wrong").
@@ -174,16 +174,30 @@ def findings(base=None) -> list[dict]:
                 _tp = transcript_for(_sid)
                 if not _tp:
                     continue
+                # ⚠️ Measure what the window HELD, not the file's size. This
+                # fired on two sessions on 2026-10-08 and was wrong about
+                # both: one had a 1,154 MB transcript whose 200 KB tail
+                # contained three assistant text blocks (records of megabytes
+                # each), so nothing was blind -- the extractor was handed no
+                # sentences; the other was 0.8 MB of giant records with three
+                # assistant messages in total, i.e. genuinely nothing to
+                # claim. Bytes on disk say nothing about how much an agent
+                # said, and the old wording asserted a cause it had not
+                # checked.
+                from .claims import _read_lines as _rl, \
+                    _count_assistant_text as _cat
+                blocks = _cat(_rl(_tp, 200_000))
                 n = sum(1 for _ in _ic(_tp, _sid, tail_bytes=200_000))
-                if n == 0 and _tp.stat().st_size > 100_000:
+                if n == 0 and blocks >= 8:
                     out.append({
                         "sid": sid, "level": "note",
                         "what": "no claims extracted",
-                        "detail": f"session {_sid[:8]} has a sizeable "
-                                  f"transcript and zero extractable claims — "
-                                  f"the extractor may be blind to its "
-                                  f"phrasing. ~/.agent-mission/"
-                                  f"claim-patterns.txt extends it",
+                        "detail": f"session {_sid[:8]}: {blocks} assistant "
+                                  f"message(s) in the scanned window and zero "
+                                  f"extractable claims. Either it claimed "
+                                  f"nothing, or the patterns miss its "
+                                  f"phrasing — ~/.agent-mission/"
+                                  f"claim-patterns.txt extends them",
                     })
                     break              # one note per mission, not per session
         except Exception:
@@ -204,13 +218,20 @@ def findings(base=None) -> list[dict]:
                           f"--on {sid}`",
             })
 
-        # 6. A log with damage. events() skips unparseable lines and counts.
+        # 6. A log with damage: a line that would not parse, OR one that
+        # parsed and then could not be folded (a missing item_id, a field
+        # that is not a list). The second kind used to raise out of HERE --
+        # `doctor`, the tool for diagnosing a damaged log, was itself the
+        # thing a damaged log crashed.
         st = MissionStore(d)
         st.load()
         if st.damaged:
+            detail = (f"{st.damaged} line(s) could not be used and were "
+                      f"skipped — the events in them are lost")
+            if st.damage:
+                detail += " (" + "; ".join(st.damage[:3]) + ")"
             out.append({
                 "sid": sid, "level": "serious", "what": "damaged log",
-                "detail": f"{st.damaged} line(s) could not be parsed and were "
-                          f"skipped — the events in them are lost",
+                "detail": detail,
             })
     return out

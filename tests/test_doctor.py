@@ -31,7 +31,7 @@ def test_a_clean_mission_reports_nothing():
 
 
 def test_a_duplicate_mission_start_is_reported():
-    """The Tripnom incident: a second `created` made 52 events invisible."""
+    """The Wayfinder incident: a second `created` made 52 events invisible."""
     st = MissionStore(root_for("s"))
     st.create("s", "/repo", "the real goal", by="human", typed_by="human")
     st.create("s", "/repo", "a stray sentence", by="human", typed_by="human")
@@ -46,7 +46,7 @@ def test_writes_from_another_directory_are_counted_not_accused():
     stays out of the review lane. Left as `serious` and per-event, it put 40
     identical rows on one mission and took the lane from 2 items to 42."""
     st = MissionStore(root_for("s"))
-    st.create("s", "/repo/tripnom", "the goal", by="human", typed_by="human")
+    st.create("s", "/repo/wayfinder", "the goal", by="human", typed_by="human")
     st.create("s", "/repo/transcript-audit", "oops", by="human", typed_by="human")
     hit = [f for f in findings() if f["what"] == "written from another directory"]
     assert len(hit) == 1 and hit[0]["level"] == "note"

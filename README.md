@@ -15,7 +15,7 @@ Code sessions, built on three write authorities:
 - **proposed** work — agent-suggested, human-accepted
 - **observable** state — evidence the agent records freely
 
-Completion claims are verified against the disk before a human confirms them.
+A claim naming a file is checked against the disk; one naming nothing is unchecked.
 Integration: Claude Code hooks, statusline, deny rules, the board — architecture
 in [one diagram below the fold](#architecture). Reproduce every claim:
 `pip install -e ".[dev]" && python -m pytest -q`.
@@ -43,7 +43,7 @@ Ship list sharing · 2/5 · detour: chasing a flaky test · 3 proposals waiting
 
 The mission re-anchors the agent after compaction; completion claims are checked
 against the disk **in the turn they are made**; finished items arrive as
-suggestions with the verdict attached — *"agent says done — disk agrees"* — and
+suggestions with the verdict attached — *"the named file changed since you agreed"* — and
 one line lands in the conversation only when something *newly* needs you.
 **Silence means on track.**
 
@@ -146,16 +146,28 @@ one per 10 minutes).
 | `observe` | record evidence, a decision, or a note |
 | `import <file>` / `delegate <id>` | land an external plan as proposals / spin one item into a subagent session |
 | `signal` | one line if something newly awaits you; silent otherwise (for hooks) |
+| `take` | ask the board for the next item and take it — no human needed to say what |
+| `release <id>` | hand an item back without claiming it is finished |
+| `finding <id> <text>` | say an accepted item is NOT done, and why; clears its claim and re-queues it |
+| `dispatch` | what to hand out, and the message to hand over — prints a plan, delivers nothing |
+| `queue` | the four lanes: ready · in progress · in review · waiting on you |
+| `audit` | items agreed long ago that nobody ever touched — the brief for checking whether they are already built |
+| `verify` | the brief a verification session reads — claims, artifacts, the disk's verdict |
+| `checked <id> <text>` | a second session re-derived a claim and agrees (an opinion, not evidence) |
 | `claims-done <id> <text>` | suggest an accepted item is finished; the board attaches the disk's verdict |
 | `claims` | verify recent completion claims against the disk; silent when backed (for hooks) |
+| `sharpen` | which criteria name no file, so finishing them can't be checked (`--propose`) |
 | `doctor` | what is wrong with the missions themselves, not the install |
 | `board` | the shared board; at a tty it is writable (`--stop`) |
+| `passcode` | set the board's write code yourself, so it survives restarts (`--clear`) |
 | `setup` / `help <cmd>` / `version` | install; usage without running; the build + every live command |
 
 ## Addressing
 
-**Names route, sessions speak, directories inform.** `--on <name>` is the only
-address, and it reaches both storage layouts:
+**Names route, sessions speak, directories inform.** `--on <name>` is the
+explicit address and the only one worth typing in a script; a session that has
+been attached to a goal resolves without it, and the process's directory never
+routes. It reaches both storage layouts:
 
 ```bash
 mission attach career                      # this session serves that goal
@@ -174,8 +186,11 @@ each with a paste-ready command.
 **One board per store.** Starting a second finds the first. It lives at
 `127.0.0.1:8976` and returns there after restarts; `~/.agent-mission/board.html`
 is a bookmark that never goes stale. Writes are gated by a code printed only
-to the terminal of the person who started it — kept in memory, never on disk,
-never served; wrong guesses lock out. Colour on the board means one thing:
+to the terminal of the person who started it — the minted code is kept in
+memory, never written to disk and never served; wrong guesses lock out. (A
+passcode you SET is different: it is stored as a salted hash in
+`~/.agent-mission/passcode.json`, which the agent can read and rewrite, so the
+board prints the date it was last written.) Colour on the board means one thing:
 the warm accent is *waiting on you*. The muted hues on the tree are structure
 — rows under one subgoal share their domain's colour, assigned by a keyword
 table, not a classifier.
@@ -189,13 +204,32 @@ table, not a classifier.
 - **The event log is a plain file.** An agent with shell access can forge an
   append. The guarantee is no *silent* rewrite through this tool's interfaces,
   not tamper-proofness.
+- **macOS and Linux. Windows is untested.** The process walk shells out to
+  `ps`, liveness reads `/tmp/cc-socks`, and the log lock uses `fcntl.flock`
+  with an `msvcrt` branch nobody has run. CI has run on Ubuntu; macOS jobs
+  are configured and have not run yet.
+- **The tty gate is a speed bump, not a boundary.** Four of five attack
+  rounds got through. The last needs no `script`, and the event it writes is
+  marked only because of a stamp that does not share the gate's detector —
+  the first version of which missed it entirely. [SECURITY.md](docs/SECURITY.md) says what each layer does
+  and does not buy.
+- **Known rough edges**, named because a stranger meets the first two early:
+  - `--auto-board` stalls when a passcode is set — the prompt runs from a
+    background job, which the terminal suspends. Start it yourself with
+    `mission board`.
+  - Liveness: with no goals yet, it falls back to a recency guess —
+    inferred, not measured, and the only place in the tool that is.
+  - Leases last 90 minutes. Re-taking your own item renews it; a session
+    that stops lets it lapse.
+  - The board's JavaScript syntax test needs `node` on PATH. CI runners have
+    it; a local run without it fails rather than skips.
 - **Not on PyPI.** Install from source.
 
 ## Docs
 
 - [DESIGN.md](docs/DESIGN.md) — why it is shaped this way; the five dead drift detectors
 - [SECURITY.md](docs/SECURITY.md) — what is enforced, and the honest limits
-- [adversarial-testing.md](docs/adversarial-testing.md) — how the authority model got broken, twice, and what each break bought
+- [adversarial-testing.md](docs/adversarial-testing.md) — five rounds of attacks on the authority model, four of which got through, and what each one bought
 - [evidence.md](docs/evidence.md) — every unusual claim, mapped to the artifact that substantiates it
 
 ## Part of a set

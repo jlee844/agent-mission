@@ -44,6 +44,25 @@ FIELD_AUTHORITY: dict[str, Authority] = {
     "notes": Authority.OBSERVABLE,
 }
 PROTECTED_FIELDS = {f for f, a in FIELD_AUTHORITY.items() if a is Authority.PROTECTED}
+
+# How long a lease survives without being renewed. A session that dies
+# mid-item must not park it forever; 90 minutes is long enough that a real
+# turn never loses its hold, short enough that a crash costs one lunch break
+# rather than a day. Module-level because BOTH the store (when refusing a
+# second holder) and the Mission (when deciding the lane) have to agree --
+# two copies is how an item reads "in progress" on the board while the store
+# is handing it to somebody else.
+LEASE_TTL = 90 * 60
+
+# How long an AGREED item may sit with no session ever touching it before the
+# board asks about it. Pre-registered, and the measurement is the point: on
+# the live board the accepted-ages of untouched ready items are 0.0–0.1 days
+# or 43.0–45.1 days, with NOTHING in between, so every threshold in 1..43
+# partitions this board identically and the number is doing almost no work
+# today. Two weeks is chosen inside that empty region -- long enough that a
+# session would have leased, claimed or released real work by now, short
+# enough to catch the next one before it reaches 45 days unnoticed.
+UNTOUCHED_DAYS = 14
 LIST_FIELDS = {"success_criteria", "constraints", "non_goals", "checklist",
                "decisions", "evidence", "notes"}
 
@@ -89,6 +108,46 @@ class Item:
     # text, so the verifier can bind a disk verdict to this exact row. A
     # SUGGESTION, never a state change: `done` still has one writer.
     claimed_done: str = ""
+    # WHEN the human accepted it. Needed because "the named file exists" was
+    # the whole of "disk agrees", so `done: rewrote auth (README.md)` came
+    # back backed in any repo that has a README -- and the one-click "confirm
+    # all backed" sweep then ticked it `by=human`. A file untouched since the
+    # work was agreed is not evidence the work happened. 0.0 = never
+    # accepted, or an older log with no timestamp: unknown, not stale.
+    accepted_at: float = 0.0
+    # ── routing (all OBSERVABLE: coordination, never authority) ───────────
+    # Which session is holding this item, and since when. Taking an item
+    # changes neither what the plan is nor whether anything is done, so it
+    # needs no human ruling -- but without it two sessions pick the same
+    # first item, because the selection rule is deterministic.
+    leased_by: str = ""
+    leased_at: float = 0.0
+    # A verifier's reason this is NOT finished. Non-empty means the item is
+    # back in the ready queue carrying why. It does NOT un-accept the item:
+    # the human already agreed to this work, so a defect in it is the same
+    # work continuing, not new work needing a second acceptance. That is what
+    # lets a finding route straight to a worker with nobody in the middle.
+    rework: str = ""
+    rework_by: str = ""
+    rework_at: float = 0.0
+    # When a session handed it back, and why. Needed because "rework first"
+    # became a LIVELOCK: an item sent back by a verifier sorted ahead of
+    # everything, so a session that took it, found it undoable and released
+    # it left it sorting first again -- and the next session, and the next,
+    # each burned a turn rediscovering the same wall. Seen live on
+    # a64d9eca, which a worker correctly refused and which would then have
+    # been handed to all nine idle peers in turn.
+    released_at: float = 0.0
+    release_note: str = ""
+    # Which session made the claim, so the checker can be refused if it is
+    # the same one. Without it, self-grading is indistinguishable from a
+    # second reading.
+    claimed_by: str = ""
+    # A second session's opinion that the claim holds. NOT evidence: see
+    # MissionStore.checked. Cleared by a new claim or a finding, because both
+    # mean the thing that was checked is no longer what is on offer.
+    checked_note: str = ""
+    checked_by: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -209,6 +268,54 @@ class Mission:
     def done_count(self) -> int:
         return sum(1 for lf in self.leaves if lf.done)
 
+    LEASE_TTL = LEASE_TTL          # the module constant, not a second copy
+
+    def lane_of(self, lf: Item, now: float | None = None) -> str:
+        """Which of the four lanes this item is in.
+
+        One function, because the lanes have to partition: an item that
+        appeared in two of them, or none, is a row a person cannot act on.
+        Order of tests IS the precedence.
+        """
+        import time as _t
+        now = _t.time() if now is None else now
+        if not lf.accepted:
+            return "waiting"              # a proposal is yours, not a worker's
+        if lf.done:
+            return "done"
+        if lf.claimed_done:
+            return "review"               # a claim awaiting a check
+        if lf.leased_by and (now - lf.leased_at) < self.LEASE_TTL:
+            return "progress"
+        return "ready"                    # includes rework: claim was cleared
+
+    def lanes(self, now: float | None = None) -> dict:
+        out: dict = {"ready": [], "progress": [], "review": [],
+                     "waiting": [], "done": []}
+        for lf in self.leaves:
+            out[self.lane_of(lf, now)].append(lf)
+        return out
+
+    def next_ready(self, now: float | None = None) -> Item | None:
+        """The item a session should take: first ready leaf in TREE ORDER.
+
+        Mechanical, and deliberately the same rule `whereami` already prints.
+        Rework first, because a defect in agreed work outranks starting
+        something new -- that is the only ordering judgement here and it is
+        stated rather than inferred.
+        """
+        ready = self.lanes(now)["ready"]
+        # Rework first -- but NOT rework a session already tried and handed
+        # back. That combination is the livelock: it outranks everything
+        # forever, and every session that takes it hits the same wall. Once
+        # handed back it stays available at its tree-order position, so the
+        # work is not lost; it just stops blocking the queue, and the reason
+        # it was returned is the human's to rule on.
+        fresh_rework = [i for i in ready
+                        if i.rework and not (i.released_at > i.rework_at)]
+        return (fresh_rework[0] if fresh_rework
+                else ready[0] if ready else None)
+
     @property
     def total_count(self) -> int:
         """Only AGREED work counts. A proposal is not yet part of the plan.
@@ -228,6 +335,47 @@ class Mission:
     def unaccepted(self) -> list[Item]:
         """Agent-proposed items you have not signed off."""
         return [i for i in self.items if not i.accepted]
+
+    def untouched(self, days: float = UNTOUCHED_DAYS,
+                  now: float | None = None) -> list[Item]:
+        """Ready items agreed long ago that NO session has ever touched.
+
+        This is the hole the four lanes left, and it was costing real work:
+        five items on the live board had been agreed 43–45 days, and every
+        one of them was already BUILT -- nobody had said so, so they sat in
+        the hand-out queue. `dispatch` nearly sent a peer to rebuild
+        `claims-done`, which has shipped for weeks.
+
+        What this is NOT: a judgement that the work is finished. Reading the
+        repo to decide that is the closed non-goal, and it cannot be
+        mechanised here anyway -- measured: 0 of 11 ready items name an
+        artifact that resolves on disk, so there is no file whose mtime could
+        speak for them. What IS measured is the item's own history: agreed at
+        a known time, and never leased, claimed, released or sent back. The
+        honest reading of that pair is "nobody has touched this since you
+        agreed to it", which is a question for a human or a session, not a
+        verdict about the code.
+
+        `accepted_at == 0` is an older log with no timestamp: unknown, which
+        is not the same as old, so it is excluded rather than assumed.
+        """
+        import time as _t
+        now = _t.time() if now is None else now
+        cutoff = days * 86400
+        return [i for i in self.lanes(now)["ready"]
+                if i.accepted_at
+                and (now - i.accepted_at) > cutoff
+                and not i.leased_at and not i.released_at
+                and not i.claimed_done and not i.rework]
+
+    @staticmethod
+    def days_since_accepted(item: Item, now: float | None = None) -> float:
+        """Age in days, or -1.0 when the log never recorded an accept time."""
+        import time as _t
+        if not item.accepted_at:
+            return -1.0
+        now = _t.time() if now is None else now
+        return (now - item.accepted_at) / 86400.0
 
     @property
     def suggested(self) -> list[Item]:
@@ -254,9 +402,12 @@ class MissionStore:
         # where, and why did it land here" was unanswerable for 52 events.
         self.context_cwd = ""
         self.context_via = ""
-        # Lines that could not be parsed on the last read. Surfaced rather than
-        # swallowed: silently skipping damage is how a log stops being evidence.
+        # Lines the last read could not use. Surfaced rather than swallowed:
+        # silently skipping damage is how a log stops being evidence.
         self.damaged = 0
+        # ...and WHAT was wrong with each, so `doctor` can say something more
+        # useful than a count. A number tells you to look; this tells you where.
+        self.damage: list[str] = []
 
     # ── writing ──────────────────────────────────────────────────────────
     def _append(self, kind: str, by: str, /, typed_by: str | None = None,
@@ -272,13 +423,24 @@ class MissionStore:
         # `why objective` said "human" about a goal an agent had written.
         ev = {**detail, "kind": kind, "by": by,
               "typed_by": typed_by or by, "at": time.time()}
+        # Stamped only on human AUTHORITY, because that is the only claim
+        # anyone would want to forge, and only when there is something to say
+        # -- see whoami.provenance(). This is what makes a `script(1)` pty
+        # readable after the fact instead of indistinguishable from a person.
+        if by == "human":
+            from . import whoami
+            for k, v in whoami.provenance().items():
+                ev.setdefault(k, v)
         if self.context_cwd:
             ev.setdefault("cwd", self.context_cwd)
         if self.context_via:
-            ev["via"] = self.context_via          # explicit | env | cwd
+            # explicit | env | cwd | board -- which ROUTE this write came
+            # through, beside `by` (whose field it is) and `typed_by` (who
+            # ran it). A board click and a typed command were identical in
+            # the log until `board` joined this list.
+            ev["via"] = self.context_via
         self.root.mkdir(parents=True, exist_ok=True)
-        with self.log.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(ev) + "\n")
+        _append_line(self.log, json.dumps(ev) + "\n")
         return ev
 
     def create(self, session_id: str, cwd: str, objective: str, by: str,
@@ -347,18 +509,21 @@ class MissionStore:
     def accept(self, item_id: str, by: str) -> dict:
         if by != "human":
             raise ProtectedFieldError("only you can accept a proposal")
-        self._require(item_id)
-        return self._append("accepted", by, item_id=item_id)
+        with _LogLock(self.root):
+            self._require(item_id)
+            return self._append("accepted", by, item_id=item_id)
 
     def complete(self, item_id: str, by: str) -> dict:
         """Marking work done is a judgement, so it stays with the human."""
         if by != "human":
             raise ProtectedFieldError(
                 "the agent may record evidence, not declare an item done")
-        self._require(item_id)
-        return self._append("completed", by, item_id=item_id)
+        with _LogLock(self.root):
+            self._require(item_id)
+            return self._append("completed", by, item_id=item_id)
 
-    def claim_done(self, item_id: str, text: str, by: str = "agent") -> dict:
+    def claim_done(self, item_id: str, text: str, by: str = "agent",
+                   session_id: str = "") -> dict:
         """C17: the agent says an item is finished; the human still ticks.
 
         Observable tier -- recording a claim is not deciding -- but only on an
@@ -366,18 +531,20 @@ class MissionStore:
         nobody agreed to would smuggle it toward the counter, and re-claiming
         a finished item is noise. Idempotent per item: a new claim replaces
         the old one, so a corrected claim does not stack."""
-        m = self.load()
-        if m is None:
-            raise NoMissionError(self.root.name)
-        d = next((d for d in m.checklist if d["id"] == item_id), None)
-        if d is None:
-            raise NoSuchItemError(item_id)
-        if not d.get("accepted"):
-            raise ValueError("not accepted — propose/accept it first; "
-                             "claims-done is for agreed work")
-        if d.get("done"):
-            raise ValueError("already ticked — nothing to suggest")
-        return self._append("claims_done", by, item_id=item_id, text=text)
+        with _LogLock(self.root):
+            m = self.load()
+            if m is None:
+                raise NoMissionError(self.root.name)
+            d = next((d for d in m.checklist if d["id"] == item_id), None)
+            if d is None:
+                raise NoSuchItemError(item_id)
+            if not d.get("accepted"):
+                raise ValueError("not accepted — propose/accept it first; "
+                                 "claims-done is for agreed work")
+            if d.get("done"):
+                raise ValueError("already ticked — nothing to suggest")
+            return self._append("claims_done", by, item_id=item_id, text=text,
+                                session_id=session_id)
 
     def remove(self, item_id: str, by: str) -> dict:
         """Drop an item from the plan. A soft delete: the event log keeps it.
@@ -387,8 +554,131 @@ class MissionStore:
         """
         if by != "human":
             raise ProtectedFieldError("only you can remove an item")
-        self._require(item_id)
-        return self._append("removed", by, item_id=item_id)
+        with _LogLock(self.root):
+            self._require(item_id)
+            return self._append("removed", by, item_id=item_id)
+
+    def lease(self, item_id: str, session_id: str,
+              by: str = "agent") -> dict:
+        """Take an item. Observable: coordination, not a ruling.
+
+        Refuses an unaccepted item -- leasing a proposal would let a session
+        start work the human has not agreed to, which is the move the whole
+        design exists to prevent -- and refuses one another LIVE lease holds,
+        because the point of the lease is that two sessions cannot both have
+        it. An EXPIRED lease is taken over silently: a dead holder is not a
+        holder.
+        """
+        with _LogLock(self.root):
+            m = self.load()
+            if m is None:
+                raise NoMissionError(self.root.name)
+            d = next((d for d in m.checklist if d["id"] == item_id), None)
+            if d is None:
+                raise NoSuchItemError(item_id)
+            if not d.get("accepted"):
+                raise ValueError("not accepted — a session may only take work "
+                                 "the human agreed to")
+            if d.get("done"):
+                raise ValueError("already ticked")
+            held = d.get("leased_by") or ""
+            fresh = (time.time() - (d.get("leased_at") or 0)) < LEASE_TTL
+            if held and held != session_id and fresh:
+                raise ValueError(f"held by {held[:8]} — leases expire after "
+                                 f"{LEASE_TTL // 60} min")
+            # The SAME session re-taking its own item renews it. A 90-minute
+            # lease that cannot be renewed silently expires under a long
+            # task, and the item becomes takeable by someone else while the
+            # original worker is still in it -- the lease's one guarantee,
+            # lost to the clock rather than to a conflict. Re-taking is the
+            # renewal, so a worker that checks back keeps its claim and one
+            # that has genuinely stopped lets it lapse.
+            return self._append("leased", by, item_id=item_id,
+                                session_id=session_id)
+
+    def release(self, item_id: str, note: str = "",
+                by: str = "agent") -> dict:
+        """Hand an item back without claiming it is finished.
+
+        The note matters more than it looks: a handback with no reason is
+        indistinguishable from a crashed session, and the next taker learns
+        nothing. The first real worker to hit this had to file a separate
+        proposal to explain itself, which is the wrong shape.
+        """
+        with _LogLock(self.root):
+            self._require(item_id)
+            return self._append("released", by, item_id=item_id, text=note)
+
+    def finding(self, item_id: str, text: str, session_id: str = "",
+                by: str = "agent") -> dict:
+        """A verifier's reason an item is NOT done. Observable.
+
+        This is the routing primitive: it CLEARS the agent's claims-done and
+        the lease, so the row returns to the ready queue carrying why, and
+        the next session to ask for work gets it. No human ruling is needed
+        because none is being made -- the item was accepted long ago, the
+        claim was only a suggestion, and nothing here ticks anything.
+
+        A finding on an item with no claim is still useful (a defect found by
+        reading, not by checking a claim), so that is allowed; a finding on a
+        TICKED item is not -- reopening the human's own judgement is a
+        different act, and it belongs to them.
+        """
+        if not (text or "").strip():
+            raise ValueError("a finding needs a reason — it is what routes "
+                             "the work, and an empty one is a silent reopen")
+        with _LogLock(self.root):
+            m = self.load()
+            if m is None:
+                raise NoMissionError(self.root.name)
+            d = next((d for d in m.checklist if d["id"] == item_id), None)
+            if d is None:
+                raise NoSuchItemError(item_id)
+            if not d.get("accepted"):
+                raise ValueError("not accepted — nothing to send back")
+            if d.get("done"):
+                raise ValueError("already ticked by the human — a finding "
+                                 "cannot reopen their judgement; say it with "
+                                 "`mission observe` instead")
+            return self._append("finding", by, item_id=item_id, text=text,
+                                session_id=session_id)
+
+    def checked(self, item_id: str, note: str, session_id: str = "",
+                by: str = "agent") -> dict:
+        """A second session re-derived this claim and agrees. Observable.
+
+        The counterpart to `finding`, and deliberately WEAKER than it. A
+        finding routes work, so it changes the lane. This changes nothing:
+        the item stays in review and the human's confirm is still the only
+        thing that ticks it. All it adds is a line saying somebody other than
+        the claimant looked.
+
+        ⚠️ It is an OPINION, not evidence, and every surface that prints it
+        has to say so. The verifier is the same model reading the same disk;
+        what makes it worth anything is a fresh context with no access to the
+        doer's reasoning, which is a weaker claim than independence and must
+        not be displayed as the stronger one.
+        """
+        if not (note or "").strip():
+            raise ValueError("say what you checked — an unexplained 'agrees' "
+                             "is the rubber stamp this exists to avoid")
+        with _LogLock(self.root):
+            m = self.load()
+            if m is None:
+                raise NoMissionError(self.root.name)
+            d = next((d for d in m.checklist if d["id"] == item_id), None)
+            if d is None:
+                raise NoSuchItemError(item_id)
+            if not d.get("claimed_done"):
+                raise ValueError("nothing claimed on this item — there is no "
+                                 "claim to check")
+            if session_id and session_id == (d.get("claimed_by") or ""):
+                # Self-grading is the failure this whole role exists to
+                # avoid, and it is worth refusing rather than labelling.
+                raise ValueError("the session that claimed it cannot be the "
+                                 "one that checks it")
+            return self._append("checked", by, item_id=item_id, text=note,
+                                session_id=session_id)
 
     def detour(self, label: str, by: str = "agent") -> dict:
         """Declare a side quest. Observable: recording is not deciding."""
@@ -460,81 +750,236 @@ class MissionStore:
     def load(self) -> Mission | None:
         m: Mission | None = None
         self.damaged = 0
+        self.damage = []
         for ev in self.events():
-            k = ev.get("kind")
-            if k == "created" and m is not None:
-                # A SECOND `created` is a bug, not a reset. Folding from the
-                # last one meant a stray init wiped a live plan: on 2026-08-19
-                # a session working in transcript-audit appended one to the
-                # Tripnom mission with a chat message as the objective, and 52
-                # events -- a 26-item plan and 13 pending proposals -- went
-                # invisible in one line. Starting over is now something you
-                # SAY (`discarded`), not something a duplicate implies.
-                continue
-            if k == "created":
-                m = Mission(id=self.root.name, session_id=ev.get("session_id", ""),
-                            cwd=ev.get("cwd", ""), objective=ev.get("objective", ""),
-                            parent_session=ev.get("parent_session", ""),
-                            parent_item=ev.get("parent_item", ""),
-                            created=ev.get("at", 0.0),
-                            typed_by_human=ev.get("typed_by", "human") == "human")
-            elif m is None:
-                continue
-            elif k == "set":
-                if ev.get("typed_by", "human") != "human":
-                    m.typed_by_human = False
-                f, v = ev["field"], ev["value"]
-                setattr(m, f, list(v) if f in LIST_FIELDS and isinstance(v, list) else v)
-            elif k == "proposed":
-                m.checklist.append(Item(ev["item_id"], ev["text"],
-                                        proposed_by=ev.get("by", "agent"),
-                                        parent=ev.get("parent")).to_dict())
-            elif k == "accepted":
-                for d in m.checklist:
-                    if d["id"] == ev["item_id"]:
-                        d["accepted"] = True
-            elif k == "completed":
-                for d in m.checklist:
-                    if d["id"] == ev["item_id"]:
-                        d["done"] = True
-                        # The human's real tick supersedes the suggestion.
-                        d["claimed_done"] = ""
-            elif k == "claims_done":
-                for d in m.checklist:
-                    if d["id"] == ev["item_id"] and not d["done"]:
-                        d["claimed_done"] = ev.get("text", "")
-            elif k == "archived":
-                m.archived = True
-            elif k == "unarchived":
-                m.archived = False
-            elif k == "discarded":
-                # The only way to start over: written by
-                # `init --force --discard-plan`, explicitly, by a person.
-                m = None
-            elif k == "removed":
-                gone = {ev["item_id"]}
-                # a removed subgoal takes its subtree with it
-                changed = True
-                while changed:
-                    changed = False
+            # A line that PARSES but is missing a field it needs was not
+            # handled at all, and the consequences were worse than a torn
+            # line: appending {"kind":"accepted","by":"human"} -- no
+            # item_id -- gave a KeyError traceback from `mission show`
+            # AND from `mission doctor`, the tool whose whole job is to
+            # diagnose a damaged log. `whereami` went silent and the board
+            # dropped the card with no message at all.
+            #
+            # SECURITY.md said damage is "surfaced, not swallowed". That
+            # was true only for lines that fail to parse as JSON. A bad
+            # event is now counted exactly like a torn one -- the same
+            # counter, so one number means "lines this fold could not
+            # use" rather than two kinds of damage with one name.
+            try:
+                k = ev.get("kind")
+                if k == "created" and m is not None:
+                    # A SECOND `created` is a bug, not a reset. Folding from the
+                    # last one meant a stray init wiped a live plan: on 2026-08-19
+                    # a session working in transcript-audit appended one to the
+                    # Wayfinder mission with a chat message as the objective, and 52
+                    # events -- a 26-item plan and 13 pending proposals -- went
+                    # invisible in one line. Starting over is now something you
+                    # SAY (`discarded`), not something a duplicate implies.
+                    continue
+                if k == "created":
+                    m = Mission(id=self.root.name, session_id=ev.get("session_id", ""),
+                                cwd=ev.get("cwd", ""), objective=ev.get("objective", ""),
+                                parent_session=ev.get("parent_session", ""),
+                                parent_item=ev.get("parent_item", ""),
+                                created=ev.get("at", 0.0),
+                                typed_by_human=ev.get("typed_by", "human") == "human")
+                elif m is None:
+                    continue
+                elif k == "set":
+                    if ev.get("typed_by", "human") != "human":
+                        m.typed_by_human = False
+                    f, v = ev["field"], ev["value"]
+                    setattr(m, f, list(v) if f in LIST_FIELDS and isinstance(v, list) else v)
+                elif k == "proposed":
+                    m.checklist.append(Item(ev["item_id"], ev["text"],
+                                            proposed_by=ev.get("by", "agent"),
+                                            parent=ev.get("parent")).to_dict())
+                elif k == "accepted":
                     for d in m.checklist:
-                        if d.get("parent") in gone and d["id"] not in gone:
-                            gone.add(d["id"])
-                            changed = True
-                m.checklist = [d for d in m.checklist if d["id"] not in gone]
-            elif k == "detour":
-                m.detours.append(ev["label"])
-            elif k == "returned":
-                if m.detours:
-                    m.detours.pop()
-            elif k == "observed":
-                getattr(m, ev["field"]).append(ev["value"])
+                        if d["id"] == ev["item_id"]:
+                            d["accepted"] = True
+                            d["accepted_at"] = ev.get("at", 0.0)
+                elif k == "completed":
+                    for d in m.checklist:
+                        if d["id"] == ev["item_id"]:
+                            d["done"] = True
+                            # The human's real tick supersedes the suggestion
+                            # -- and the verifier's objection to it. A person
+                            # ticking an item over a finding is allowed to be
+                            # the last word; that is what one writer means.
+                            d["claimed_done"] = ""
+                            d["rework"] = ""
+                            d["leased_by"] = ""
+                            d["checked_note"] = ""
+                elif k == "claims_done":
+                    for d in m.checklist:
+                        if d["id"] == ev["item_id"] and not d["done"]:
+                            d["claimed_done"] = ev.get("text", "")
+                            d["claimed_by"] = ev.get("session_id", "")
+                            # A fresh claim answers the last finding: the row
+                            # moves out of the ready queue and into review,
+                            # which is where a re-done item belongs. Any
+                            # earlier check goes with it -- it was a check of
+                            # a different claim.
+                            d["rework"] = ""
+                            d["checked_note"] = ""
+                            d["checked_by"] = ""
+                elif k == "leased":
+                    for d in m.checklist:
+                        if d["id"] == ev["item_id"]:
+                            d["leased_by"] = ev.get("session_id", "")
+                            d["leased_at"] = ev.get("at", 0.0)
+                elif k == "released":
+                    for d in m.checklist:
+                        if d["id"] == ev["item_id"]:
+                            d["leased_by"] = ""
+                            d["leased_at"] = 0.0
+                            d["released_at"] = ev.get("at", 0.0)
+                            d["release_note"] = ev.get("text", "")
+                elif k == "finding":
+                    for d in m.checklist:
+                        if d["id"] == ev["item_id"]:
+                            # The claim was only ever a SUGGESTION, so a
+                            # verifier clearing it takes nothing away from
+                            # anyone: `done` still has exactly one writer and
+                            # this item was never ticked. The lease goes too,
+                            # or the row would sit "in progress" under a
+                            # session that has already finished with it.
+                            d["claimed_done"] = ""
+                            d["leased_by"] = ""
+                            d["leased_at"] = 0.0
+                            d["rework"] = ev.get("text", "")
+                            d["rework_by"] = ev.get("session_id", "")
+                            d["rework_at"] = ev.get("at", 0.0)
+                            # A new finding is a new reason, so an earlier
+                            # handback no longer describes it.
+                            d["released_at"] = 0.0
+                            d["release_note"] = ""
+                            d["checked_note"] = ""
+                            d["checked_by"] = ""
+                elif k == "checked":
+                    for d in m.checklist:
+                        if d["id"] == ev["item_id"]:
+                            d["checked_note"] = ev.get("text", "")
+                            d["checked_by"] = ev.get("session_id", "")
+                elif k == "archived":
+                    m.archived = True
+                elif k == "unarchived":
+                    m.archived = False
+                elif k == "discarded":
+                    # The only way to start over: written by
+                    # `init --force --discard-plan`, explicitly, by a person.
+                    m = None
+                elif k == "removed":
+                    gone = {ev["item_id"]}
+                    # a removed subgoal takes its subtree with it
+                    changed = True
+                    while changed:
+                        changed = False
+                        for d in m.checklist:
+                            if d.get("parent") in gone and d["id"] not in gone:
+                                gone.add(d["id"])
+                                changed = True
+                    m.checklist = [d for d in m.checklist if d["id"] not in gone]
+                elif k == "detour":
+                    m.detours.append(ev["label"])
+                elif k == "returned":
+                    if m.detours:
+                        m.detours.pop()
+                elif k == "observed":
+                    getattr(m, ev["field"]).append(ev["value"])
+            except (KeyError, TypeError, AttributeError, ValueError,
+                    IndexError) as exc:
+                self.damaged += 1
+                self.damage.append(f"{ev.get('kind', '?')}: "
+                                   f"{type(exc).__name__}: {exc}")
+                continue
         return m
 
     def why(self, fieldname: str) -> list[dict]:
         """Every event that touched this field, in order. Provenance is the log."""
         return [e for e in self.events()
                 if e.get("field") == fieldname or e.get("kind") == "created"]
+
+
+def _append_line(log: Path, line: str) -> None:
+    """One line, one `os.write`, on an O_APPEND fd.
+
+    It was `open("a", encoding="utf-8").write(...)` -- Python's buffered text
+    writer, which makes no promise about how many `write(2)` calls it
+    becomes. Two sessions appending at the same instant could therefore
+    interleave MID-LINE and tear both events. "Concurrency is fine in
+    practice" was the documented answer and nothing tested it.
+    #
+    A single `os.write` to an `O_APPEND` descriptor is atomic on POSIX for a
+    payload up to the pipe/disk-block guarantee, and the kernel does the
+    seek-to-end, so two writers cannot overwrite each other. Events here are
+    small; a very long one (a many-line objective) is still one syscall,
+    which is the strongest thing available without a lock on every append.
+    """
+    data = line.encode("utf-8")
+    fd = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        written = 0
+        while written < len(data):
+            written += os.write(fd, data[written:])
+    finally:
+        os.close(fd)
+
+
+class _LogLock:
+    """An advisory lock around check-then-append.
+
+    `_append_line` stops a line being TORN. It does nothing about the other
+    race: every write method does `load()` -> check -> append, so two
+    sessions can both read "not yet done", both pass the check, and both
+    append -- or one can `claim_done` an item while a person `remove`s it.
+    The fold tolerates most of that, which is why it was never urgent, and
+    "the fold tolerates it" is not the same claim as "it cannot happen".
+
+    Advisory, and on a sidecar file rather than the log itself: a reader that
+    does not take the lock is unaffected, which keeps `show` and the board
+    free of it.
+    """
+
+    def __init__(self, root: Path):
+        self.path = Path(root) / ".lock"
+        self.fd = -1
+
+    def __enter__(self):
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.fd = os.open(self.path, os.O_WRONLY | os.O_CREAT, 0o600)
+        except OSError:
+            self.fd = -1
+            return self
+        try:
+            import fcntl
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            # Windows has no flock; `msvcrt.locking` is the equivalent and is
+            # not exercised by any platform this tool is tested on, so it is
+            # attempted and never allowed to fail the write.
+            try:
+                import msvcrt
+                msvcrt.locking(self.fd, msvcrt.LK_LOCK, 1)
+            except Exception:
+                pass
+        return self
+
+    def __exit__(self, *exc):
+        if self.fd >= 0:
+            try:
+                import fcntl
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = -1
+        return False
 
 
 def root_for(session_id: str, base: Path | None = None) -> Path:

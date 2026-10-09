@@ -33,7 +33,7 @@ def _legacy(sid, name, objective, items=()):
 
 
 def test_migration_is_lossless():
-    st = _legacy("s1", "Career hub", "Ship the career pages", ("one", "two"))
+    st = _legacy("s1", "Docs site", "Ship the docs pages", ("one", "two"))
     before = st.load()
     rows = M.migrate()
     after = MissionStore(M.missions_root() / rows[0]["mission"]).load()
@@ -48,17 +48,17 @@ def test_migration_is_idempotent():
     """Keying the skip on the slug minted "<name>-2" on every run: 9 missions
     became 18, in the one command whose whole promise is that re-running it is
     safe."""
-    _legacy("s1", "Career hub", "a goal")
+    _legacy("s1", "Docs site", "a goal")
     assert len(M.migrate()) == 1
     assert M.migrate() == [] and M.migrate() == []
     assert len(M.all_missions()) == 1
 
 
 def test_a_mission_is_addressed_by_name_not_by_session():
-    _legacy("5fd98e2e-long-uuid", "Ship Tripnom", "Get it to the App Store")
+    _legacy("a1b2c3d4-long-uuid", "Ship Wayfinder", "Get it to the App Store")
     M.migrate()
-    assert M.find("tripnom") == "ship-tripnom"
-    assert M.find("Ship Tripnom") == "ship-tripnom"
+    assert M.find("wayfinder") == "ship-wayfinder"
+    assert M.find("Ship Wayfinder") == "ship-wayfinder"
 
 
 def test_an_ambiguous_name_refuses():
@@ -74,9 +74,9 @@ def test_many_sessions_serve_one_goal_and_activity_sums(monkeypatch):
     """One goal spanning four sessions used to read as four cards, each
     showing a slice of the work."""
     from agent_mission import board
-    _legacy("s1", "Career hub", "Ship the career pages")
+    _legacy("s1", "Docs site", "Ship the docs pages")
     M.migrate()
-    mid = M.find("career")
+    mid = M.find("docs")
     M.attach("s2", mid)
     M.attach("s3", mid)
     assert M.sessions_of(mid) == ["s1", "s2", "s3"]
@@ -94,13 +94,13 @@ def test_many_sessions_serve_one_goal_and_activity_sums(monkeypatch):
 
 def test_re_attaching_moves_a_session_to_the_new_goal():
     """Sessions pivot. The latest attachment wins, and the history stays."""
-    _legacy("a", "Career hub", "one")
-    _legacy("b", "Tripnom", "two")
+    _legacy("a", "Docs site", "one")
+    _legacy("b", "Wayfinder", "two")
     M.migrate()
-    M.attach("s9", M.find("career"))
-    assert M.attachments()["s9"] == "career-hub"
-    M.attach("s9", M.find("tripnom"))
-    assert M.attachments()["s9"] == "tripnom"
+    M.attach("s9", M.find("docs"))
+    assert M.attachments()["s9"] == "docs-site"
+    M.attach("s9", M.find("wayfinder"))
+    assert M.attachments()["s9"] == "wayfinder"
 
 
 def test_cwd_never_routes_a_write(monkeypatch, tmp_path):
@@ -108,15 +108,15 @@ def test_cwd_never_routes_a_write(monkeypatch, tmp_path):
     the whole tree, while the goal lives three folders down. cwd says what a
     session can SEE, never what it is FOR."""
     from agent_mission.__main__ import _mission_target
-    _legacy("s1", "Career hub", "a goal")
+    _legacy("s1", "Docs site", "a goal")
     M.migrate()
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
 
     a = type("A", (), {"on": None, "cwd": str(tmp_path), "session": None})()
     assert _mission_target(a) is None, "no name, no attachment -> no target"
 
-    a.on = "career"
-    assert _mission_target(a) == ("career-hub", "explicit")
+    a.on = "docs"
+    assert _mission_target(a) == ("docs-site", "explicit")
 
 
 # ── Phase 3: less ceremony ───────────────────────────────────────────────────
@@ -178,13 +178,13 @@ def test_an_unattached_session_is_offered_the_goals_that_exist(tmp_path,
     already exists and this session simply has not said so."""
     from agent_mission.__main__ import main
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "brand-new")
-    _legacy("s1", "Career hub", "Ship the career pages")
+    _legacy("s1", "Docs site", "Ship the docs pages")
     M.migrate()
 
     assert main(["show"]) == 1
     out = capsys.readouterr().out
-    assert "not attached" in out and "mission attach career-hub" in out
-    assert "Ship the career pages" in out
+    assert "not attached" in out and "mission attach docs-site" in out
+    assert "Ship the docs pages" in out
 
 
 def test_the_reanchor_hook_offers_attach_not_init(monkeypatch, capsys):
@@ -193,11 +193,11 @@ def test_the_reanchor_hook_offers_attach_not_init(monkeypatch, capsys):
     recommended by the tool itself."""
     from agent_mission.__main__ import main
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "fresh")
-    _legacy("s1", "Career hub", "Ship the career pages")
+    _legacy("s1", "Docs site", "Ship the docs pages")
     M.migrate()
 
     assert main(["whereami", "--full"]) == 0
     out = capsys.readouterr().out
     assert "NOT ATTACHED" in out and "mission attach" in out
-    assert "career-hub" in out and "Ship the career pages" in out
+    assert "docs-site" in out and "Ship the docs pages" in out
     assert "mission init" not in out, "never advise a second goal"

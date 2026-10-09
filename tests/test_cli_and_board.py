@@ -354,7 +354,11 @@ def test_a_chosen_session_name_is_not_cut_in_half():
     """uuids shorten to 8 hex fine. An id a person chose does not: the board
     labelled the session "mltest-subagent" as "mltest-s"."""
     from agent_mission.session import short_id
-    assert short_id("be17144b-d3be-41dd-a02a-c6ef71292e3f") == "be17144b"
+    # A synthetic uuid: this line used to carry a REAL session id, which has
+    # been public since 2026-08-26 and proves nothing a made-up one does not.
+    # (The history still holds it; rewriting that is not worth it for a local
+    # identifier, but new ones should not be added.)
+    assert short_id("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0") == "0f1e2d3c"
     assert short_id("mltest-subagent") == "mltest-subagent"
     assert short_id("short") == "short"
     # "aaaa..." is all hex characters, so it takes the uuid path -- which is
@@ -422,7 +426,7 @@ def test_no_code_path_resolves_a_target_from_the_working_directory(
         tmp_path, monkeypatch):
     """C11c, finished. cwd used to route writes: the missions recorded for this
     directory, deepest match first. It ran once for real -- a career objective
-    was written onto the Tripnom mission and renamed it, because both were
+    was written onto the Wayfinder mission and renamed it, because both were
     opened at the Mission Control root.
 
     A session is opened where the work can REACH what it needs. That says what
@@ -592,7 +596,7 @@ def test_a_failed_refresh_keeps_the_last_good_board(monkeypatch):
 
 
 def test_force_will_not_silently_discard_a_plan(tmp_path, monkeypatch, capsys):
-    """Another session told Jonathan to run `mission init --force` to fix a bad
+    """Another session told the maintainer to run `mission init --force` to fix a bad
     objective. It would have dropped 11 items and 10 pending proposals: load()
     folds from the LAST `created` event, so a re-init discards everything
     before it."""
@@ -629,13 +633,13 @@ def test_a_write_says_which_mission_it_landed_on(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
     monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
     st = MissionStore(root_for("s"))
-    st.create("s", "/repo", "the career hub", by="human")
-    st.set_protected("name", "Career hub", by="human")
+    st.create("s", "/repo", "the docs site", by="human")
+    st.set_protected("name", "Docs site", by="human")
 
     main(["add", "Backend", "--session", "s"])
-    assert "Career hub" in capsys.readouterr().out
+    assert "Docs site" in capsys.readouterr().out
     main(["propose", "invite tokens", "--session", "s"])
-    assert "Career hub" in capsys.readouterr().out
+    assert "Docs site" in capsys.readouterr().out
 
 
 def test_the_readme_does_not_hardcode_a_test_count():
@@ -646,6 +650,24 @@ def test_the_readme_does_not_hardcode_a_test_count():
     stale = re.findall(r"\b\d+\s*tests\b", readme)
     assert not stale, f"hardcoded test counts in the README: {stale}"
     assert "actions/workflows/tests.yml/badge.svg" in readme, "CI badge instead"
+
+
+def test_the_deny_rules_cover_every_spelling_and_the_write_granting_commands():
+    """The rules matched `mission set` only. The demonstrated attack ran as
+    `python3 -m agent_mission set ...` -- not covered -- and `board`, which
+    mints the write code, was not denied at all. See adversarial-testing.md
+    round 4."""
+    from agent_mission.__main__ import DENY_RULES
+    for spelling in ("Bash(python -m agent_mission:*)",
+                     "Bash(python3 -m agent_mission:*)"):
+        assert spelling in DENY_RULES, spelling
+    for cmd in ("board", "passcode"):
+        assert f"Bash(mission {cmd}:*)" in DENY_RULES, cmd
+    # `script` exists in this context only to manufacture a tty.
+    assert "Bash(script:*)" in DENY_RULES
+    # The original five must survive the widening.
+    for cmd in ("set", "accept", "done", "remove", "add"):
+        assert f"Bash(mission {cmd}:*)" in DENY_RULES, cmd
 
 
 def test_the_deny_rule_count_in_the_docs_matches_the_list():
@@ -1035,10 +1057,10 @@ def test_session_accepts_a_name_not_only_a_uuid(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
     st = MissionStore(root_for("abc123def"))
     st.create("abc123def", "/repo", "the goal", by="human")
-    st.set_protected("name", "Career hub", by="human")
+    st.set_protected("name", "Docs site", by="human")
     st.propose("an idea", by="agent")
 
-    assert main(["pending", "--session", "Career hub"]) == 0
+    assert main(["pending", "--session", "Docs site"]) == 0
     assert "1 awaiting you" in capsys.readouterr().out
     assert main(["pending", "--session", "abc123"]) == 0, "prefix works too"
 
@@ -1122,9 +1144,15 @@ def test_proposals_render_above_the_agreed_plan():
     for. The one thing on a card that asks something of you should not have to
     be hunted for among the things that do not."""
     from agent_mission.board import PAGE
-    assert "waiting on you</h3>" in PAGE
+    assert "to accept" in PAGE and "to confirm" in PAGE, \
+        "the block heads with what it is asking for, per kind"
     assert PAGE.index("class=asks") < PAGE.index("<ul class=chk>${agreed"), \
         "the asking block is emitted before the agreed list"
+    # A claims-done row is an ACCEPTED item, so `!i.ok` alone left it in the
+    # plan -- read where the plan is read, not where decisions are made.
+    assert "ask=v.filter(i=>!i.ok||i.cd)" in PAGE, "confirms join the block"
+    assert "agreed=v.filter(i=>i.ok&&!i.cd)" in PAGE, \
+        "and leave the plan list while they are waiting, so they appear once"
 
 
 def test_setup_never_wraps_its_own_wrapper(tmp_path, monkeypatch, at_a_keyboard):
@@ -1293,7 +1321,7 @@ def test_doctor_reads_the_live_missions_not_their_migrated_twins(
         tmp_path, monkeypatch):
     """`migrate` copies events into missions/<name>/ and leaves the old
     session-keyed directory behind, frozen. doctor walked the old layout, so it
-    audited the twins and saw no live mission at all -- career-hub had 64 events
+    audited the twins and saw no live mission at all -- docs-site had 64 events
     and doctor read the 27 in its abandoned copy, reporting proposals that were
     accepted two days earlier. The board's review lane reads this."""
     from agent_mission import doctor, missions as M

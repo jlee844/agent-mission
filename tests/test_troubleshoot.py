@@ -29,21 +29,36 @@ def _home(tmp_path, monkeypatch):
 def test_transcript_for_prefers_the_newest_across_project_dirs(tmp_path, monkeypatch):
     """A session resumed from a different cwd writes its transcript into a
     different project folder. First-glob-hit read the stale copy and dimmed a
-    live session (seen live: 5fd98e2e, written seconds earlier, shown dead)."""
-    projects = tmp_path / "projects"
-    old = projects / "-Users-x-repo"
-    new = projects / "-Users-x-repo-sub"
-    old.mkdir(parents=True)
-    new.mkdir(parents=True)
-    (old / "abc123.jsonl").write_text("{}\n")
-    (new / "abc123.jsonl").write_text("{}\n{}\n")
-    stale = time.time() - 3600
+    live session (seen live: written seconds earlier, shown dead).
+
+    ⚠️ THIS ASSERTS BOTH DIRECTIONS ON PURPOSE, AND THE FIRST VERSION DID NOT.
+    `Path.glob` yields directory order, not sorted order, and on the author's
+    filesystem it happened to yield the NEWER folder first -- so `hits[0]`
+    coincidentally equalled the right answer and the test passed against the
+    very bug it was written for. Verified by mutation: restoring
+    `return hits[0]` left this file green at 5 passed.
+
+    Whichever order glob returns is therefore fixed for a given tree, so one
+    ordering cannot prove the rule. Making each copy the newest in turn does:
+    under first-glob-hit exactly one of the two rounds must fail, whatever
+    order the filesystem chose.
+    """
     import os
-    os.utime(old / "abc123.jsonl", (stale, stale))
+    projects = tmp_path / "projects"
+    a = projects / "-Users-x-repo"
+    b = projects / "-Users-x-repo-sub"
+    for d in (a, b):
+        d.mkdir(parents=True)
+        (d / "abc123.jsonl").write_text("{}\n")
     monkeypatch.setattr(S, "PROJECTS", projects)
 
-    got = S.transcript_for("abc123")
-    assert got == new / "abc123.jsonl", "newest transcript must win"
+    for newest, stale in ((b, a), (a, b)):
+        now = time.time()
+        os.utime(newest / "abc123.jsonl", (now, now))
+        os.utime(stale / "abc123.jsonl", (now - 3600, now - 3600))
+        assert S.transcript_for("abc123") == newest / "abc123.jsonl", (
+            f"newest transcript must win, but the stale copy in "
+            f"{stale.name} was returned")
 
 
 def test_signal_announces_a_mid_session_contract_upgrade_once(tmp_path, monkeypatch):

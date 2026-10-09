@@ -374,7 +374,7 @@ def test_a_delegated_session_name_is_not_cut_in_half():
 def test_an_agent_cannot_add_an_already_accepted_item(tmp_path, monkeypatch, capsys):
     """`add` is propose+accept in one step, both as the human. Ungated it was
     the entire authority model in one command: an agent could write an accepted
-    item that `mission why` then reported as Jonathan's."""
+    item that `mission why` then reported as the maintainer's."""
     from agent_mission.__main__ import DENY_RULES, main
     monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
     MissionStore(root_for("s")).create("s", "/tmp", "goal", by="human")
@@ -670,7 +670,7 @@ def test_the_suite_does_not_inherit_a_session_id():
 
 def test_a_second_created_event_cannot_wipe_a_live_plan(store):
     """On 2026-08-19 a session working in transcript-audit appended a `created`
-    event to the Tripnom mission with one of Jonathan's chat messages as the
+    event to the Wayfinder mission with one of the maintainer's chat messages as the
     objective. load() folded from the LAST created, so 52 events -- a 26-item
     plan and 13 pending proposals -- went invisible in one line.
 
@@ -730,25 +730,25 @@ def test_a_tty_targeting_by_env_var_must_confirm(tmp_path, monkeypatch, capsys):
     from agent_mission.__main__ import main
     monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
     monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "tripnom")
-    st = MissionStore(root_for("tripnom"))
-    st.create("tripnom", "/repo", "Ship Tripnom to the App Store", by="human",
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "wayfinder")
+    st = MissionStore(root_for("wayfinder"))
+    st.create("wayfinder", "/repo", "Ship Wayfinder to the App Store", by="human",
               typed_by="human")
-    st.set_protected("name", "Ship Tripnom", by="human", typed_by="human")
+    st.set_protected("name", "Ship Wayfinder", by="human", typed_by="human")
 
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
     monkeypatch.setattr("builtins.input", lambda *a: "n")
-    assert main(["set", "name", "Career hub"]) == 1
+    assert main(["set", "name", "Docs site"]) == 1
 
-    m = MissionStore(root_for("tripnom")).load()
-    assert m.name == "Ship Tripnom", "declining wrote nothing"
+    m = MissionStore(root_for("wayfinder")).load()
+    assert m.name == "Ship Wayfinder", "declining wrote nothing"
     out = capsys.readouterr().out
-    assert "Ship Tripnom to the App Store" in out, "the OBJECTIVE is shown"
+    assert "Ship Wayfinder to the App Store" in out, "the OBJECTIVE is shown"
     assert "CLAUDE_CODE_SESSION_ID" in out, "and why it resolved there"
 
     monkeypatch.setattr("builtins.input", lambda *a: "y")
-    assert main(["set", "name", "Career hub"]) == 0
-    assert MissionStore(root_for("tripnom")).load().name == "Career hub"
+    assert main(["set", "name", "Docs site"]) == 0
+    assert MissionStore(root_for("wayfinder")).load().name == "Docs site"
 
 
 def test_an_explicit_session_is_never_second_guessed(tmp_path, monkeypatch):
@@ -775,11 +775,11 @@ def test_the_target_line_shows_the_objective_not_just_the_name(tmp_path,
     monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
     monkeypatch.setenv("AGENT_MISSION_I_AM_HUMAN", "1")
     st = MissionStore(root_for("s"))
-    st.create("s", "/repo", "Ship Tripnom to the App Store", by="human",
+    st.create("s", "/repo", "Ship Wayfinder to the App Store", by="human",
               typed_by="human")
-    st.set_protected("name", "Career hub", by="human", typed_by="human")
+    st.set_protected("name", "Docs site", by="human", typed_by="human")
 
     main(["propose", "an idea", "--session", "s"])
     out = capsys.readouterr().out
-    assert "Career hub" in out and "Ship Tripnom to the App Store" in out, \
+    assert "Docs site" in out and "Ship Wayfinder to the App Store" in out, \
         "the mislabel contradicts itself on screen"

@@ -15,7 +15,7 @@ from pathlib import Path
 from .actions import Session, Unauthorised, apply as apply_action
 from .health import collisions, inspect as inspect_health
 from .session import PROJECTS, activity, live, short_id, transcript_for
-from .store import MissionStore, root_for
+from .store import LEASE_TTL, MissionStore, root_for
 
 
 def _slug(cwd: str) -> str:
@@ -73,7 +73,8 @@ def _tree(m) -> list[dict]:
             # the evidence, not the agent's confidence.
             cd = None
             if n.item.claimed_done and not done:
-                v = _verdict(n.item.claimed_done, cwd=m.cwd or "")
+                v = _verdict(n.item.claimed_done, cwd=m.cwd or "",
+                             accepted_at=getattr(n.item, "accepted_at", 0.0))
                 cd = {"text": n.item.claimed_done[:160], **v}
             # Colour is the GROUP, so a child carries its top-level subgoal's
             # hue: the point is telling the backend block from the frontend
@@ -105,15 +106,108 @@ def _safe_load(path):
     whole page down for everyone rather than losing one card.
     """
     try:
-        return MissionStore(path).load()
-    except Exception:
+        st = MissionStore(path)
+        m = st.load()
+    except Exception as exc:
+        # A card that VANISHES is the worst outcome: the goal is still on
+        # disk, the board shows nothing, and nothing says so. Return a
+        # sentinel the renderer turns into a visible "log damaged" row.
+        return _Damaged(path.name, f"{type(exc).__name__}: {exc}")
+    if m is None:
         return None
+    if st.damaged:
+        # Loaded, but part of the log was unusable. The card renders
+        # normally and carries the count, because the plan it shows is now
+        # known to be incomplete.
+        m.damaged = st.damaged
+        m.damage = list(st.damage)
+    return m
+
+
+class _Damaged:
+    """A mission whose log could not be folded at all.
+
+    Not None: None means "no mission here", and the two must not render the
+    same. `mission doctor` is the only thing that can act on it, so the row
+    says that and nothing else.
+    """
+
+    archived = False
+    checklist: list = []
+    detours: list = []
+
+    def __init__(self, mid: str, why: str):
+        self.id = mid
+        self.why = why
+        self.title = mid
+        self.objective = ""
+        self.damaged = 1
+        self.damage = [why]
 
 
 def _missions_home() -> Path:
     import os
     return Path(os.environ.get("AGENT_MISSION_HOME",
                                Path.home() / ".agent-mission"))
+
+
+def _mtime(path) -> float:
+    """mtime, or 0.0 when the file cannot be stat'd. 0.0 reads as very old."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _queue_rows(m, mid: str) -> dict:
+    """Each lane as plain rows the page can render without re-deriving.
+
+    The lane assignment happens ONCE, in `Mission.lane_of`, so the board and
+    `mission queue` cannot disagree about where an item is -- which they
+    would the moment two copies of the rule existed.
+    """
+    import time as _t
+    from .delegable import verdict_for as _delegable
+    now = _t.time()
+    _stale = {i.id for i in m.untouched(now=now)}
+    out: dict = {}
+    for lane, items in m.lanes(now).items():
+        if lane == "done":
+            continue
+        out[lane] = [{
+            "id": i.id, "text": i.text[:160], "goal": mid,
+            "goal_title": m.title,
+            "rework": (i.rework or "")[:200],
+            "rework_by": short_id(i.rework_by) if i.rework_by else "",
+            "held_by": short_id(i.leased_by) if i.leased_by else "",
+            "held_min": int((now - i.leased_at) // 60) if i.leased_at else 0,
+            "ttl_min": max(0, int((LEASE_TTL - (now - i.leased_at)) // 60))
+            if i.leased_at else 0,
+            "claim": (i.claimed_done or "")[:160],
+            # WHICH session said it was done. Populated in the store by
+            # `claims_done` and never carried here, so the review lane showed
+            # that something awaited a check but not who had claimed it --
+            # the one fact you need to know whether the checker and the
+            # claimant are the same session.
+            "claimed_by": short_id(i.claimed_by) if i.claimed_by else "",
+            # A second session's OPINION, carried separately from the disk's
+            # verdict so the page can never print one as the other.
+            "checked_note": (i.checked_note or "")[:200],
+            "checked_by": short_id(i.checked_by) if i.checked_by else "",
+            # C19: could a FRESH instance be handed this one? Mechanical,
+            # from the fields above -- never a reading of the text. The
+            # negative case is the useful one, so the fact travels with the
+            # flag and the page prints it rather than a bare badge.
+            "delegable": _delegable(m, i, now).ok,
+            "delegable_fact": _delegable(m, i, now).fact[:140],
+            # Agreed long ago and never touched. A measured pair -- the
+            # accept time, and the absence of every lease/claim/release --
+            # not a reading of the code. -1 means the log never recorded an
+            # accept time, which is unknown rather than old.
+            "untouched_days": (round(m.days_since_accepted(i, now), 0)
+                               if i.id in _stale else 0),
+        } for i in items]
+    return out
 
 
 def mission_rows() -> list[dict]:
@@ -127,19 +221,48 @@ def mission_rows() -> list[dict]:
     # shadowed it, so a test could not substitute it -- and neither could
     # anything else that needed to.
     from . import missions as M
+    from . import heartbeat as HB
     out = []
-    live_ids = set()
-    for proc in live():
-        d = PROJECTS / _slug(proc["cwd"])
-        if d.exists():
-            for tp in sorted((p for p in d.glob("*.jsonl")
-                              if p.stat().st_size > 2000),
-                             key=lambda p: -p.stat().st_mtime)[:proc["procs"]]:
-                live_ids.add(tp.stem)
+    # C19-5(b): liveness is now REPORTED by each session from the hook that
+    # runs every turn, keyed on the Claude pid the hook can see and nothing
+    # outside can. The guess it replaces mapped a cwd to one project dir and
+    # took the top N transcripts by mtime -- measured on 2026-10-08 that
+    # reported six ~4-hour-dead sessions as live and DROPPED a live idle one,
+    # which was the dimming the board had already been patched for once.
+    #
+    # `known` is the honest half: a session that has never beaten is UNKNOWN,
+    # not dead. Collapsing those two was the whole defect, and the same rule
+    # the watcher learned elsewhere -- unreachable is not closed.
+    live_ids = HB.live_ids()
+    known_ids = HB.known_ids()
 
     for mid, st in M.all_missions():
         m = _safe_load(st.root)
         if m is None or m.archived:
+            continue
+        if isinstance(m, _Damaged):
+            # Say so in the one place a person is looking. The alternative --
+            # what this did before -- was to return 0 rows and leave the goal
+            # looking deleted.
+            # Same key set as a healthy row, because the renderer reads
+            # these by name and a row missing one is a card that throws
+            # instead of a card that reports. (The first version of this
+            # invented `checklist`/`note`, which no template reads.)
+            out.append({
+                "id": mid, "full": mid, "mission": True, "cwd": "",
+                "title": mid, "objective": "", "named": False,
+                "criteria": [], "constraints": [], "non_goals": [],
+                "tree": [], "done": 0, "total": 0, "pending_accept": 0,
+                "sessions": [], "procs": 0, "ended": True,
+                "has_mission": True,
+                "calls": 0, "files": 0, "tests": 0, "failures": 0,
+                "claims_checked": 0, "claims_bad": [],
+                "asks": [], "topfiles": [], "models": [],
+                "model_changed": False, "repeats": 0, "exact_repeats": 0,
+                "worst_repeat": None, "collisions": [], "children": [],
+                "mtime": 0,
+                "damaged": 1, "damage": list(m.damage),
+            })
             continue
         calls = files = tests = fails = 0
         sess = []
@@ -154,13 +277,30 @@ def mission_rows() -> list[dict]:
             # disk. Live only -- an ended session's claims were either caught
             # at the time or are history, and scanning every transcript ever
             # would make the 4s refresh pay for the archive.
-            if tp and sid in live_ids:
+            # Live, or not yet reporting and touched within SCAN_WINDOW.
+            # That mtime test is a COST bound, not a liveness claim: scanning
+            # every transcript ever recorded would make the 4-second refresh
+            # pay for the archive. A session with no heartbeat still gets
+            # scanned while it is recent, so installing the hook is an
+            # improvement rather than a precondition.
+            # Guarded: a transcript can be rotated or deleted between the
+            # glob and the stat, and an OSError here would blank the whole
+            # board rather than one row. (Caught by an existing test that
+            # stubs the path -- the first version stat'd it bare.)
+            recent = tp is not None and (time.time() - _mtime(tp)) < SCAN_WINDOW
+            if tp and (sid in live_ids or (sid not in known_ids and recent)):
                 from .claims import scan as _claims_scan
-                r = _claims_scan(tp, sid, cwd=m.cwd or "")
+                r = _claims_scan(tp, sid, mission_cwd=m.cwd or "")
                 claims_checked += r["checked"]
                 claims_bad.extend(r["reportable"])
             sess.append({"id": short_id(sid), "full": sid,
                          "live": sid in live_ids,
+                         # Three states, never two. The page must be able to
+                         # say "unknown" rather than print a death it cannot
+                         # support.
+                         "liveness": ("live" if sid in live_ids
+                                      else "ended" if sid in known_ids
+                                      else "unknown"),
                          "calls": a.calls if a else 0})
         out.append({
             "id": mid, "full": mid, "mission": True,
@@ -171,7 +311,13 @@ def mission_rows() -> list[dict]:
             "done": m.done_count, "total": m.total_count,
             "pending_accept": len(m.unaccepted),
             "sessions": sess, "procs": sum(1 for x in sess if x["live"]),
-            "ended": not any(x["live"] for x in sess),
+            # Ended only when every session REPORTED and none is live. One
+            # unknown and the goal is not called ended -- dimming a card on
+            # an absent heartbeat is the exact mistake being removed.
+            "ended": (bool(sess)
+                      and all(x["liveness"] == "ended" for x in sess)),
+            "liveness_unknown": sum(1 for x in sess
+                                    if x["liveness"] == "unknown"),
             "has_mission": True,
             "calls": calls, "files": files, "tests": tests, "failures": fails,
             "claims_checked": claims_checked,
@@ -180,6 +326,17 @@ def mission_rows() -> list[dict]:
             "repeats": 0, "exact_repeats": 0, "worst_repeat": None,
             "collisions": [], "children": [],
             "mtime": st.log.stat().st_mtime,
+            # The four lanes, flat, for the work view. Grouped by WHO ACTS
+            # NEXT rather than by goal: "which session handles what" is the
+            # question a board with several live sessions has to answer, and
+            # a per-goal tree cannot answer it at a glance. The tree is still
+            # there, per card, for "which piece does this belong to".
+            "queue": _queue_rows(m, mid),
+            # Loaded, but some events were unusable, so the plan shown is
+            # known to be incomplete. Reported on the card rather than only
+            # in `doctor`, because the board is where the plan is read.
+            "damaged": getattr(m, "damaged", 0),
+            "damage": list(getattr(m, "damage", []))[:3],
         })
     return out
 
@@ -338,6 +495,11 @@ def _session_snapshot() -> list[dict]:
 
 
 IDLE_AFTER = 15 * 60          # no transcript write for this long = parked
+# How far back to claim-scan a transcript whose session has never reported a
+# heartbeat. A COST bound, not a liveness claim: without it the 4-second
+# refresh would re-scan every transcript ever written, which is why the scan
+# was live-only before liveness became reportable.
+SCAN_WINDOW = 24 * 3600
 
 
 def _state(r: dict, now: float) -> str:
@@ -370,7 +532,11 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Missions</title>
 :root{--bg:#F7F7F8;--card:#fff;--ink:#151518;--mut:#66666E;--rule:#DEDEE3;--soft:#EEEEF2;
 --ok:#5A5AD8;--bad:#92661C;--okw:#EBEBFB;--badw:#F7EDD8;
 --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
---mono:ui-monospace,"SF Mono",Menlo,monospace}
+--mono:ui-monospace,"SF Mono",Menlo,monospace;
+/* The reading column for the single-column views (work, inbox). The grid
+   sizes itself from its cards; these do not, and both referenced an
+   undefined --wrap, so they ran the full width of the window. */
+--wrap:58rem}
 @media(prefers-color-scheme:dark){:root{--bg:#0B0B0D;--card:#131316;--ink:#EDEDF0;
 --mut:#84848D;--rule:#222228;--soft:#1A1A20;--ok:#8B8BF5;--bad:#F5B942;
 --okw:#191930;--badw:#221A0A}}
@@ -522,6 +688,109 @@ flex-wrap:wrap;row-gap:.55rem}
 border:1px solid var(--rule);border-radius:4px;padding:.32rem .6rem;width:15rem;
 outline:none}
 #q:focus{border-color:var(--ok)}
+/* The work view: four lanes, grouped by who acts next.
+
+   THE ACCENT RULE: amber (--warn) is used on the `waiting on you` lane
+   heading and its count, and NOWHERE else here. Rework is red, because it is
+   urgent for a WORKER and not for the person -- amber on both would put them
+   in competition and the accent would stop meaning "nothing moves until you
+   click". `held` and `fresh` chips are deliberately mute. */
+#work{max-width:var(--wrap);margin:0 auto;padding:0 1.1rem 2rem}
+#work .qstats{display:flex;flex-wrap:wrap;gap:1.1rem;align-items:baseline;
+font-size:.78rem;color:var(--mut);margin:.4rem 0 1rem}
+#work .qstats b{color:var(--ink);font-size:1.15rem;font-weight:600;
+margin-right:.25rem}
+#work .qstats .warn b{color:var(--bad)}
+#work .qstats .qsess{margin-left:auto}
+#work .qheld{border:1px dashed var(--bad);border-radius:6px;
+padding:.45rem .7rem;font-size:.78rem;color:var(--bad);margin:0 0 1.1rem}
+#work h2.qh{font-size:.95rem;margin:1.3rem 0 .1rem;font-weight:600}
+#work h2.qh b{font-weight:600}
+#work .qlist.waiting + *, #work h2.qh b{color:inherit}
+#work .qsub{color:var(--mut);font-size:.76rem;margin:0 0 .6rem}
+#work .qgroup{margin:0 0 .7rem}
+#work .qgh{font-size:.8rem;color:var(--mut);margin:0 0 .25rem;
+font-weight:500;cursor:default}
+#work .qfold > summary{cursor:pointer;color:var(--mut);font-size:.76rem;
+padding:.25rem 0}
+#work .qfold[open] > summary{margin-bottom:.3rem}
+#work .qfold code{font-size:.72rem}
+#work .qgh b{color:var(--ink);font-weight:600}
+#work .qgstale{color:var(--mut)}
+#work .qsub code{font-size:.72rem}
+#work .qlist{list-style:none;margin:0;padding:0;border:1px solid var(--rule);
+border-radius:8px;overflow:hidden}
+#work .qrow{display:flex;gap:.6rem;align-items:flex-start;
+padding:.5rem .7rem;border-bottom:1px solid var(--rule)}
+#work .qrow:last-child{border-bottom:none}
+#work .qid{font-family:var(--mono);font-size:.72rem;color:var(--mut);
+min-width:4.6rem}
+#work .qbody{flex:1;min-width:0}
+#work .qtext{font-size:.84rem}
+#work .qgoal{color:var(--mut);font-size:.72rem;margin-left:.4rem}
+#work .qmeta{color:var(--mut);font-size:.73rem;margin-top:.1rem}
+/* Deliberately NOT coloured. The mockup for this drew rework in red; this
+   palette has no red -- `--bad` IS the amber -- and adding one so a sketch
+   could be right would break "one accent, one meaning" to decorate a lane
+   that is urgent for a WORKER, not for the person reading the board. The
+   word and the reason carry it. */
+#work .qrework{color:var(--ink);font-size:.73rem;margin-top:.1rem}
+/* Mute, and italic, so a model's opinion never reads with the weight of the
+   disk verdict printed above it. */
+#work .qopinion{color:var(--mut);font-size:.73rem;margin-top:.1rem;
+font-style:italic}
+/* C19 eligibility. Both muted, because neither is "waiting on you" -- the
+   amber in this view has one meaning and this is not it. The two differ only
+   in weight: an item a fresh session can take is ordinary, an item needing
+   context is the one worth reading, so it gets the ink. */
+/* Hollow, because it asserts nothing. A filled dot in either colour would
+   claim a state the board does not know. */
+.dot.unknown{background:transparent;border:1px solid var(--mut)}
+/* The eligibility and untouched advisories were a line each here and are
+   chips now -- see laneRow. The rules they used are gone rather than left
+   unreferenced: dead CSS reads as a style someone might still be using. The
+   accent law they were written under still holds (amber means waiting on
+   you, nothing else), which is why the chips are the row's existing mute
+   border treatment and the only amber left in this view is the strip. */
+/* Decline sits beside accept and must not compete with it: muted, never the
+   accent. The accent means "waiting on you"; a decline button IS one of the
+   things you are waiting to do, so colouring it would say nothing new. */
+.act.warn{color:var(--mut)}
+.act.warn:hover{color:var(--ink);border-color:var(--ink)}
+#work .qchip{font-size:.68rem;color:var(--mut);border:1px solid var(--rule);
+border-radius:4px;padding:.05rem .35rem;white-space:nowrap}
+#work .qchip.rework{color:var(--ink);border-color:var(--ink)}
+/* The only amber in this view: the waiting-on-you lane, its count and its
+   held-dispatch banner -- one meaning, three places that say it. */
+#work .qlist.waiting{border-color:var(--bad)}
+/* The Inbox. Everything here is waiting on you, so the amber accent appears
+   ONCE, on the heading -- painting it per row would make the accent mean
+   "a row" instead of "waiting on you", which is the C12d wallpaper failure at
+   a smaller scale. Rows keep the glyph conventions the cards already use. */
+#inbox{max-width:var(--wrap);margin:0 auto;padding:0 1.1rem 2rem}
+#inbox h2{font-size:.95rem;margin:.2rem 0 .1rem}
+#inbox h2 b{color:var(--bad)}
+#inbox .sub{color:var(--mut);font-size:.76rem;margin:0 0 1rem}
+#inbox .gl{display:flex;align-items:baseline;gap:.5rem;margin:1.1rem 0 .3rem;
+border-bottom:1px solid var(--rule);padding-bottom:.25rem}
+#inbox .gl h3{font-size:.8rem;margin:0;font-weight:600}
+#inbox .gl .when{font-family:var(--mono);font-size:.66rem;color:var(--mut)}
+#inbox .gl .act{opacity:1;margin-left:auto}
+#inbox ul{list-style:none;padding:0;margin:0}
+#inbox li{display:flex;gap:.45rem;align-items:flex-start;padding:.3rem 0;
+font-size:.87rem;border-bottom:1px solid var(--soft)}
+#inbox li .box{flex:none;font-family:var(--mono);color:var(--mut)}
+#inbox li.prop .box{color:var(--bad)}
+#inbox li .txt{flex:1}
+#inbox li .act{opacity:1}
+#inbox .verdict{color:var(--mut);font-size:.74rem;margin-top:.12rem}
+#inbox .none{color:var(--mut);padding:2rem 0}
+/* The keyboard cursor. A left rule rather than a background, because a filled
+   row would compete with the proposal glyph for the same attention -- and a
+   single-sided border takes no radius (the hub learned that one too). */
+#inbox li.kcur{border-left:2px solid var(--ink);border-radius:0;
+padding-left:.45rem;margin-left:-.57rem}
+#inbox .keys{color:var(--mut);font-size:.72rem;margin:.1rem 0 1rem}
 .chips{display:flex;gap:.3rem}
 .chip{font-family:var(--mono);font-size:.66rem;letter-spacing:.04em;padding:.26rem .55rem;
 border-radius:3px;border:1px solid var(--rule);background:var(--card);color:var(--mut);
@@ -549,6 +818,11 @@ flex:none;margin-left:.4rem;opacity:0;transition:opacity .12s}
 .chk li:hover .act,.act:focus{opacity:1}
 .act:hover{color:var(--ink);border-color:var(--mut)}
 .act.ok{color:var(--ok);border-color:var(--ok)}
+/* Confirming without evidence is a legitimate human call, so it gets a real
+   button -- but it must never look like the backed sweep sitting beside it.
+   Muted and outlined, not the confident accent. */
+.act.warn{color:var(--mut);border-color:var(--mut);border-style:dashed}
+.act.warn:hover{color:var(--bad);border-color:var(--bad)}
 #code{position:fixed;inset:auto 1.2rem 1.2rem auto;background:var(--card);
 border:1px solid var(--bad);border-radius:7px;padding:.8rem .95rem;max-width:22rem;
 font-size:.82rem;line-height:1.5;z-index:20}
@@ -657,6 +931,11 @@ flex:none;width:9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   <h1>Missions</h1>
   <input id=q type=search placeholder="filter by goal, task, folder…" autocomplete=off>
   <div class=chips>
+    <button class=chip data-v=work aria-pressed=true>work</button>
+    <button class=chip data-v=inbox aria-pressed=false>inbox</button>
+    <button class=chip data-v=goals aria-pressed=false>goals</button>
+  </div>
+  <div class=chips id=fchips hidden>
     <button class=chip data-f=all aria-pressed=true>all</button>
     <button class=chip data-f=live aria-pressed=false>live</button>
     <button class=chip data-f=todo aria-pressed=false>needs you</button>
@@ -669,6 +948,8 @@ flex:none;width:9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </header>
 <div id=strip></div>
 <div id=setup hidden></div>
+<div id=work hidden></div>
+<div id=inbox hidden></div>
 <div class=grid id=g></div>
 <div id=code hidden></div>
 <div id=repout hidden></div>
@@ -706,19 +987,24 @@ function row(i,flat,sid){
   // alert accent -- and the button says "confirm": same done event, arriving
   // pre-evidenced. The suggestion glyph is ◦, distinct from + proposals.
   const cd = i.cd;
+  // Three verdicts, not two. "disk agrees" used to mean only that a file of
+  // that name exists -- true of README.md in every repo -- so the middle case
+  // below is the one this wording exists to stop being invisible.
   const cdline = cd? `<div class=verdict>agent says done — ${
-      cd.ok? `disk agrees (${cd.backed} claim${cd.backed>1?'s':''} backed)`
+      cd.ok? `named file${cd.backed>1?'s':''} exist${cd.backed>1?'':'s'}, changed since accepted (${cd.backed})`
        : cd.unbacked.length? `${cd.unbacked.length} claim${cd.unbacked.length>1?'s':''} NOT backed: ${esc(cd.unbacked[0].split('/').slice(-2).join('/'))}`
+       : (cd.stale&&cd.stale.length)? `exists, UNTOUCHED since you accepted: ${esc(cd.stale[0].split('/').slice(-2).join('/'))}`
        : `nothing checkable in the claim`}</div>` : '';
   return `<li style="${hu}" class="${i.branch?'branch':''} ${
       i.done?'done':(i.ok?'':'prop')} ${typeof i.hue==='number'?'hued':''} ${cd?'sugg':''}"
-      ${cd&&cd.ok?`data-backed="${i.id}"`:''}>
+      ${cd&&cd.ok?`data-backed="${i.id}"`:''} data-i="${i.id}">
     ${guides}${elbow}
     <span class=box>${i.done?'▪':(cd?'◦':(i.ok?'▫':'+'))}</span>
     <span class=txt title="${esc(i.t)}">${esc(i.t)}${cdline}</span>
     ${i.roll?`<span class=roll><span class=mini><i style="width:${i.pct}%"></i></span>${i.roll}</span>`:''}
     ${(WRITABLE && CODE() && !i.done)?
        (!i.ok? `<button class="act ok" data-do=accept data-s="${sid}" data-i="${i.id}">accept</button>`
+             + `<button class="act warn" data-do=decline data-s="${sid}" data-i="${i.id}">decline</button>`
              : (!i.branch? `<button class=act data-do=done data-s="${sid}" data-i="${i.id}">${cd?'confirm':'tick'}</button>`:''))
       :''}
   </li>`;
@@ -785,7 +1071,7 @@ async function act(action, session, ids, text){
     if (r.status === 403) localStorage.removeItem('mission-code');
     note_err(`${action} failed: ${e.error||r.status}`);
   }
-  tick();
+  await tick(true);          // your own click paints now, never on the poll
   return r.ok;
 }
 
@@ -830,7 +1116,235 @@ function askForCode(){
     if (e.key === 'Enter') document.getElementById('codego').click();
   };
 }
-let FILTER='all', QUERY='';
+// Above this many unanswered proposals, dispatch refuses. Measured, not
+// chosen: the live log showed 56 pending with a p90 accept time of 74h,
+// so spawning more workers widens the one place that is already slowest.
+const DISPATCH_MAX = 20;
+let FILTER='all', QUERY='', VIEW='work';
+
+// C19b.1. Everything waiting on you, across every goal, in one place.
+//
+// The rows themselves are NOT new -- each card already renders its own
+// proposals, its claims-done suggestions and its findings, with the same
+// buttons. What did not exist is the AGGREGATION: they were scoped one card
+// each, so "is anything waiting on me" cost as many glances as there are
+// goals, and a proposal on a goal you were not looking at sat for 15.9 hours.
+//
+// Ordered by MISSION RECENCY, not by per-item age. `Item` carries no
+// timestamp -- per-item age would need a new folded field or a re-scan of
+// every mission's log on a loop that already re-reads every transcript every
+// four seconds. Saying "oldest first" while sorting by something else would
+// be the worse option; this sorts by what the data actually supports and the
+// heading says so.
+// The work view: four lanes, grouped by WHO ACTS NEXT rather than by goal.
+// A board with several live sessions has to answer "which session handles
+// what", and a per-goal tree cannot answer that at a glance -- the tree is
+// still one click away per card, for "which piece does this belong to".
+//
+// THE ACCENT RULE HOLDS: amber appears on the `waiting on you` lane and
+// nowhere else. Rework is urgent for a WORKER, not for the human, so it is
+// red -- painting it amber would put it in competition with the only signal
+// that means "nothing moves until you click".
+function laneRow(r, kind, withGoal){
+  // Inside a goal group the heading already said it; printing it again on
+  // every row is what made 120 rows read as a wall.
+  const goal = withGoal
+    ? `<span class=qgoal>${esc(r.goal_title || r.goal)}</span>` : '';
+  let note = '';
+  if (kind === 'ready' && r.rework){
+    note = `<div class=qrework>sent back${r.rework_by? ' by '+esc(r.rework_by):''}
+            — ${esc(r.rework)}</div>`;
+  } else if (kind === 'progress'){
+    note = `<div class=qmeta>${esc(r.held_by)} · ${r.held_min}m
+            · lease expires in ${r.ttl_min}m</div>`;
+  } else if (kind === 'review'){
+    const who = r.claimed_by? ` <span class=qgoal>${esc(r.claimed_by)}</span>` : '';
+    note = r.claim? `<div class=qmeta>${esc(r.claim)}${who}</div>` : '';
+    // Two lines, never merged. The disk's verdict is evidence; a second
+    // session's read is an opinion, and the word "opinion" is on screen
+    // because the verifier is the same model reading the same disk.
+    if (r.checked_by){
+      note += `<div class=qopinion>a second session (${esc(r.checked_by)})
+               agrees — opinion, not evidence: ${esc(r.checked_note)}</div>`;
+    }
+  }
+  // ⚠️ These two were a LINE each, on every row, and the board became
+  // unreadable the moment it was looked at: 120 ready rows across all goals,
+  // 95 of them carrying "agreed N days ago...", and every row repeating the
+  // same sentence about naming no file. A signal on 79% of the rows is not a
+  // signal, and identical prose stacked 100 times is wallpaper. Both are
+  // chips now, and the sentence each one used to print is its tooltip, so
+  // nothing was lost -- only repeated.
+  //
+  // Which case gets the chip is decided by which is RARE. The negative
+  // eligibility verdict is the common one here, so the exception worth
+  // marking is "a fresh session could take this"; the advice the negative
+  // carries belongs in `mission sharpen`, which exists for exactly that and
+  // says it once per item instead of once per render.
+  const chips = [];
+  if (kind === 'ready'){
+    if (r.rework) chips.push(`<span class="qchip rework">rework</span>`);
+    if (r.untouched_days) chips.push(`<span class=qchip
+      title="agreed ${r.untouched_days} days ago and never taken, claimed or
+             handed back — on this board that has usually meant it is already
+             built. mission audit briefs a session to check.">${
+      r.untouched_days}d untouched</span>`);
+    if (r.delegable) chips.push(`<span class=qchip
+      title="${esc(r.delegable_fact || '')}">delegable</span>`);
+    if (!chips.length) chips.push(`<span class=qchip>fresh</span>`);
+  } else if (kind === 'progress'){
+    chips.push('<span class=qchip>held</span>');
+  }
+  const chip = chips.join('');
+  return `<li class=qrow><code class=qid>${esc(r.id)}</code>
+    <div class=qbody><div class=qtext>${esc(r.text)} ${goal}</div>${note}</div>
+    ${chip}</li>`;
+}
+
+function renderWork(all){
+  const box = document.getElementById('work');
+  const goals = all.filter(s => s.has_mission && !s.damaged);
+  const lanes = {ready:[], progress:[], review:[], waiting:[]};
+  for (const g of goals){
+    const q = g.queue || {};
+    for (const k of Object.keys(lanes)) (q[k] || []).forEach(r => lanes[k].push(r));
+  }
+  const n = k => lanes[k].length;
+  const sessions = goals.reduce((t,g) => t + (g.procs||0), 0);
+
+  // The governor, stated as a number rather than a feeling. Dispatching more
+  // workers while the human's accept queue is deep makes the measured
+  // bottleneck worse, so the board says so instead of offering the button.
+  // Counted from the rows, like every other number here, so no summary can
+  // disagree with the lane it summarises.
+  const stale = lanes.ready.filter(r => r.untouched_days).length;
+  const held = n('waiting') > DISPATCH_MAX;
+  const bar = held
+    ? `<div class=qheld>dispatch is held: ${n('waiting')} waiting on you,
+       threshold ${DISPATCH_MAX}</div>` : '';
+
+// Grouped by goal, because a flat cross-goal queue stops being readable at
+// the size a real board reaches. Measured 2026-10-08: 120 ready rows, of
+// which 61 were one goal's and 93 belonged to three — every one of them
+// repeating its goal's name in grey beside the text. The group heading says
+// it once.
+//
+// What folds is the FLAGGED ROWS, not the group. The first rule here folded
+// a group only when every row in it was stale, which left the biggest goal
+// (61 rows, 48 stale) fully expanded and changed nothing — and folding by
+// size alone would have hidden live work behind a disclosure triangle, which
+// is the thing this view exists to stop. Folding exactly the flagged set
+// keeps every actionable row on screen, and what is hidden is described by
+// the summary that hides it.
+const FOLD_ABOVE = 3;
+
+function laneGroups(k, rows){
+  const order = [];                       // first appearance, so the upstream
+  const by = new Map();                   // ordering survives grouping
+  for (const r of rows){
+    const g = r.goal || '';
+    if (!by.has(g)){ by.set(g, []); order.push(g); }
+    by.get(g).push(r);
+  }
+  if (order.length < 2) return `<ul class="qlist ${k}">${
+    rows.map(r => laneRow(r,k,true)).join('')}</ul>`;
+  return order.map(g => {
+    const rs = by.get(g);
+    const live = rs.filter(r => !r.untouched_days);
+    const stale = rs.filter(r => r.untouched_days);
+    const head = `${esc(rs[0].goal_title || g)} <b>${rs.length}</b>${
+      stale.length? ` · <span class=qgstale>${stale.length} may be done already</span>`:''}`;
+    const ul = xs => `<ul class="qlist ${k}">${
+      xs.map(r => laneRow(r,k,false)).join('')}</ul>`;
+    // Few enough to read at a glance: show them, a triangle would be worse.
+    const folded = stale.length > FOLD_ABOVE
+      ? `<details class=qfold><summary>${stale.length} agreed long ago and
+           never taken — may already be built
+           (<code>mission audit</code>)</summary>${ul(stale)}</details>`
+      : (stale.length ? ul(stale) : '');
+    return `<div class=qgroup><p class=qgh>${head}</p>${
+      live.length ? ul(live) : ''}${folded}</div>`;
+  }).join('');
+}
+
+  const lane = (k, title, sub) => !n(k) ? '' : `
+    <h2 class=qh>${title} <b>${n(k)}</b></h2>
+    ${sub? `<p class=qsub>${sub}</p>`:''}
+    ${laneGroups(k, lanes[k])}`;
+
+  box.innerHTML = `
+    <div class=qstats>
+      <span><b>${n('ready')}</b> ready to pick up</span>
+      <span><b>${n('progress')}</b> in progress</span>
+      <span><b>${n('review')}</b> in review</span>
+      <span class=warn><b>${n('waiting')}</b> waiting on you</span>
+      ${stale? `<span class=warn><b>${stale}</b> may be done already</span>`:''}
+      <span class=qsess>${sessions} session(s) live</span>
+    </div>
+    ${bar}
+    ${lane('ready','ready to pick up',
+           'accepted work that is not done — a session takes these with '
+           + '<code>mission take</code>, no acceptance needed. '
+           + '<b>Nd untouched</b> = agreed that long ago and never taken, '
+           + 'claimed or handed back, so it may already be built '
+           + '(<code>mission audit</code>). <b>delegable</b> = names a file, '
+           + 'so a session with no context could finish it and prove it. '
+           + 'Hover a chip for the fact behind it.')}
+    ${lane('progress','in progress')}
+    ${lane('review','in review','a claim awaiting a check')}
+    ${lane('waiting','waiting on you','nothing here moves without a click')}
+    ${(n('ready')||n('progress')||n('review')||n('waiting'))? ''
+      : '<p class=qsub>Nothing queued, nothing waiting.</p>'}`;
+}
+
+function renderInbox(all){
+  const box = document.getElementById('inbox');
+  // No archived filter here on purpose: mission_rows() already drops an
+  // archived goal before it reaches the page. A second clause referencing a
+  // field the payload does not carry would READ like a filter and do nothing
+  // -- the silent no-op this codebase has shipped twice before.
+  const goals = all.filter(s => s.has_mission)
+                   .map(s => {
+    const v = visible(s.tree || []);
+    return {s, ask: v.filter(i => !i.ok || i.cd), rev: s.review || []};
+  }).filter(g => g.ask.length || g.rev.length)
+    .sort((a, b) => (b.s.mtime || 0) - (a.s.mtime || 0));
+
+  const n = goals.reduce((t, g) => t + g.ask.length + g.rev.length, 0);
+  if (!n){
+    box.innerHTML = '<p class=none>Nothing is waiting on you.</p>';
+    return;
+  }
+  const html = goals.map(g => {
+    const s = g.s, can = WRITABLE && CODE();
+    // The per-goal batch action survives into the Inbox on purpose: one
+    // `sharpen --propose` pass can file thirty rows, and thirty keystrokes to
+    // clear them is the same wallpaper failure in a new shape.
+    const nprop = g.ask.filter(i => !i.ok).length;
+    const bulk = (can && nprop > 1)
+      ? `<button class="act ok" data-do=acceptall data-s="${s.full}">accept all ${nprop}</button>` : '';
+    return `<div class=gl><h3>${esc(s.title || s.id)}</h3>`
+      + `<span class=when>${ago(s.mtime)}</span>${bulk}</div><ul>`
+      + g.rev.map(f => `<li><span class=box>⚑</span><span class=txt>${esc(f.what)}`
+          + `<div class=verdict>${esc(f.detail || '')}</div></span>`
+          + (can ? `<button class=act data-ack="${esc(f.what)}" data-s="${s.full}">mark read</button>` : '')
+          + `</li>`).join('')
+      + g.ask.map(i => row(i, true, s.full)).join('')
+      + `</ul>`;
+  }).join('');
+  box.innerHTML = `<h2><b>${n}</b> waiting on you</h2>`
+    + `<p class=keys>j/k move · a accept · c confirm · x decline · o open goal</p>`
+    + `<p class=sub>across ${goals.length} goal${goals.length > 1 ? 's' : ''},`
+    + ` most recently active first</p>` + html;
+}
+
+function ago(t){
+  if (!t) return '';
+  const m = (Date.now() / 1000 - t) / 60;
+  if (m < 60) return `${Math.max(0, Math.round(m))}m ago`;
+  if (m < 60 * 48) return `${Math.round(m / 60)}h ago`;
+  return `${Math.round(m / 1440)}d ago`;
+}
 
 // Everything a card is searchable BY: the goal, every task, the folder, and
 // the ids -- searching a board of goals for a task you half remember is the
@@ -842,6 +1356,9 @@ const haystack = s => [s.title, s.objective, s.cwd, s.id,
 const passes = s =>
   (QUERY === '' || haystack(s).includes(QUERY)) &&
   (FILTER === 'all'
+   // `ended` is now only true when every session REPORTED that it ended, so
+   // an unknown session shows under "live" rather than being hidden. A row
+   // the board cannot speak for belongs where you will see it.
    || (FILTER === 'live'  && !s.ended)
    || (FILTER === 'ended' && s.ended)
    // "needs you" is the only filter that is about YOUR attention rather than
@@ -849,7 +1366,7 @@ const passes = s =>
    || (FILTER === 'todo'  && (s.pending_accept > 0 || !s.has_mission
                               || (s.review||[]).length)));
 
-async function tick(){
+async function tick(force){
   // The board restarts under this page routinely -- every upgrade, and every
   // switch from read-only to writable. The silent-return here left a page
   // that looked alive and was three restarts stale, with nothing but console
@@ -905,6 +1422,23 @@ async function tick(){
   strip.innerHTML = bits.length? bits.join('')
     : '<span>Nothing is waiting on you.</span>';
   renderSetup();
+  // The Inbox and the goal grid are two renderings of the same payload, so
+  // the poll, the reconnect banner and the write path are shared and only the
+  // surface differs.
+  document.getElementById('work').hidden = VIEW !== 'work';
+  document.getElementById('inbox').hidden = VIEW !== 'inbox';
+  document.getElementById('g').hidden = VIEW !== 'goals';
+  document.getElementById('fchips').hidden = VIEW !== 'goals';
+  if (VIEW === 'work'){
+    document.getElementById('empty').hidden = true;
+    renderWork(all);
+    return;
+  }
+  if (VIEW === 'inbox'){
+    document.getElementById('empty').hidden = true;
+    renderInbox(all);
+    return;
+  }
   // Re-rendering destroys the scroll position of every scrollable block
   // inside a card, so a person reading a long plan was yanked back to the
   // top every 4 seconds -- mid-scroll. Two defences: skip the render
@@ -936,21 +1470,42 @@ async function tick(){
      the objective trimmed, and printing both says it twice -->
        ${s.total? `<div class=bar><i style="width:${100*s.done/s.total}%"></i></div>
          <div class=sid><span>${s.done} of ${s.total} done</span>
-         ${(()=>{const nb=(s.tree||[]).filter(r=>r.cd&&r.cd.ok&&!r.hid).length;
-            return (WRITABLE&&CODE()&&nb)?`<span class=sweep><button class="act ok" data-do=sweep data-s="${s.full}">confirm all backed (${nb})</button></span>`:''})()}
+         ${(()=>{const cds=(s.tree||[]).filter(r=>r.cd&&!r.hid);
+            const nb=cds.filter(r=>r.cd.ok).length, nu=cds.length-nb;
+            if(!(WRITABLE&&CODE()&&cds.length)) return '';
+            // Two buttons, never one. Evidence-backed rows sweep on a single
+            // click because the disk already did the reading. The rest are a
+            // SEPARATE, two-step action that names what it is doing: the tool
+            // must never let "the disk agrees" and "I decided to trust it"
+            // arrive by the same gesture.
+            return `<span class=sweep>`
+              + (nb?`<button class="act ok" data-do=sweep data-s="${s.full}">confirm all backed (${nb})</button>`:'')
+              + (nu?`<button class="act warn" data-do=sweepall data-s="${s.full}"
+                       data-n="${nu}">confirm all ${cds.length} — ${nu} unverified</button>`:'')
+              + `</span>`;})()}
          ${s.pending_accept?`<span class="warn ask">${s.pending_accept} awaiting accept${
    (WRITABLE&&CODE())?` <button class="act ok" data-do=acceptall data-s="${s.full}">accept all</button>`:''
  }</span>`:'<span></span>'}</div>
          ${(s.pending_accept && !(WRITABLE&&CODE()))?`
            <div class=why>To accept them, in your own terminal:</div>
            <div class=howto>mission accept --pending --on ${esc(s.id)}</div>`:''}
-         ${(()=>{const v=visible(s.tree), ask=v.filter(i=>!i.ok),
-                  agreed=v.filter(i=>i.ok);
+         ${(()=>{const v=visible(s.tree),
+                  ask=v.filter(i=>!i.ok||i.cd), agreed=v.filter(i=>i.ok&&!i.cd);
             // Waiting-on-you sits ABOVE the agreed work. Mixed into the plan a
             // proposal reads as a task you have already signed up for, and the
             // one thing on a card that asks something of you should not have to
             // be hunted for among the things that do not.
-            return (ask.length? `<div class=asks><h3>${ask.length} waiting on you</h3>
+            //
+            // A claims-done row belongs here too, and did not for a week: it
+            // is an ACCEPTED item, so it failed the `!i.ok` test and sat in
+            // the tree where the plan is read, not where decisions are made.
+            // Both kinds are "this needs your eyes", and they leave the block
+            // by being decided -- accepted rows drop into the plan in their
+            // real position, confirmed ones into the finished fold.
+            const prop=ask.filter(i=>!i.ok).length, conf=ask.length-prop;
+            const head=[prop?`${prop} to accept`:'', conf?`${conf} to confirm`:'']
+                        .filter(Boolean).join(' · ');
+            return (ask.length? `<div class=asks><h3>${head}</h3>
                      <ul class="chk flat">${ask.map(i=>row(i,true,s.full)).join('')}</ul></div>`:'')
                  + `<ul class=chk>${agreed.map(i=>row(i,false,s.full)).join('')}</ul>`;})()}<!-- map(row) passes the INDEX as row's second argument, so every row
      after the first rendered in flat mode and the tree lost every
@@ -984,9 +1539,11 @@ async function tick(){
         verbatim ${s.worst_repeat.gap} replies later</div>`:''}
      ${(s.sessions||[]).length?`<div class=kids><h3>Sessions on this goal</h3>${
         s.sessions.map(x=>`<div class=kid>
-          <span class="dot ${x.live?'working':'ended'}"></span>
+          <span class="dot ${x.liveness==='live'?'working':
+                             x.liveness==='unknown'?'unknown':'ended'}"></span>
           <span class=kn>${esc(x.id)}</span>
-          <span class=kt>${x.live?'live':'ended'}</span>
+          <span class=kt>${x.liveness==='live'?'live':
+            x.liveness==='unknown'?'liveness unknown — no heartbeat':'ended'}</span>
           <span class=kp>${x.calls.toLocaleString()} calls</span></div>`).join('')}</div>`:''}
      ${(s.children||[]).length?`<div class=kids><h3>Delegated</h3>${
         s.children.map(k=>`<div class=kid><span class=kn>${esc(k.id)}</span>
@@ -1004,7 +1561,21 @@ async function tick(){
         :(s.claims_checked?`<div class=claims>${s.claims_checked} claims checked against disk — all backed</div>`:'')}
        ${s.topfiles.length?`<br>${s.topfiles.slice(0,3).map(f=>esc(f.f)+' '+f.n+'x').join(' · ')}`:''}</div>
    </div>`).join('') : (all.length? '' : '<p class=none>No live sessions.</p>');
-  if (html === LAST_HTML) return;
+  if (html === LAST_HTML && !force) return;
+  // The skip above almost never fires on a LIVE session -- the call/file
+  // counters move nearly every poll, so the block was still rebuilt under an
+  // active scroll. Restoring scrollTop is not enough: the gesture is attached
+  // to the destroyed element, so momentum dies and the block can snap to top
+  // before the restore paints. So: never rebuild while the person is
+  // scrolling the grid. The data is 4s stale at worst; a lost scroll is a
+  // lost reader.
+  //
+  // `force` is the other half, and it is not optional: a click YOU made must
+  // paint now. Without it the deferral swallowed the person's own tick --
+  // press confirm, watch the row sit there for seconds -- because the write's
+  // own refresh landed inside the quiet window it had just started. Deferring
+  // someone's scroll is politeness; deferring their click is a broken button.
+  if (!force && Date.now() - LAST_TOUCH < 2500) return;
   LAST_HTML = html;
   const scrolled = [...g.querySelectorAll('.chk')].map((el,n)=>[n, el.scrollTop])
                      .filter(([,t])=>t>0);
@@ -1013,6 +1584,15 @@ async function tick(){
   for (const [n, t] of scrolled) if (chks[n]) chks[n].scrollTop = t;
 }
 let LAST_HTML = '';
+let LAST_TOUCH = 0;
+// SCROLL events only. `pointerdown`/`touchstart` were in this list and they
+// are click PRECURSORS, not scrolling: every button press armed the quiet
+// window a microsecond before the write it triggered, so the board appeared
+// to lag on exactly the interaction the person was watching.
+// `scroll` does not bubble, hence capture; passive so scrolling never janks.
+for (const ev of ['scroll','wheel','touchmove'])
+  document.getElementById('g').addEventListener(
+    ev, ()=>{ LAST_TOUCH = Date.now(); }, {capture:true, passive:true});
 // The page re-renders every 4s, so an opened fold would snap shut under the
 // reader. Remember which cards are open. `toggle` does not bubble, hence the
 // capture listener -- and it is bound once, to a container render() never
@@ -1037,7 +1617,67 @@ document.getElementById('setup').addEventListener('click', async e=>{
   else if (out.backup) console.log('backup:', out.backup);
   renderSetup();
 });
-document.getElementById('g').addEventListener('click', e=>{
+// ONE handler, bound to both surfaces. The Inbox renders the same rows with
+// the same buttons, so a second copy would be a second thing to keep correct
+// -- the failure that put four divergent stage-label maps in the docs site.
+// ── Inbox keyboard ───────────────────────────────────────────────────────
+//
+// j/k move, a accepts, c confirms, o opens the goal, x declines.
+//
+// ⚠️ GATED ON FOCUS, and that is the whole difficulty. The page already binds
+// Enter on the write-code input, and the board has a search box and a note
+// field: a bare `a` fired while someone is typing a filter would accept a
+// proposal they never looked at. The vault's review app learned this the same
+// way -- bare arrows had to keep moving the caret inside a textarea -- so the
+// rule here is the same: if focus is in anything you can type into, the key
+// is not ours.
+let KROW = -1;
+
+function kRows(){
+  return [...document.querySelectorAll('#inbox li[data-i]')];
+}
+
+function kFocus(n){
+  const rows = kRows();
+  if (!rows.length){ KROW = -1; return; }
+  KROW = Math.max(0, Math.min(n, rows.length - 1));
+  rows.forEach((r,i) => r.classList.toggle('kcur', i === KROW));
+  rows[KROW].scrollIntoView({block:'nearest'});
+}
+
+function kTyping(el){
+  if (!el) return false;
+  const tag = (el.tagName || '').toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select'
+      || el.isContentEditable;
+}
+
+document.addEventListener('keydown', e => {
+  if (VIEW !== 'inbox') return;
+  if (kTyping(e.target)) return;            // they are writing, not steering
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const rows = kRows();
+  if (!rows.length) return;
+  const k = e.key;
+  if (k === 'j' || k === 'k'){
+    kFocus(KROW < 0 ? 0 : KROW + (k === 'j' ? 1 : -1));
+    e.preventDefault();
+    return;
+  }
+  if (KROW < 0) return;                     // nothing selected: nothing to act on
+  const row = rows[KROW];
+  // The buttons the row already renders ARE the authority. Pressing a key
+  // clicks one of them rather than calling act() directly, so a key can
+  // never reach a write the row itself would not offer -- a read-only board
+  // renders no buttons, and the keys then do nothing.
+  const hit = sel => { const b = row.querySelector(sel); if (b) b.click(); };
+  if (k === 'a'){ hit('[data-do=accept]'); e.preventDefault(); }
+  else if (k === 'c'){ hit('[data-do=done]'); e.preventDefault(); }
+  else if (k === 'x'){ hit('[data-do=decline]'); e.preventDefault(); }
+  else if (k === 'o'){ hit('a.goal, [data-open]'); e.preventDefault(); }
+});
+
+const onBoardClick = e=>{
   const ar = e.target.closest('[data-arch]');
   if (ar){
     if (confirm('Archive this goal? It leaves the board. Nothing is deleted — '
@@ -1052,6 +1692,17 @@ document.getElementById('g').addEventListener('click', e=>{
   }
   const b = e.target.closest('[data-do]'); if(!b) return;
   const sid = b.dataset.s;
+  if (b.dataset.do === 'decline'){
+    // `remove` drops the item AND its subtree -- that is in the store, not
+    // something this button chose -- so the confirm says so. Declining was
+    // CLI-only until now; the authority is unchanged (remove is already
+    // human-only), this is the button that was missing.
+    if (confirm('Decline this proposal? It leaves the plan, with anything '
+              + 'nested under it. Nothing is deleted — the event log keeps '
+              + 'it, and `mission why` still shows it was proposed.'))
+      act('remove', sid, [b.dataset.i]);
+    return;
+  }
   if (b.dataset.do === 'note'){
     const inp = document.querySelector(`[data-note="${sid}"]`);
     if (inp && inp.value.trim()){ act('note', sid, [], inp.value); inp.value=''; }
@@ -1061,15 +1712,31 @@ document.getElementById('g').addEventListener('click', e=>{
     act('sweep', sid, []);
     return;
   }
+  if (b.dataset.do === 'sweepall'){
+    // The only destructive-ish button on the board that cannot be undone by
+    // another click, so it asks -- and the question names the number it
+    // cannot vouch for rather than saying "are you sure".
+    const n = b.dataset.n;
+    if (confirm(`Confirm every suggested item on this card?\n\n`
+              + `${n} of them have no disk evidence — nothing on disk backs `
+              + `what the agent said. Confirming them records YOUR judgement, `
+              + `and the log will show they were taken on trust.`))
+      act('sweepall', sid, []);
+    return;
+  }
   if (b.dataset.do === 'acceptall'){
-    const card = b.closest('.card');
-    const ids = [...card.querySelectorAll('[data-do=accept]')].map(x=>x.dataset.i);
+    // In the Inbox the rows sit under a goal heading, not inside a .card, so
+    // the scope is "this button's own group" rather than a fixed selector.
+    const grp = b.closest('.card') || b.closest('.gl').nextElementSibling;
+    const ids = [...grp.querySelectorAll('[data-do=accept]')].map(x=>x.dataset.i);
     if (ids.length) act('accept', sid, ids);
     else note_err('accept all found nothing to accept on this card — likely a bug worth reporting');
     return;
   }
   act(b.dataset.do, sid, [b.dataset.i]);
-});
+};
+document.getElementById('g').addEventListener('click', onBoardClick);
+document.getElementById('inbox').addEventListener('click', onBoardClick);
 document.getElementById('strip').addEventListener('click', e=>{
   const b = e.target.closest('[data-jump]'); if(!b) return;
   // Filtering alone looked like nothing happened: when every card is already
@@ -1094,6 +1761,13 @@ document.getElementById('q').addEventListener('input', e=>{
 // [data-f] and not .chip: the density button borrows .chip for its styling,
 // and binding on the class alone set FILTER to undefined and emptied the
 // board -- while also clearing every filter's pressed state.
+document.querySelectorAll('.chip[data-v]').forEach(b=>b.addEventListener('click', ()=>{
+  VIEW = b.dataset.v;
+  document.querySelectorAll('.chip[data-v]').forEach(
+    o=>o.setAttribute('aria-pressed', String(o===b)));
+  LAST_HTML = '';          // the grid was hidden; force it to rebuild on return
+  tick(true);
+}));
 document.querySelectorAll('.chip[data-f]').forEach(b=>b.addEventListener('click', ()=>{
   FILTER = b.dataset.f;
   document.querySelectorAll('.chip[data-f]').forEach(
@@ -1138,9 +1812,56 @@ class _Cache:
             self._thread = threading.Thread(target=self._refresh, daemon=True)
             self._thread.start()
 
-    def invalidate(self) -> None:
-        """After a write, the next read must not serve the pre-write board."""
-        self.rows, self.at = snapshot(), time.time()
+    def invalidate(self, mid: str = "") -> None:
+        """After a write, the next read must not serve the pre-write board.
+
+        This used to run a full `snapshot()` INSIDE the POST handler, so every
+        Accept and every tick blocked on a whole-corpus transcript rescan --
+        the same ~4s this cache exists to keep off the request path, moved onto
+        the one request a person is actually watching. The button felt broken.
+
+        A write changes the mission's EVENT LOG and nothing else: the tree, the
+        counts, the title. It cannot change how many tool calls a transcript
+        contains. So re-fold just that mission (a small file) and keep the
+        activity numbers already in the row -- they are at most one refresh
+        old, which is this cache's standing contract, not a new compromise.
+        A full refresh still runs, in the background, off the click.
+        """
+        patched = self._patch(mid) if mid else False
+        if not patched:
+            # New mission, archived away, or an unknown id: fall back to the
+            # honest full rebuild rather than serving something wrong.
+            self.rows, self.at = snapshot(), time.time()
+            return
+        self.at = 0.0 if not self.rows else self.at - self.every  # force refresh
+        self._refresh_async()
+
+    def _patch(self, mid: str) -> bool:
+        """Re-fold one mission into its existing row. True if it was applied."""
+        try:
+            from . import missions as M
+            for i, row in enumerate(self.rows):
+                if row.get("id") != mid:
+                    continue
+                st = dict(M.all_missions()).get(mid)
+                if st is None:
+                    return False
+                m = _safe_load(st.root)
+                if m is None or m.archived:
+                    return False            # the card is leaving; rebuild fully
+                self.rows[i] = {**row, **{
+                    "title": m.title, "objective": m.objective,
+                    "named": bool(m.name), "criteria": m.success_criteria,
+                    "constraints": m.constraints, "non_goals": m.non_goals,
+                    "tree": _tree(m), "done": m.done_count,
+                    "total": m.total_count, "pending_accept": len(m.unaccepted),
+                    "cwd": (m.cwd or "").replace(str(Path.home()), "~"),
+                    "mtime": st.log.stat().st_mtime,
+                }}
+                return True
+        except Exception:
+            return False                    # never fail a write over a redraw
+        return False
 
     def _refresh(self) -> None:
         try:
@@ -1164,7 +1885,51 @@ class _H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # ── who is allowed to talk to this board at all ──────────────────────
+    #
+    # The board bound 127.0.0.1 and treated that as the whole answer. It is
+    # not: a browser on ANY web page can reach a loopback server, and a DNS
+    # name that resolves to 127.0.0.1 makes the page same-origin with it.
+    # Demonstrated against a live board:
+    #   * `GET /data` with `Host: attacker.example` returned the full row
+    #     JSON -- objectives, cwd paths, claim text. That is everything a
+    #     DNS-rebinding page needs to READ the board.
+    #   * a POST with `Origin: https://evil.example` and
+    #     `Content-Type: text/plain` -- which a browser sends cross-site with
+    #     NO preflight -- was processed and counted as a wrong code. Five of
+    #     those from any open tab LOCKED THE BOARD until restart.
+    #
+    # So: the Host header must name this board, and a cross-origin POST is
+    # refused BEFORE the code is looked at, so it cannot consume an attempt.
+    def _host_ok(self) -> bool:
+        host = (self.headers.get("Host") or "").strip()
+        port = self.server.server_address[1]
+        return host in (f"127.0.0.1:{port}", f"localhost:{port}",
+                        f"[::1]:{port}")
+
+    def _origin_ok(self) -> bool:
+        origin = (self.headers.get("Origin") or "").strip()
+        if not origin:
+            return True                 # not a browser request
+        port = self.server.server_address[1]
+        return origin in (f"http://127.0.0.1:{port}",
+                          f"http://localhost:{port}",
+                          f"http://[::1]:{port}")
+
+    def _reject_foreign(self) -> bool:
+        """True when the request was refused and nothing more should happen."""
+        if not self._host_ok():
+            # 421 Misdirected Request: the honest code. The request reached
+            # the right socket for the wrong name.
+            self._send(421, json.dumps(
+                {"error": "this board answers only to 127.0.0.1"}).encode(),
+                "application/json")
+            return True
+        return False
+
     def do_GET(self):                                    # noqa: N802
+        if self._reject_foreign():
+            return
         if self.path.startswith("/api/identity"):
             # Proof that the thing on this port is OUR board, serving THIS
             # store. A bare TCP connect could not tell a live board from a
@@ -1217,6 +1982,18 @@ class _H(BaseHTTPRequestHandler):
 
     def do_POST(self):                                   # noqa: N802
         try:
+            if self._reject_foreign():
+                return
+            # Refused WITHOUT touching the attempt counter -- a cross-site
+            # POST must not be able to spend the person's five tries. The
+            # content-type requirement is the other half: `text/plain` is one
+            # of the three a form can send with no preflight, so demanding
+            # JSON means a cross-site POST has to ask permission first.
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0]
+            if not self._origin_ok() or ctype.strip() != "application/json":
+                return self._send(403, json.dumps(
+                    {"error": "this board takes same-origin JSON only"}
+                ).encode(), "application/json")
             if not WRITES.enabled:
                 # Same rule as the GET: no route, not a hidden button.
                 return self._send(403, json.dumps(
@@ -1230,7 +2007,9 @@ class _H(BaseHTTPRequestHandler):
             out = apply_action(WRITES, req.get("code", ""), req.get("action", ""),
                                req.get("session", ""), req.get("ids", []),
                                req.get("text", ""))
-            CACHE.invalidate()          # the plan just changed; do not show stale
+            # Patch just the mission that changed; the full refresh happens
+            # off the request path so the click is not paying for a rescan.
+            CACHE.invalidate(req.get("session", ""))
             self._send(200, json.dumps(out).encode(), "application/json")
         except Unauthorised as e:
             self._send(403, json.dumps({"error": str(e)}).encode(),
@@ -1280,7 +2059,34 @@ def serve(port: int = 8976, writable: bool | None = None) -> None:
             writable = sys.stdout.isatty()
         except Exception:
             writable = False
-    WRITES = Session(enabled=bool(writable))
+        # A tty is not proof of a person: `script -F -q board.log ... board`
+        # gave an agent a WRITABLE board whose code it then read out of its
+        # own log file. The override stays decisive so a person in a pipeline
+        # can still get one. See whoami.py for why this is a speed bump.
+        if writable:
+            import os as _os
+            from . import whoami as _w
+            if _os.environ.get("AGENT_MISSION_I_AM_HUMAN") != "1" \
+                    and _w.spawned_by_agent():
+                print("\n  this board is running under a coding agent "
+                      "(see `mission why`), so it is READ-ONLY."
+                      "\n  start it from your own terminal to get the "
+                      "write buttons.\n")
+                writable = False
+    # The passcode record is read ONCE, here, and held for the life of this
+    # board -- see passcode.load() for why re-reading per request would be a
+    # way to change the lock on a door that is already open.
+    from . import passcode as _pc
+    _rec = _pc.load() if writable else None
+    # A record on disk is not evidence a PERSON set it -- the agent runs as
+    # you and can write one. So a writable board asks for it once, here, in
+    # the terminal that already proved somebody is sitting at it. Failing
+    # that, the board still comes up: read-only, saying why.
+    if _rec is not None and not _pc.confirm_at_terminal(_rec):
+        _rec = None
+        writable = False
+    WRITES = Session(enabled=bool(writable),
+                     verify=_pc.verifier(_rec) if _rec else None)
     class _Quiet(ThreadingHTTPServer):
         # The writable board runs in the PERSON'S terminal now, and every
         # browser reload that drops a connection mid-response printed a
@@ -1303,11 +2109,22 @@ def serve(port: int = 8976, writable: bool | None = None) -> None:
     from .daemon import claim, release
     claim(port)
     print(f"\n  mission board -> http://127.0.0.1:{port}")
-    if WRITES.enabled:
+    if WRITES.enabled and WRITES.saved:
+        from . import passcode as _pc2
+        _when = _pc2.set_on()
+        print("\n  writable — confirmed with YOUR passcode"
+              + (f" (set {_when})" if _when else "")
+              + ".\n  It survives restarts, so the browser may already have it."
+              "\n  Forgotten it? `mission passcode` again to set a new one."
+              "\n  Did not set it on that date? An agent may have:"
+              " `mission passcode --clear`.")
+    elif WRITES.enabled:
         print(f"\n  write code: {WRITES.code}"
               f"\n  type it into the board once to accept and tick from there."
               f"\n  it is not on disk and no page returns it — only this terminal"
-              f"\n  has it, which is why the agent cannot use these buttons.")
+              f"\n  has it, which is why the agent cannot use these buttons."
+              f"\n\n  tired of re-typing a new one after every restart?"
+              f"  `mission passcode`")
     else:
         print("\n  read-only (started in the background). Run `mission board`"
               "\n  yourself in a terminal to get a write code.")

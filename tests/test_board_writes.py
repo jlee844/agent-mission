@@ -9,6 +9,9 @@ import json
 import sys
 from pathlib import Path
 
+import os
+from pathlib import Path
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -103,6 +106,11 @@ def test_writes_are_off_unless_stdout_is_a_terminal(monkeypatch):
     monkeypatch.setattr(board.ThreadingHTTPServer, "serve_forever",
                         lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))
     monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)
+    # Port 8976 is the REAL board's port and `serve` writes the bookmark and
+    # the daemon record into AGENT_MISSION_HOME. The autouse fixture in
+    # conftest now gives every test its own home; this line stays explicit
+    # because the next reader should not have to know that to see it is safe.
+    assert os.environ["AGENT_MISSION_HOME"] != str(Path.home() / ".agent-mission")
     board.serve(8976)
     assert board.WRITES.enabled is False and board.WRITES.code == ""
 

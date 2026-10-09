@@ -23,8 +23,25 @@ import os
 import time
 from pathlib import Path
 
-DENY_RULES = [f"Bash(mission {c}:*)" for c in
-              ("set", "accept", "done", "remove", "add")]
+# The write commands, and the commands that HAND OUT write power. `board` is
+# in the second group and was missing: a board started by an agent at a pty
+# mints a write code the agent can then read, which is a longer road to the
+# same place. `passcode` sets the lock itself.
+_DENIED = ("set", "accept", "done", "remove", "add", "board", "passcode",
+           "archive")
+
+# Three ways the SAME CLI is spelled, and the old list matched one of them.
+# `mission set ...` was denied; `python3 -m agent_mission set ...` -- which is
+# how the attack in docs/adversarial-testing.md round 4 was actually run --
+# was not, and neither was any invocation through a wrapper. A prefix matcher
+# cannot see past `script`, so `script` is denied outright: it exists in this
+# context only to manufacture a tty.
+DENY_RULES = (
+    [f"Bash(mission {c}:*)" for c in _DENIED]
+    + ["Bash(python -m agent_mission:*)",
+       "Bash(python3 -m agent_mission:*)",
+       "Bash(script:*)"]
+)
 STATUSLINE = {"type": "command", "command": "mission whereami"}
 HOOK_CMD = "mission whereami --full 2>/dev/null || true"
 # C14-1: the edge-triggered attention line. UserPromptSubmit injects stdout

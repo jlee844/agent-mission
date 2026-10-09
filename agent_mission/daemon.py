@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -167,7 +168,25 @@ def _is_board(pid: int) -> bool:
                              capture_output=True, text=True, timeout=2).stdout
     except Exception:
         return False
-    return "agent_mission" in out and "board" in out
+    # Two ways this program appears in a process list, and for months only one
+    # of them counted. `python -m agent_mission board` is what ensure() spawns,
+    # so every internally-started board matched and the guard looked correct.
+    # A person's board comes from the CONSOLE SCRIPT -- `.../bin/mission board`
+    # -- where the string `agent_mission` never appears, so `--stop` decided
+    # the board was not its own and refused. The port stayed held by a terminal
+    # that had since closed, every later `mission board` found it occupied, and
+    # the write code was unrecoverable: it had printed to a tty that was gone.
+    #
+    # Matched on ARGUMENTS, not substrings: `board` has to be its own argv
+    # element appearing after the program, or the helper `_is_board` inside a
+    # `python -c` one-liner reads as a running board (it did, first try).
+    parts = out.split()
+    for i, token in enumerate(parts):
+        if (token == "agent_mission" or token.endswith("/agent_mission")
+                or token == "mission" or token.endswith("/mission")
+                or ("agent_mission" in token and token.endswith(".py"))):
+            return "board" in parts[i + 1:]
+    return False
 
 
 def _free(port: int) -> bool:
@@ -222,10 +241,21 @@ def ensure(port: int = DEFAULT_PORT, quiet: bool = False) -> str | None:
     return None
 
 
-def stop() -> bool:
+def stop(port: int = 8976) -> bool:
     rec = running()
     if not rec:
-        return False
+        # No record is not the same as no board. The record is deleted on the
+        # refusal path below, so the very bug that made `--stop` disown a
+        # console-script board ALSO erased the note saying where it was --
+        # leaving a live board holding the port with nothing pointing at it.
+        # The board answers /api/identity with its own pid, so ask the port.
+        for probe in range(port, port + 12):
+            found = identify(probe)
+            if found and found.get("pid"):
+                rec = {"pid": found["pid"], "port": probe}
+                break
+        else:
+            return False
     pid = int(rec.get("pid", 0))
     if not _is_board(pid):
         # The record names something that is not a board. Do not signal it.

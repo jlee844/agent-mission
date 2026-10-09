@@ -22,3 +22,38 @@ jobs:
       # days only because every local run exported it, and that variable's
       # whole job is to switch off the gate most of these tests exist to guard.
       - run: python -m pytest -q
+
+  # macOS is the platform this tool primarily runs on, and it was never tested.
+  # Its system interpreter is linked against LibreSSL, so `hashlib.scrypt` is
+  # absent there -- five tests failed on it for weeks while this workflow,
+  # being Ubuntu-only, reported green.
+  macos:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  # The system interpreter specifically, NOT a setup-python build. This is the
+  # one that lacks scrypt, and installing a managed 3.9 above does not exercise
+  # it -- actions/setup-python ships an OpenSSL-linked build, so the matrix job
+  # cannot catch what this job catches.
+  macos-system-python:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: show the interpreter under test
+        run: /usr/bin/python3 -VV
+      - name: venv from the system python, then the full suite
+        run: |
+          /usr/bin/python3 -m venv /tmp/sysvenv
+          /tmp/sysvenv/bin/python -m pip install -q --upgrade pip setuptools wheel
+          /tmp/sysvenv/bin/python -m pip install -q -e ".[dev]"
+          /tmp/sysvenv/bin/python -m pytest -q

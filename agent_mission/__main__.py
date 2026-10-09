@@ -117,7 +117,7 @@ def _store(sid: str, a=None) -> MissionStore:
 def _mission_target(a) -> tuple[str, str] | None:
     """Which MISSION a command means. Name routes; the session only speaks.
 
-    C11c: cwd is reach, not subject. Jonathan's sessions open at the Mission
+    C11c: cwd is reach, not subject. the maintainer's sessions open at the Mission
     Control root because the work needs the whole tree, while the goal lives
     three folders down -- so cwd says what a session can SEE, never what it is
     FOR. It is not consulted here at all.
@@ -149,7 +149,7 @@ def _resolve_with_path(a) -> tuple[str, str]:
     The path matters as much as the answer. An app-attached terminal exports
     CLAUDE_CODE_SESSION_ID, so a human typing there resolves by `env` while
     believing they resolved by `cwd` -- which is how a career objective landed
-    on the Tripnom mission and then renamed it. The cwd branch that made that
+    on the Wayfinder mission and then renamed it. The cwd branch that made that
     belief plausible is gone; see resolve_session.
     """
     given = getattr(a, "session", None)
@@ -207,13 +207,22 @@ def _at_a_keyboard() -> bool:
     That is not a security boundary -- an agent can set the override below --
     but it moves impersonation from "what happens by default" to "a deliberate
     lie", which is exactly the threat the design claims to address.
+
+    A tty turned out to be necessary and not sufficient: `script(1)` hands one
+    to any process that asks, so the gate above was passable from an agent's
+    own shell with no override and -- worse -- left nothing in the log to say
+    so. See whoami.py. The override still wins, because its entire purpose is
+    to be the deliberate, recorded lie.
     """
     if os.environ.get(HUMAN_ENV) == "1":
         return True
     try:
-        return sys.stdin.isatty()
+        if not sys.stdin.isatty():
+            return False
     except Exception:
         return False
+    from . import whoami
+    return not whoami.spawned_by_agent()
 
 
 def _confirm_env_target(a, sid: str) -> bool:
@@ -279,7 +288,18 @@ def _legacy_target(a, what: str):
 def _human_gate(what: str) -> bool:
     if _at_a_keyboard():
         return True
-    print(f"  {what} is yours, and this is not a terminal — refusing.\n"
+    # Two different refusals, because one of them used to be a lie: against
+    # `script -q /dev/null mission set ...` there IS a terminal, and saying
+    # otherwise sends whoever reads it looking for the wrong thing.
+    from . import whoami
+    try:
+        has_tty = sys.stdin.isatty()
+    except Exception:
+        has_tty = False
+    reason = ("this terminal was opened underneath a coding agent"
+              if has_tty and whoami.spawned_by_agent()
+              else "this is not a terminal")
+    print(f"  {what} is yours, and {reason} — refusing.\n"
           f"  If you are an agent: `mission propose \"...\"` instead; it needs\n"
           f"  no permission and stays inert until a person accepts it.\n"
           f"  To compose the command for them: `mission help <command>`.\n"
@@ -320,7 +340,7 @@ def cmd_init(a) -> int:
               f"`mission init --force` to start over.")
         return 1
     if existing and a.force and existing.checklist and not a.discard_plan:
-        # Another session told Jonathan to run `init --force` to fix a bad
+        # Another session told the maintainer to run `init --force` to fix a bad
         # objective. It would have discarded 11 items and 10 pending proposals:
         # load() folds from the LAST `created` event, so a re-init drops
         # everything before it. Editing a field is what he actually wanted.
@@ -728,6 +748,15 @@ def cmd_whereami(a) -> int:
     on every path including "no mission" and "the log is corrupt". A statusline
     that can fail is a statusline that gets removed.
     """
+    try:
+        # The statusline runs far more often than a prompt is submitted, so
+        # beating here is what keeps a session reporting while it works
+        # through a long turn. Same guarantees: never raises, records nothing
+        # outside a session.
+        from . import heartbeat as HB
+        HB.beat(current_session_id() or "", str(getattr(a, "cwd", "") or ""))
+    except Exception:
+        pass
     if getattr(a, "full", False) and not getattr(a, "on", None):
         # The re-anchor hook runs here. For a session with no goal yet it used
         # to say "mission init", which creates a SECOND goal for work that
@@ -819,6 +848,628 @@ def cmd_whereami(a) -> int:
     return 0
 
 
+VERIFIER_ROLE = """\
+You are a VERIFICATION session. You do not fix anything.
+
+Your job, for each item below:
+  1. Re-derive the claim FROM DISK. Open the named artifact and read it.
+  2. Decide whether it does what the claim says — not whether a file exists,
+     which has already been checked mechanically and is printed for you.
+  3. Then exactly one of:
+       agrees    ->  mission checked <id> "<what you read, and why it holds>"
+       disagrees ->  mission finding <id> "<what is missing or wrong>"
+
+What you may NOT do, and the tool will refuse anyway:
+  * tick an item (`mission done`) — that is the human's, and only theirs
+  * accept a proposal, or change the objective
+  * FIX the defect you find. Say what is wrong and send it back; a session
+    that both finds and fixes is the thing this role exists to separate.
+
+Read the brief as the whole of what you know. You are deliberately NOT given
+the transcript of the session that did the work: a check that starts from
+somebody else's reasoning tends to re-run it. Start from the artifact.
+
+Your verdict is an OPINION. You are the same model that wrote the code,
+reading the same disk. What makes this worth doing is the fresh context and
+the separation of roles, which is weaker than independence — say so in your
+note rather than writing as if you were a second pair of eyes.
+"""
+
+
+# Above this many unanswered proposals, dispatch refuses. Measured, not
+# chosen: the live log showed 56 pending with a p90 accept time of 74h, so
+# spawning or nudging more workers widens the one place already slowest.
+# The board's page carries the same number; a test asserts they agree.
+DISPATCH_MAX = 20
+
+
+def cmd_dispatch(a) -> int:
+    """What to hand out, and the message to hand over. Delivers NOTHING.
+
+    The board cannot message a session and must not be able to: it has no
+    agent socket and no token, and if it could talk on that bus it would be
+    reachable FROM it, which is the whole write gate undone. So the split is
+    forced, and it is the right one anyway -- the board decides WHAT (a
+    mechanical function of its lanes), a session decides WHO and delivers.
+
+    So this prints a plan. A dispatcher session reads it, lists its idle
+    peers, and sends one item to one peer. It does NOT lease: the peer
+    leases under its own id when it runs `mission take`, so the lease
+    records who actually has the work rather than who was told about it.
+    """
+    mid, st = _target(a, "dispatch")
+    if mid is None:
+        return 1
+    m = st.load()
+    if m is None:
+        print("  no mission here")
+        return 1
+
+    lanes = m.lanes()
+    waiting = len(lanes["waiting"])
+    if waiting > DISPATCH_MAX:
+        print(f"  HELD: {waiting} proposal(s) are waiting on you, "
+              f"threshold {DISPATCH_MAX}.")
+        print("  Dispatching more sessions widens the queue that is already")
+        print("  the slow step. Clear some first:")
+        print(f"    mission pending --on {mid}")
+        return 1
+
+    # Ready, in the same order `take` would hand them out, so a dispatched
+    # peer gets the item it was told about rather than whatever happened to
+    # be first by the time it ran.
+    ready = lanes["ready"]
+    fresh = [i for i in ready if i.rework and not (i.released_at > i.rework_at)]
+    rest = [i for i in ready if i not in fresh]
+    queue = fresh + rest
+    if not queue:
+        print("  nothing ready to hand out.")
+        return 0
+
+    # C19: the eligibility verdict per ready item, from recorded facts only.
+    # By default it ANNOTATES and nothing more: the plan's order is the order
+    # `take` will hand items out, and the message it prints says so ("it
+    # should hand you <id>"), so silently reordering here would make that
+    # sentence false. `--delegable` filters, and says what it cost.
+    from .delegable import eligible as _eligible
+    verdicts = dict((i.id, v) for i, v in _eligible(m))
+    if getattr(a, "delegable", False):
+        keep = [i for i in queue if verdicts[i.id].ok]
+        skipped = [i for i in queue if not verdicts[i.id].ok]
+        if not keep:
+            print(f"  nothing delegable among {len(queue)} ready item(s).")
+            for i in skipped[:5]:
+                print(f"    {i.id}  {verdicts[i.id].fact[:70]}")
+            print("  These are not blocked — they are items a context-free")
+            print("  session could not prove it finished. Sharpen them first:")
+            print(f"    mission sharpen --on {mid}")
+            return 0
+        if skipped:
+            print(f"  skipping {len(skipped)} ready item(s) as not delegable; "
+                  f"`mission take` may hand a peer one of them instead.")
+        queue = keep
+
+    peers = max(1, int(getattr(a, "peers", 1) or 1))
+    # ONE item per peer. Several peers racing for the same item is handled
+    # correctly by the lease -- the second gets "held by ..." -- but each
+    # would burn a turn to discover that, which is a stampede with extra
+    # steps.
+    picks = queue[:peers]
+    held_back = len(queue) - len(picks)
+
+    print(f"\n  DISPATCH PLAN — {len(picks)} item(s) for {peers} peer(s)")
+    if held_back:
+        print(f"  ({held_back} more ready; one item per peer per cycle)")
+    stale = {i.id for i in m.untouched()}
+    for n, i in enumerate(picks, 1):
+        print(f"\n  ── {n} of {len(picks)} ─────────────────────────────")
+        print(f"  item: {i.id}")
+        if i.id in stale:
+            print(f"  ⚠ agreed {m.days_since_accepted(i):.0f} days ago and never "
+                  f"touched — it may already be built; the message says so")
+        v = verdicts.get(i.id)
+        if v is not None:
+            print(f"  {v.label}: {v.fact}")
+        if i.rework:
+            print(f"  sent back earlier by {short_id(i.rework_by) or '?'}")
+        print("  send this to ONE idle session:\n")
+        for line in _dispatch_message(
+                mid, m, i,
+                stale_days=(m.days_since_accepted(i)
+                            if i.id in stale else 0.0),
+                reply_to=getattr(a, "reply_to", "") or "").split("\n"):
+            print(f"    {line}")
+    print()
+    return 0
+
+
+def _dispatch_message(mid: str, m, item, stale_days: float = 0.0,
+                      reply_to: str = "") -> str:
+    """The text a dispatcher hands a peer.
+
+    Composed HERE, from the store, rather than written by whoever is
+    dispatching: the peer must be told which goal and which item, and
+    nothing about how to do the work. It then asks the board itself, so the
+    reason and the constraints come from the same place every time.
+    """
+    out = [
+        "You have been handed one item of agreed work by the mission board.",
+        "Nobody has told you how to do it. Ask the board:",
+        "",
+        f"    mission take {item.id} --on {mid}",
+        "",
+        "That takes THIS item. If it refuses, it says why — another session",
+        "took it first, or the human has not accepted it — and `mission take",
+        f"--on {mid}` with no id hands you whatever is next instead.",
+        "",
+        f"goal: {m.objective}",
+    ]
+    for v in m.success_criteria:
+        out.append(f"done when: {v}")
+    for v in m.constraints:
+        out.append(f"constraint: {v}")
+    if stale_days:
+        # The failure this prevents is concrete: five items on this board had
+        # been agreed 43-45 days and every one was already built. A peer told
+        # only "build this" rebuilds it and claims it, and the claim looks
+        # fine -- the artifact really does exist.
+        out += ["",
+                f"⚠ This was agreed {stale_days:.0f} days ago and no session has",
+                "ever leased, claimed or released it. On this board that has",
+                "meant ALREADY BUILT more often than not. Before writing any",
+                "code, read the repo and check. If it is already done, do not",
+                "rebuild it — claim it with the artifact that proves it, or",
+                "release it saying what is missing."]
+    if item.rework:
+        out += ["",
+                "This was sent back by a verification session. Its reason is",
+                "printed by `mission take`; read it before changing anything,",
+                "and check the current code — some of it may already be fixed."]
+    out += [
+        "",
+        "When it is finished, claim it (a claim is a suggestion; the human",
+        "still confirms):",
+        f"    mission claims-done {item.id} \"done: <what> (<artifact>)\" "
+        f"--on {mid}",
+        "If you cannot finish it, hand it back WITH a reason:",
+        f"    mission release {item.id} \"why\" --on {mid}",
+    ]
+    if reply_to:
+        # Two channels on purpose, because they fail differently. The board
+        # announces a claim or a handback to EVERY session at its next prompt
+        # (the signal hook) -- reliable, and late: a session mid-turn hears
+        # nothing for as long as that turn lasts. A direct message is
+        # immediate and unreliable: the peer has to choose to send it, and
+        # its user may have to approve it first. Neither alone answers "tell
+        # me when it is done".
+        out += [
+            "",
+            f"When you claim it or hand it back, also message {reply_to} "
+            f"saying which id and what you concluded.",
+            "One line is enough. It is waiting on the result to decide what",
+            "to do next, and the board only tells it at that session's next",
+            "prompt, which may be a long way off.",
+        ]
+    out += [
+        "",
+        "Do not tick anything, do not accept proposals, do not commit.",
+    ]
+    return "\n".join(out)
+
+
+AUDITOR_ROLE = """\
+You are an AUDIT session. You do not build anything.
+
+Each item below was AGREED long ago and no session has ever leased, claimed or
+released it. That is all the board knows. It does not know whether the work is
+done -- deciding that needs somebody to read the repo, which is why this is a
+session's job and not a function.
+
+For each item, exactly one of:
+  already built    ->  mission claims-done <id> "done: <what> (<artifact>)"
+  partly built     ->  mission claims-done the part that holds, and say in the
+                       claim which clause is NOT built, in those words
+  not built        ->  leave it alone. Say so in your reply and move on.
+  not real work    ->  mission propose a replacement, and say what is wrong
+                       with the original. Do not edit the item.
+
+A claim is a SUGGESTION; the human's tick is the only thing that moves the
+counter. So an honest wrong claim costs a confirm, while a silent assumption
+costs 45 days -- which is what it already cost on this board.
+
+Two rules about the claim, both learned by getting them wrong:
+  * artifacts resolve against the MISSION's cwd, not the repo you are in
+  * only the LAST parenthesised group within 400 characters of `done:` is
+    read, so keep it short and put the paths at the end
+
+What you may NOT do, and the tool will refuse anyway: tick an item, accept a
+proposal, change the objective, or commit. And do not BUILD the missing half
+of a partly-built item -- say what is missing and let it be routed.
+"""
+
+
+def cmd_audit(a) -> int:
+    """The brief for an audit session: agreed long ago, never touched.
+
+    The gap this closes was expensive and invisible. The four lanes only ever
+    ask the human to act on something an AGENT initiated -- a proposal to
+    accept, a claim to confirm, a finding to read. Work that was finished and
+    never claimed asks nothing of anybody: it sits in the ready lane, which
+    is also the dispatch queue, so it is offered to peers forever. Five items
+    on this board sat 43-45 days that way and every one was already built.
+
+    So this prints the question, with the measured fact behind it, and routes
+    it to a session. It writes nothing: the only thing that can move one of
+    these rows is a claim, and a claim is still a suggestion.
+    """
+    mid, st = _target(a, "audit")
+    if mid is None:
+        return 1
+    m = st.load()
+    if m is None:
+        print("  no mission here")
+        return 1
+    days = float(getattr(a, "days", 0) or 0) or None
+    rows = m.untouched(days) if days else m.untouched()
+    if not rows:
+        from .store import UNTOUCHED_DAYS
+        print(f"  nothing agreed more than {days or UNTOUCHED_DAYS:.0f} days "
+              f"ago is untouched. Every ready item has been leased, claimed,")
+        print("  released or sent back at least once.")
+        return 0
+    print(AUDITOR_ROLE)
+    print(f"  goal: {m.objective}")
+    print(f"  cwd:  {m.cwd}   ← artifacts in a claim resolve from HERE")
+    print(f"\n  {len(rows)} item(s) agreed long ago and never touched:")
+    for i in rows:
+        print(f"\n  ── {i.id} ──  agreed {m.days_since_accepted(i):.0f} days ago")
+        print(f"  {i.text}")
+    print(f"\n  Reply with one line per item. Claim what is built:")
+    print(f"    mission claims-done <id> \"done: ... (<path>)\" --on {mid}")
+    print()
+    return 0
+
+
+def cmd_verify(a) -> int:
+    """The brief a verification session reads. Read-only.
+
+    Prints, per claimed item: the item, the claim, the artifacts it names,
+    and the DISK's mechanical verdict. Deliberately NOT the transcript of
+    the session that made the claim -- a verifier handed the doer's
+    reasoning tends to re-run it, and the fresh context is most of what this
+    role has going for it.
+    """
+    mid, st = _target(a, "verify")
+    if mid is None:
+        return 1
+    m = st.load()
+    if m is None:
+        print("  no mission here")
+        return 1
+    from .claims import verdict_for
+
+    review = m.lanes()["review"]
+    if not review:
+        print("  nothing claimed — nothing to check.")
+        return 0
+
+    out: list[str] = []
+
+    def say(line=""):
+        out.append(line)
+
+    if getattr(a, "role", False) or getattr(a, "spawn", False):
+        say(VERIFIER_ROLE)
+    say(f"  GOAL: {m.objective}")
+    for v in m.success_criteria:
+        say(f"  DONE WHEN: {v}")
+    say(f"  ARTIFACT PATHS RESOLVE AGAINST: {m.cwd or '(unset)'}")
+    say(f"\n  {len(review)} CLAIM(S) TO CHECK\n")
+    for i in review:
+        v = verdict_for(i.claimed_done, cwd=m.cwd or "",
+                        accepted_at=i.accepted_at)
+        say(f"  [{i.id}] {i.text}")
+        say(f"      claim: {i.claimed_done}")
+        # The mechanical half, stated as mechanical. It is the part that
+        # depends on no model at all, and the verifier should not redo it.
+        if v["unbacked"]:
+            say(f"      DISK: named but NOT present: "
+                  f"{', '.join(v['unbacked'])}")
+        elif v["stale"]:
+            say(f"      DISK: present but UNTOUCHED since you accepted: "
+                  f"{', '.join(v['stale'])}")
+        elif v["exists"]:
+            say(f"      DISK: {v['backed']} artifact(s) present and changed "
+                  f"since accepted")
+        else:
+            say("      DISK: nothing checkable in the claim")
+        if i.checked_by:
+            say(f"      already checked by {short_id(i.checked_by)} "
+                  f"(an opinion): {i.checked_note[:80]}")
+        if i.claimed_by:
+            say(f"      claimed by {short_id(i.claimed_by)} "
+                  f"— you may not check your own claim")
+        say(f"      agrees:    mission checked {i.id} \"...\"")
+        say(f"      disagrees: mission finding {i.id} \"...\"\n")
+
+    brief = "\n".join(out)
+    if getattr(a, "spawn", False):
+        if not _at_a_keyboard():
+            print("  spawning a session is yours to do, not the agent's.\n"
+                  "  `mission verify --spawn` in your own terminal, or hand\n"
+                  "  the brief to a session yourself:\n"
+                  f"    mission verify --role --on {mid}")
+            return 1
+        return _spawn_verifier(mid, brief, m.cwd or "")
+    print(brief)
+    return 0
+
+
+def _spawn_verifier(mid: str, brief: str, cwd: str) -> int:
+    """Start one verification session with `claude -p`, detached.
+
+    Spawning is why this command is human-gated. A verifier cannot tick,
+    accept or change the objective -- but it CAN write findings, which
+    re-queue work, so it is not a read-only act and should not be reachable
+    from an agent's own shell.
+
+    One shot, never a loop: the prompt it gets is the verifier role, which
+    has no spawn step in it. An agent that can spawn agents that spawn
+    agents is not a feature anyone asked for.
+    """
+    import shutil
+    import subprocess
+    exe = shutil.which("claude")
+    if not exe:
+        print("  no `claude` on PATH — cannot spawn. Start a session "
+              "yourself and run:\n"
+              f"    mission verify --role --on {mid}")
+        return 1
+    log = _home_dir() / "verify" / f"{mid}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with log.open("a", encoding="utf-8") as fh:
+            proc = subprocess.Popen(
+                [exe, "-p", brief],
+                cwd=cwd or None, stdout=fh, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,      # outlives this terminal
+            )
+    except Exception as e:
+        print(f"  could not spawn: {e}")
+        return 1
+    print(f"  verification session spawned (pid {proc.pid})")
+    print(f"  it reads the brief, then writes `checked` or `finding`.")
+    print(f"  output: {log}")
+    print("  it cannot tick anything — your confirm is still the only thing")
+    print("  that moves the counter.")
+    return 0
+
+
+def cmd_checked(a) -> int:
+    """Record that a second session re-derived a claim and agrees."""
+    mid, st = _target(a, "checked")
+    if mid is None:
+        return 1
+    sid = getattr(a, "as_session", "") or current_session_id() or ""
+    try:
+        st.checked(a.item_id, a.text, session_id=sid,
+                   by="human" if _at_a_keyboard() else "agent")
+    except (ValueError, KeyError) as e:
+        print(f"  refused: {e}")
+        return 1
+    print(f"  recorded: a second session agrees about [{a.item_id}]")
+    print("  this is an OPINION, not evidence — it changes no lane and ticks")
+    print("  nothing. Your confirm on the board is still the only thing that")
+    print("  moves the counter.")
+    return 0
+
+
+def cmd_take(a) -> int:
+    """Ask the board what to work on, and take it.
+
+    This is the command that removes the step where a person says what a
+    session should do. Nothing here is a judgement: the item comes from the
+    SAME mechanical rule `whereami` has always printed -- first accepted,
+    not-done leaf in tree order -- with rework ahead of fresh work, and the
+    lease only stops a second session picking the same one.
+
+    Agent-runnable on purpose. It cannot accept, cannot tick, and cannot
+    reach an item the human has not already agreed to.
+    """
+    mid, st = _target(a, "take")
+    if mid is None:
+        return 1
+    m = st.load()
+    if m is None:
+        print("  no mission here — `mission init` first")
+        return 1
+
+    sid = getattr(a, "as_session", "") or current_session_id() or ""
+    # An id names ONE item. Without this, a dispatched session could not take
+    # the item it was handed: `take` returns the first ready leaf in tree
+    # order, so on a goal whose oldest work is still open -- which is most of
+    # them -- a peer told "it should hand you X" was handed something else,
+    # and the dispatch message's own sentence was false. The board cannot
+    # deliver a message; the least it can do is let the named item be taken.
+    #
+    # This widens nothing: an item still has to be ACCEPTED and ready, and
+    # the refusals below say which of those failed rather than silently
+    # falling back to the queue's choice. Falling back is what would make
+    # this dangerous -- a session believing it took X while holding Y.
+    wanted = (getattr(a, "item_id", "") or "").strip()
+    if wanted:
+        item = next((i for i in m.items if i.id == wanted), None)
+        if item is None:
+            print(f"  no item {wanted} on this goal.")
+            return 1
+        lane = m.lane_of(item)
+        # Re-taking your OWN live item is a renewal, not a conflict. The lane
+        # check refused it, so a worker on a long job could not keep its
+        # lease and the 90-minute clock -- not another session -- was what
+        # took the item away.
+        renewing = (lane == "progress"
+                    and item.leased_by
+                    and item.leased_by == (getattr(a, "as_session", "")
+                                           or current_session_id() or ""))
+        if lane != "ready" and not renewing:
+            why = {"waiting": "it is a proposal awaiting the human's accept",
+                   "progress": f"it is held by {short_id(item.leased_by)}",
+                   "review": "it is claimed and awaiting a check",
+                   "done": "it is already ticked"}.get(lane, lane)
+            print(f"  cannot take {wanted}: {why}.")
+            return 1
+    else:
+        item = m.next_ready()
+    if item is None:
+        lanes = m.lanes()
+        if lanes["review"]:
+            print(f"  nothing to pick up. {len(lanes['review'])} item(s) are "
+                  f"in review — `mission verify` checks them.")
+        elif lanes["waiting"]:
+            print(f"  nothing agreed is left. {len(lanes['waiting'])} "
+                  f"proposal(s) await the human:\n"
+                  f"    mission pending --on {mid}")
+        else:
+            print("  nothing to pick up — every agreed item is done.")
+        return 0
+
+    # ⚠️ Checked HERE, not at the top: with nothing to take, "no session id"
+    # is a true statement about the wrong thing, and an existing test said so
+    # by failing. The id only has to exist at the moment a lease would name
+    # somebody.
+    #
+    # It used to lease to the literal string "unknown". Two sessions outside
+    # Claude Code then both held "unknown", each read the other's lease as
+    # its own, and the lease's one guarantee -- that two sessions cannot hold
+    # the same item -- was off without anything saying so.
+    if not sid:
+        print(f"\n  [{item.id}] is free, but this process has no session id,")
+        print("  so the lease would name nobody and a second session would")
+        print("  read it as its own. Name yourself:")
+        print(f"    mission take {item.id} --as-session <name> --on {mid}")
+        return 1
+
+    try:
+        st.lease(item.id, sid, by="human" if _at_a_keyboard() else "agent")
+    except ValueError as e:
+        print(f"  could not take {item.id}: {e}")
+        return 1
+
+    print(f"\n  YOUR ITEM: [{item.id}] {item.text}")
+    if item.rework:
+        # The reason is the whole point of routing it back: a worker that is
+        # told only "do this again" repeats the same work.
+        print(f"  SENT BACK BY A VERIFIER: {item.rework}")
+        if item.rework_by:
+            print(f"    (session {short_id(item.rework_by)})")
+    print(f"  GOAL: {m.objective}")
+    for label, vals in (("DONE WHEN", m.success_criteria),
+                        ("CONSTRAINTS", m.constraints),
+                        ("NOT DOING", m.non_goals)):
+        for v in vals:
+            print(f"  {label}: {v}")
+    print(f"\n  when it is finished:\n"
+          f"    mission claims-done {item.id} \"done: <what> (<artifact>)\"\n"
+          f"  if you cannot do it:\n"
+          f"    mission release {item.id}\n")
+    return 0
+
+
+def cmd_release(a) -> int:
+    """Hand an item back without claiming it is finished."""
+    mid, st = _target(a, "release")
+    if mid is None:
+        return 1
+    try:
+        st.release(a.item_id, note=getattr(a, "note", "") or "",
+                   by="human" if _at_a_keyboard() else "agent")
+    except (ValueError, KeyError) as e:
+        print(f"  {e}")
+        return 1
+    print(f"  released {a.item_id} — back in the ready queue")
+    if getattr(a, "note", ""):
+        print("  your reason is on the item; it no longer jumps the queue,")
+        print("  so the next session gets fresh work instead of this wall.")
+    else:
+        print("  no reason given — the next taker learns nothing from this.")
+        print("  `mission release <id> \"why\"` is worth the extra words.")
+    return 0
+
+
+def cmd_finding(a) -> int:
+    """A verifier says an accepted item is NOT done, and why.
+
+    The routing move. It clears the agent's claims-done suggestion and the
+    lease, so the item returns to the ready queue carrying the reason and the
+    next session to run `mission take` gets it. No human ruling is involved
+    because none is being made: the item was accepted long ago, the claim was
+    only ever a suggestion, and `done` still has exactly one writer.
+    """
+    mid, st = _target(a, "finding")
+    if mid is None:
+        return 1
+    sid = getattr(a, "as_session", "") or current_session_id() or ""
+    try:
+        st.finding(a.item_id, a.text, session_id=sid,
+                   by="human" if _at_a_keyboard() else "agent")
+    except (ValueError, KeyError) as e:
+        print(f"  refused: {e}")
+        return 1
+    print(f"  sent back: [{a.item_id}] is in the ready queue again")
+    print(f"  reason recorded: {a.text[:90]}")
+    print("  the claim it had is cleared; nothing was un-accepted or ticked")
+    return 0
+
+
+def cmd_queue(a) -> int:
+    """The four lanes, as text. The board shows the same thing."""
+    mid, st = _target(a, "queue")
+    if mid is None:
+        return 1
+    m = st.load()
+    if m is None:
+        print("  no mission here")
+        return 1
+    import time as _t
+    lanes = m.lanes()
+    print(f"\n  {m.title}")
+    print(f"\n  READY TO PICK UP ({len(lanes['ready'])}) — no acceptance needed")
+    # C19: eligibility beside each ready row. Printed, never acted on -- the
+    # order is `next_ready`'s and this does not touch it.
+    from .delegable import eligible as _eligible
+    verdicts = dict((i.id, v) for i, v in _eligible(m))
+    stale = {i.id for i in m.untouched()}
+    if stale:
+        print(f"    ⚠ {len(stale)} agreed long ago and never touched — some may")
+        print(f"      already be built. `mission audit --on {mid}`")
+    for i in lanes["ready"]:
+        flag = "  rework" if i.rework else ""
+        print(f"    [ ] {i.id}  {i.text[:62]}{flag}")
+        if i.rework:
+            print(f"          ← {i.rework[:70]}")
+        if i.id in stale:
+            print(f"          ⚠ agreed {m.days_since_accepted(i):.0f} days ago, "
+                  f"never leased/claimed/released — check before building")
+        v = verdicts.get(i.id)
+        if v is not None:
+            mark = "→ delegable" if v.ok else "· not delegable"
+            print(f"          {mark}: {v.fact[:78]}")
+    print(f"\n  IN PROGRESS ({len(lanes['progress'])})")
+    for i in lanes["progress"]:
+        mins = int((_t.time() - i.leased_at) // 60)
+        print(f"    [~] {i.id}  {i.text[:52]}  {short_id(i.leased_by)} "
+              f"{mins}m")
+    print(f"\n  IN REVIEW ({len(lanes['review'])}) — a claim awaiting a check")
+    for i in lanes["review"]:
+        print(f"    [◦] {i.id}  {i.text[:62]}")
+    print(f"\n  WAITING ON YOU ({len(lanes['waiting'])})")
+    for i in lanes["waiting"][:5]:
+        print(f"    [+] {i.id}  {i.text[:62]}")
+    print()
+    return 0
+
+
 def cmd_claims_done(a) -> int:
     """C17: suggest an item is finished, with the claim that would prove it.
 
@@ -832,13 +1483,76 @@ def cmd_claims_done(a) -> int:
         return 1
     who = "human" if _at_a_keyboard() else "agent"
     try:
-        st.claim_done(a.item_id, a.text, by=who)
+        st.claim_done(a.item_id, a.text, by=who,
+                      session_id=current_session_id() or "")
     except ValueError as e:
         print(f"  refused: {e}")
         return 1
     print(f"  suggested: [{a.item_id}] awaits the human's confirm on the board")
+    # C18: say at WRITE time whether the disk can check this, not only later in
+    # `mission pending`. A suggestion with no parsable artifact is accepted in
+    # silence today, so the author learns the format only after the board has
+    # already rendered a row nothing can verify -- one real batch put 17 of 18
+    # suggestions on the board that way.
+    from .claims import verdict_for
+    # The mission's cwd, not `Path.cwd()`. The process cwd is why the same
+    # claim read "backed" here and "NOT on disk" on the board.
+    _m = st.load()
+    v = verdict_for(a.text, cwd=(_m.cwd if _m else "") or "")
+    cwd = (_m.cwd if _m else "") or ""
+    if v.get("too_broad"):
+        # Say it at WRITE time, like the other two. A claim naming the whole
+        # mission folder cannot fail, so it would sit on the board looking
+        # corroborated until somebody read it.
+        print(f"  ⚠ names everything, so nothing is checked: "
+              f"{', '.join(v['too_broad'])}")
+        print("    name the file or directory you actually changed")
+    elif v["exists"] and not v["unbacked"]:
+        print(f"  named artifact(s) exist: {v['backed']}")
+    elif v["unbacked"]:
+        # Say WHERE it looked. Without this the message is "not on disk",
+        # which reads as "your work is missing" when the real fault is a
+        # repo-relative path against a mission rooted higher up -- it bit the
+        # maintainer's ten claims, bit Wayfinder's fifteen, and bit twice more
+        # while this very line was being written.
+        print(f"  ⚠ named but NOT on disk: {', '.join(v['unbacked'])}")
+        if cwd:
+            print(f"    paths resolve from the MISSION's cwd: {cwd}")
+            print("    a repo-relative path needs its prefix "
+                  "(projects/builds/<repo>/...)")
+    else:
+        print("  ⚠ nothing checkable — the board will show this as unverified.")
+        print("    Name a file in parentheses:  done: <what> (path/to/file)")
+        if cwd:
+            print(f"    relative to {cwd}")
+        # The other way a well-formed claim comes back empty, hit twice today:
+        # only the LAST parenthesised group within 400 characters of `done:`
+        # is read, so a long claim's artifacts fall outside the window.
+        if len(a.text) > 400:
+            print(f"    ⚠ this claim is {len(a.text)} characters; only the "
+                  f"first 400 after `done:` are parsed")
+            print("    shorten it, or put the paths earlier")
     print(f"  → {_where(mid)}")
     return 0
+
+
+def _hook_mission_cwd(sid: str) -> str:
+    """The cwd of the mission this session is attached to, or "".
+
+    The Stop hook had only the session's cwd, which is a different directory
+    from the mission's whenever a session works outside the goal's repo --
+    and then the hook's verdict disagreed with the board's about the same
+    claim.
+    """
+    try:
+        from . import missions as M
+        name = M.attachments().get(sid)
+        if not name:
+            return ""
+        m = _store(name).load()
+        return (m.cwd or "") if m else ""
+    except Exception:
+        return ""
 
 
 def cmd_claims(a) -> int:
@@ -860,24 +1574,35 @@ def cmd_claims(a) -> int:
         sdir = home / "claims"
         safe = "".join(ch for ch in sid if ch.isalnum() or ch in "-_")[:64] or "x"
         state_p = sdir / f"{safe}.json"
+        # An insertion-ORDERED list, not a set. The state was written as
+        # `sorted(seen)[-400:]`, i.e. the 400 string-largest keys -- so a
+        # recent key beginning "1:" was evicted while an old "399:" stayed,
+        # and the evicted finding was reported again. Order of arrival is
+        # the only ordering that makes a cap mean "the newest 400".
         try:
-            seen = set(json.loads(state_p.read_text(encoding="utf-8")))
+            loaded = json.loads(state_p.read_text(encoding="utf-8"))
         except Exception:
-            seen = set()
-        findings, keys = [], set()
+            loaded = []
+        if isinstance(loaded, dict):                 # future-proofing
+            loaded = loaded.get("keys", [])
+        order = [k for k in loaded if isinstance(k, str)]
+        seen = set(order)
+        findings = []
         for c in C.iter_claims(Path(tpath), sid, tail_bytes=400_000):
-            key = f"{c.block_index}:{c.sentence[:60]}"
-            keys.add(key)
+            key = C.finding_key(c)
             if key in seen:
                 continue
-            v = C.verify(c, cwd=payload.get("cwd") or "")
+            v = C.verify(c, cwd=payload.get("cwd") or "",
+                         mission_cwd=_hook_mission_cwd(sid))
             seen.add(key)
+            order.append(key)
             if v.status in C.REPORT:
                 findings.append(v)
         try:
             sdir.mkdir(parents=True, exist_ok=True)
             tmp = state_p.with_suffix(f".tmp{os.getpid()}")
-            tmp.write_text(json.dumps(sorted(seen)[-400:]), encoding="utf-8")
+            # Oldest trimmed, newest kept.
+            tmp.write_text(json.dumps(order[-400:]), encoding="utf-8")
             tmp.replace(state_p)
         except OSError:
             pass
@@ -905,8 +1630,15 @@ def cmd_signal(a) -> int:
     """
     try:
         from . import signal as S
+        from . import heartbeat as HB
         from .daemon import running as board_running
         sid = current_session_id() or "terminal"
+        # C19-5(b): report liveness from the hook that already runs every
+        # turn. No settings change and no new hook -- every existing install
+        # starts reporting the moment it updates, because the command the
+        # hook already calls is this one. `beat` cannot raise and returns
+        # None outside a session, which is why it is safe here.
+        HB.beat(current_session_id() or "", str(getattr(a, "cwd", "") or ""))
         lines = S.check(sid)
         if lines:
             rec = board_running()
@@ -965,9 +1697,13 @@ def cmd_pending(a) -> int:
         if waiting:
             print()
         for i in sugg:
-            v = verdict_for(i.claimed_done, cwd=m.cwd or "")
-            word = (f"disk agrees ({v['backed']} backed)" if v["ok"] else
+            v = verdict_for(i.claimed_done, cwd=m.cwd or "",
+                            accepted_at=i.accepted_at)
+            word = (f"exists and changed since accepted ({v['backed']})"
+                    if v["ok"] else
                     f"{len(v['unbacked'])} claim(s) NOT backed" if v["unbacked"]
+                    else f"exists, UNTOUCHED since accepted: "
+                         f"{', '.join(v['stale'])}" if v["stale"]
                     else "nothing checkable in the claim")
             print(f"    [◦] {i.id}  {i.text}")
             print(f"         says: {i.claimed_done[:90]}")
@@ -999,7 +1735,36 @@ def cmd_why(a) -> int:
         v = " | ".join(v) if isinstance(v, list) else str(v)
         who = e.get("typed_by", e["by"])
         mark = e["by"] if who == e["by"] else f"{e['by']} (typed by {who})"
-        print(f"  {when}  {mark:<24} {v}")
+        # Which SURFACE, and whether the terminal it came from was one an
+        # agent had opened. Both are stamped on the event; neither was ever
+        # printed, so the log knew things `why` would not say.
+        where = []
+        if e.get("via") == "board":
+            where.append("via board")
+        if e.get("ancestor_agent"):
+            # ⚠️ It used to say "in a pty spawned by a coding agent" on every
+            # agent-ancestor write, including ones with no pty at all -- an
+            # `init` under the env override, stdin not a tty, was labelled
+            # that way. The stamp records WHO the ancestor was, never how the
+            # terminal was obtained, so say only what was measured. The pty
+            # is mentioned when there actually was one.
+            where.append("under a coding agent"
+                         + (f" at {e['tty']}" if e.get("tty") else ""))
+        if e.get("tty") and not e.get("ancestor_agent"):
+            where.append(f"at {e['tty']}")
+        # ⚠️ These were stamped on the event and printed NOWHERE, so the log
+        # knew something `why` would not say -- which is the whole failure
+        # the stamp exists to prevent, one layer up. The wording asks rather
+        # than accuses: a person's own detached job looks identical.
+        if e.get("tty_without_shell"):
+            where.append("terminal with no shell above it — a detached job, "
+                         "yours or not")
+        elif e.get("session_leader"):
+            where.append("led its own session")
+        elif e.get("orphaned"):
+            where.append("parent had exited")
+        tail = f"   [{', '.join(where)}]" if where else ""
+        print(f"  {when}  {mark:<24} {v}{tail}")
     print()
     return 0
 
@@ -1050,7 +1815,7 @@ def _where(sid: str) -> str:
 def cmd_add(a) -> int:
     # `add` = propose + accept in one step, both as the human. Ungated, it was
     # the whole authority model in one command: an agent could write an
-    # ACCEPTED item that `mission why` then attributed to Jonathan. The tty
+    # ACCEPTED item that `mission why` then attributed to the maintainer. The tty
     # gate closed set/accept/done/remove and missed the one that does two of
     # them at once.
     if not _human_gate("adding an agreed item"):
@@ -1061,7 +1826,7 @@ def cmd_add(a) -> int:
     ev = st.propose(a.text, by="human", parent=a.under)
     st.accept(ev["item_id"], by="human")
     where = f" under {a.under}" if a.under else ""
-    # Name the mission it landed on. Two items meant for Tripnom turned up on
+    # Name the mission it landed on. Two items meant for Wayfinder turned up on
     # the career card and nobody noticed, because the only feedback was the id
     # and the text -- neither of which says WHERE it went.
     print(f"  added {ev['item_id']}{where}  {a.text}")
@@ -1089,6 +1854,114 @@ def cmd_propose(a) -> int:
                              from_session=current_session_id() or "")
     print(f"  proposed {ev['item_id']} — inert until you `mission accept {ev['item_id']}`")
     print(f"  → {_where(sid)}")
+    return 0
+
+
+def cmd_passcode(a) -> int:
+    """Set the board's write passcode — human only, and never echoed.
+
+    Human-only for the same reason `set` is: an agent that can choose the
+    passcode can use the write buttons. It is read from a prompt rather than
+    argv so it does not land in shell history, in `ps`, or in this session's
+    transcript.
+    """
+    from . import passcode as pc
+
+    if a.clear:
+        if not _at_a_keyboard():
+            print("  only a person can clear the passcode.")
+            return 1
+        print("  cleared — boards now mint a throwaway code again."
+              if pc.clear() else "  no passcode was set.")
+        return 0
+
+    if a.status:
+        print(f"\n  passcode: {'set' if pc.is_set() else 'not set'}"
+              f"  ({pc.path()})\n")
+        return 0
+
+    if not _at_a_keyboard():
+        print("  only a person can set the board's passcode — that is the"
+              "\n  whole point of it. Run this yourself in a terminal.")
+        return 1
+
+    import getpass
+    try:
+        first = getpass.getpass("  new board passcode (not echoed): ")
+        again = getpass.getpass("  again: ")
+    except (EOFError, KeyboardInterrupt):
+        print("\n  cancelled — nothing changed.")
+        return 1
+    if first != again:
+        print("  they do not match — nothing changed.")
+        return 1
+    try:
+        pc.save(first)
+    except ValueError as e:
+        print(f"  refused: {e}")
+        return 1
+    print("\n  saved. Every board you start at a terminal now takes this"
+          "\n  passcode, and it survives restarts — so the browser keeps"
+          "\n  working and a closed terminal is no longer a lockout."
+          "\n\n  Only the scrypt hash is stored, never the passcode itself."
+          "\n  A board is still writable ONLY when you start it at a terminal:"
+          "\n  knowing the passcode is not proof a person is here, because an"
+          "\n  agent could write a passcode file of its own.\n")
+    return 0
+
+
+def cmd_sharpen(a) -> int:
+    """C18: which criteria cannot be claimed checkably, and what would fix it.
+
+    Read-only by default, because the point is to be READ. `--propose` turns
+    the findings into ordinary `[+]` rows, which is the only way any of this
+    reaches the plan: the agent never edits a protected criterion, and an
+    ignored proposal leaves it byte-identical.
+    """
+    from .sharpen import sharpenings
+
+    sid, st = _target(a, "sharpen")
+    if st is None:
+        return 1
+    m = st.load()
+    if m is None:
+        raise NoMissionError(sid)
+
+    found = sharpenings(m)
+    total_c = len(m.success_criteria)
+    open_items = [i for i in m.items if i.accepted and not i.done]
+    if not found:
+        print(f"\n  every criterion and open item on {m.title} already names "
+              f"a file — nothing to sharpen.\n")
+        return 0
+
+    print(f"\n  {len(found)} of {total_c + len(open_items)} cannot be claimed "
+          f"checkably on {m.title}\n")
+    for s in found[:a.limit]:
+        where = (f"DONE-WHEN #{s.ref}" if s.kind == "done-when"
+                 else f"[{s.ref}]")
+        print(f"    {where:<14} {s.text[:78]}")
+        print(f"    {'':<14} finish it as:  {s.template}")
+    if len(found) > a.limit:
+        print(f"\n    …and {len(found) - a.limit} more "
+              f"(--limit {len(found)} to see them all)")
+
+    if not a.propose:
+        # The command that would write them, rather than writing them: a pass
+        # that dumps 30 rows into the human's inbox is the C12d wallpaper
+        # failure with a new name.
+        print(f"\n  nothing was written. `mission sharpen --propose "
+              f"--on {sid}` files these as proposals for you to accept.\n")
+        return 0
+
+    wrote = []
+    for s in found[:a.limit]:
+        ev = st.propose(s.as_proposal(), by="agent",
+                        from_session=current_session_id() or "")
+        wrote.append(ev["item_id"])
+    print(f"\n  proposed {len(wrote)} — inert until you accept them: "
+          f"{' '.join(wrote)}")
+    print(f"  → {_where(sid)}\n")
     return 0
 
 
@@ -1273,7 +2146,8 @@ def cmd_help(a) -> int:
     `Bash(mission accept:*)` also blocks `mission accept --help`. An agent
     composing a paste-ready command for the human therefore cannot read the
     flags of the commands it is most likely to be composing. Carving a hole in
-    the deny rule would weaken the one gate that is a real boundary, so this
+    the deny rule would weaken the strongest gate there is here -- which is
+    still not a boundary, only the hardest layer to talk past -- so this
     is a separate read-only command that writes nothing.
     """
     parser = _build()
@@ -1566,12 +2440,16 @@ def _offer_hooks(a) -> None:
           " transcript\n")
 
 
-# The five commands only a person may run. Blocked at the harness, they never
-# reach this code at all -- which is the point: the tty check lives inside the
-# thing being protected, and a rule here is enforced by the thing that already
-# holds the authority.
-DENY_RULES = [f"Bash(mission {c}:*)" for c in
-              ("set", "accept", "done", "remove", "add")]
+# The commands only a person may run, plus the ones that HAND OUT write power.
+# Blocked at the harness, they never reach this code at all -- which is the
+# point: the tty check lives inside the thing being protected, and a rule here
+# is enforced by the thing that already holds the authority.
+#
+# ONE definition, imported. There were two identical literals -- here and in
+# setup_surfaces -- so widening the list after the `script(1)` bypass (round 4)
+# updated one of them and `setup --check` went on validating the old five. That
+# is the same two-copies-of-one-rule failure the stage-label map had.
+from .setup_surfaces import DENY_RULES          # noqa: E402  (re-export)
 
 
 def _install_deny_rules(a) -> int:
@@ -1663,7 +2541,7 @@ def cmd_board(a) -> int:
     # used to hand them to ensure() anyway, which detaches the server with its
     # stdout in a log file -- so every path a human was TOLD to use produced a
     # read-only board, and the write code existed only on a flag nobody was
-    # told about. Jonathan followed the README twice and got no buttons twice.
+    # told about. the maintainer followed the README twice and got no buttons twice.
     try:
         at_tty = sys.stdout.isatty()
     except Exception:
@@ -1757,6 +2635,19 @@ def _build() -> argparse.ArgumentParser:
     pr.add_argument("--under", default=None, metavar="ID")
     pr.add_argument("--into", metavar="GOAL", help=argparse.SUPPRESS)
     pr.set_defaults(fn=cmd_propose)
+    pw = sub.add_parser("passcode", parents=[common],
+                        help="set the board's write passcode (survives restarts)")
+    pw.add_argument("--clear", action="store_true",
+                    help="forget it; boards mint a throwaway code again")
+    pw.add_argument("--status", action="store_true", help="is one set?")
+    pw.set_defaults(fn=cmd_passcode)
+    sh = sub.add_parser("sharpen", parents=[common],
+                        help="which criteria cannot be claimed checkably")
+    sh.add_argument("--propose", action="store_true",
+                    help="file the findings as proposals to accept")
+    sh.add_argument("--limit", type=int, default=6, metavar="N",
+                    help="how many to show or file (default 6)")
+    sh.set_defaults(fn=cmd_sharpen)
     ac = sub.add_parser("accept", parents=[common])
     ac.add_argument("item_id", nargs="*", metavar="ID")
     ac.add_argument("--pending", dest="all", action="store_true",
@@ -1826,6 +2717,73 @@ def _build() -> argparse.ArgumentParser:
     cd.add_argument("item_id", metavar="ID")
     cd.add_argument("text")
     cd.set_defaults(fn=cmd_claims_done)
+
+    tk = sub.add_parser("take", parents=[common],
+                        help="ask the board for the next item and take it")
+    tk.add_argument("item_id", nargs="?", default="",
+                    help="take THIS item (default: the next ready one)")
+    tk.add_argument("--as-session", default="",
+                    help="record the lease under this session id")
+    tk.set_defaults(fn=cmd_take)
+
+    rl = sub.add_parser("release", parents=[common],
+                        help="hand an item back without claiming it is done")
+    rl.add_argument("item_id", metavar="ID")
+    rl.add_argument("note", nargs="?", default="",
+                    help="why you could not finish it")
+    rl.set_defaults(fn=cmd_release)
+
+    fd = sub.add_parser("finding", parents=[common],
+                        help="say an accepted item is NOT done, and why "
+                             "(clears its claim, re-queues it)")
+    fd.add_argument("item_id", metavar="ID")
+    fd.add_argument("text")
+    fd.add_argument("--as-session", default="")
+    fd.set_defaults(fn=cmd_finding)
+
+    vf = sub.add_parser("verify", parents=[common],
+                        help="the brief a verification session reads "
+                             "(--role prints its instructions too)")
+    vf.add_argument("--role", action="store_true",
+                    help="print the verifier's instructions above the brief")
+    vf.add_argument("--spawn", action="store_true",
+                    help="start a verification session on it (you, at a tty)")
+    vf.set_defaults(fn=cmd_verify)
+
+    ck = sub.add_parser("checked", parents=[common],
+                        help="record that a second session re-derived a claim "
+                             "and agrees (an opinion, not evidence)")
+    ck.add_argument("item_id", metavar="ID")
+    ck.add_argument("text")
+    ck.add_argument("--as-session", default="")
+    ck.set_defaults(fn=cmd_checked)
+
+    dp = sub.add_parser("dispatch", parents=[common],
+                        help="what to hand out, and the message to hand over "
+                             "(prints a plan; delivers nothing)")
+    dp.add_argument("--peers", type=int, default=1,
+                    help="how many idle sessions you have (one item each)")
+    dp.add_argument("--reply-to", default="",
+                    help="name of the session to message when the work is "
+                         "claimed or handed back (the board's own signal is "
+                         "reliable but only lands at the next prompt)")
+    dp.add_argument("--delegable", action="store_true",
+                    help="hand out only items a fresh session could prove "
+                         "finished (C19: named artifact, never handed back)")
+    dp.set_defaults(fn=cmd_dispatch)
+
+    au = sub.add_parser("audit", parents=[common],
+                        help="agreed long ago and never touched — the brief "
+                             "for a session to check whether it is already "
+                             "built")
+    au.add_argument("--days", type=float, default=0,
+                    help="override the threshold (default: 14)")
+    au.set_defaults(fn=cmd_audit)
+
+    qu = sub.add_parser("queue", parents=[common],
+                        help="the four lanes: ready, in progress, in review, "
+                             "waiting on you")
+    qu.set_defaults(fn=cmd_queue)
 
     cl = sub.add_parser("claims", parents=[common],
                         help="verify recent completion claims against disk (hook)")
@@ -1938,8 +2896,8 @@ def main(argv: list[str] | None = None) -> int:
         import shlex
         ran = list(argv if argv is not None else sys.argv[1:])
         # Drop any addressing the person already tried, VALUE INCLUDED. Only
-        # the flag was stripped before, so a failed `--on tripnom` rebuilt as
-        # `mission set objective ... tripnom --on career-hub` -- a paste that
+        # the flag was stripped before, so a failed `--on wayfinder` rebuilt as
+        # `mission set objective ... wayfinder --on docs-site` -- a paste that
         # fails on a stray positional.
         drop, kept, skip = {"--session", "--on", "--into"}, [], False
         for x in ran:

@@ -16,10 +16,18 @@ its first try**, and `mission why` recorded the change as the human's.
 So `set`, `accept`, `done`, `remove` and `add` now require a controlling
 terminal. An agent's shell has none; a person typing in one does.
 
-**3. The harness denies.** `mission setup` writes five deny rules into
-`~/.claude/settings.json`. Claude Code blocks those commands before this code
-runs, so there is nothing left inside the tool to talk past. This is the layer
-that actually holds — it stopped the author's own agent mid-session.
+**3. The harness denies.** `mission setup` writes deny rules into
+`~/.claude/settings.json` covering the write commands, the two commands that
+hand out write power (`board`, `passcode`), all three spellings of the CLI
+(`mission …`, `python -m agent_mission …`, `python3 -m …`), and `script`.
+Claude Code blocks those before this code runs. This is the strongest of the
+three layers — it stopped the author's own agent mid-session.
+
+**It is not complete, and this document used to say it was.** The rules are
+prefix matches on a command string, so they cover the spellings named above
+and not every spelling that exists: a copied binary under another name, a
+shell function, or an interpreter invoked by path all route around them. Round
+4 in [adversarial-testing.md](adversarial-testing.md) is exactly this.
 
 ## What `typed_by` is for
 
@@ -38,9 +46,12 @@ Buttons on the board would be a POST any local process can make — including th
 agent's shell with one `curl`, which the deny rules never see because they match
 shell commands and not HTTP.
 
-So writes exist only when the board's own stdout is a **tty**, meaning a person
-started it. That board mints a six-character code, keeps it in memory, prints it
-to that terminal, and never writes it to disk or returns it from any endpoint.
+So writes exist only when the board's own stdout is a **tty** — and a tty
+means a person *probably* started it, not that one did. `script(1)` hands any
+process a tty, and a double fork plus `pty.spawn` does it with no `script` at
+all; §"What a tty does not prove" below is the honest version. That board mints
+a six-character code, keeps it in memory, prints it to that terminal, and never
+writes it to disk or returns it from any endpoint.
 The background board that `mission init` spawns is read-only and has no code.
 
 Six hex characters is 16.7 million values, and on loopback a full sweep is hours
@@ -62,10 +73,49 @@ recoverable and repeatable; ticking an item is neither.
 Those three properties are the whole test. A future command that has them can
 have a button; one that does not, cannot.
 
+## What a tty does not prove
+
+`isatty()` answers "is there a terminal", never "is there a person". Five
+rounds of attacks are written up in
+[adversarial-testing.md](adversarial-testing.md); **four of them got through**,
+and this section exists because this document used to describe none of it while
+another document claimed it did.
+
+What is checked, and what each check is worth:
+
+| Layer | Stops | Does not stop |
+|---|---|---|
+| tty required for writes | an agent's ordinary non-tty shell | `script -q /dev/null …`, or any pty |
+| parent-process walk (`whoami.py`) | a pty opened directly under the agent | a process that orphans itself first — a double fork, or a backgrounded subshell that exits. **`setsid` and `nohup` do NOT reparent**; only an orphaning does |
+| agent environment markers | forgetting to clear the environment | `env -u` of the variables, which is one flag |
+| deny rules | `mission set`, `python -m agent_mission`, `script` by name | `python3 some_file.py`, an interpreter called by path, `open x.command` |
+| passcode (if set) | a code read off the board's own stdout | an agent that rewrites `passcode.json` and then types its own passcode |
+
+**The stamp used to share the gate's detector**, so the bypass that defeated
+one erased the record of the other. `provenance` now also records `orphaned`
+and `session_leader` / `tty_without_shell` — the last of which is
+`os.getsid(0) == os.getpid()`, measured rather than reasoned about.
+⚠️ The first version of this stamp used `getppid() <= 1` and MISSED the very
+bypass it was written for: the writing process is a child of the orphan, not
+the orphan. A second reader re-ran the attack and measured it; the claim that
+"the bypass now leaves a trace" was false in four documents for several hours,
+and the unit test passed throughout because it mocked `getppid` and so proved
+my model instead of the code. There is now an end-to-end test that performs
+the attack (`tests/test_round5_endtoend.py`) and fails if the write is
+unmarked. It is not a gate: a person's own `nohup … &` looks the
+same, so the log states it and a human reads it.
+
+**What would make this a boundary** is a separate process the agent cannot
+write as — a daemon owned by another user, or a confirmation on a device the
+agent has no path to. Nothing here is that, and nothing here should be
+described as that.
+
 ## The board's Setup panel, and what it costs
 
-The board a person starts shows the same five surfaces as `mission setup
---check`, with an Install button each, behind the same write code. Both front
+The board a person starts shows the same surfaces as `mission setup --check`
+— six of them now (slash command, deny rules, statusline, re-anchor hook,
+attention hook, claim hook) — with an Install button each, behind the same
+write code. Both front
 ends call the same functions — if the board had its own copy it would drift
 from what the terminal does, and you would have two answers to "is this
 installed".
@@ -76,7 +126,10 @@ Two honest costs:
 the board yourself to get the code. That is the design, not an oversight.
 
 **Widening the board's write surface to `settings.json` makes the code the only
-barrier for that file.** Mitigated by the code never touching disk — and, more
+barrier for that file.** Mitigated by the MINTED code never touching disk (a
+passcode you set does: `~/.agent-mission/passcode.json`, a salted hash the
+agent can read and rewrite, which is why the board prints the date it was last
+written) — and, more
 importantly, by the read-only board serving **no setup route at all**. Not a
 hidden button: `GET /api/setup` returns 404 and every POST returns 403 on a
 board that was started in the background. Hiding the UI while leaving the
@@ -104,8 +157,11 @@ requires an explicit `discarded` event that only a human can write.
 `events.jsonl`, and every command will believe it. There is no signature and no
 hash chain today.
 
-So the guarantee is precisely this: **an agent cannot rewrite your goal through
-this tool's interfaces, and cannot do it accidentally or in passing.** It is not
+So the guarantee is precisely this: **an agent cannot rewrite your goal
+accidentally or in passing, and a deliberate rewrite through a terminal it
+manufactured is marked on the event.** It is NOT that the interfaces cannot be
+driven — they can, and the repro is in
+[adversarial-testing.md](adversarial-testing.md) round 5. It is not
 tamper-proof against an agent that sets out to forge the record. Anyone relying
 on this for more than that should read the log themselves.
 

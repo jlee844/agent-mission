@@ -1,6 +1,6 @@
 ---
 description: The goal for this session — interview the user to write it, show it, tick it off, open the board
-argument-hint: "init | show | add <text> | done <id> | propose <text> | board"
+argument-hint: "init | show | propose <text> | take | queue | audit"
 ---
 
 # mission
@@ -20,6 +20,21 @@ mission $ARGUMENTS
 
 Print the output verbatim and stop. That is the entire task. Do not edit files,
 read the repo, or summarise anything.
+
+### Some words after `/mission` are the human's, not yours
+
+`board`, `done`, `accept`, `set`, `add`, `remove`, `archive` and `passcode`
+are refused by the deny rules, on purpose — they open the write surface or
+move the counter, and both are the human's. The hint above used to advertise
+three of them, so `/mission board` asked you to run a command the rules then
+blocked: an instruction and a refusal describing the same action, which reads
+as a broken tool rather than a boundary.
+
+When one of those is asked for, do not run it and do not work around it.
+Print the command for the person to run themselves, and say why in one line:
+
+> `mission board` opens the write surface, so it has to come from your
+> terminal rather than from me. Run: `mission board`
 
 ---
 
@@ -204,6 +219,13 @@ Write `done: <what> (<artifact>)` when you finish something real — the
 parenthesised path or file is what gets verified. Prose still works; it is
 just checked with blunter tools.
 
+**Paths resolve against the MISSION's cwd, not the repo root.** This is the
+single commonest reason a true claim comes back NOT backed: a goal whose cwd is
+the workspace needs `builds/thing/src/x.py`, not `src/x.py`. `mission
+claims-done` tells you which of the two happened at the moment you write it, so
+read the line it prints. If you are unsure which criteria can be claimed
+checkably at all, `mission sharpen` lists the ones that name no file.
+
 **When you finish one, say which id and let them tick it.**
 
 > Done: the fold, and the goal-editing command. `mission done 4a1c9e02 88ea49fc`
@@ -212,11 +234,83 @@ Several ids in one command, because six items is otherwise six commands and the
 plan stops being maintained. **Never tick it yourself** — marking work complete
 is their judgement, and the whole guarantee rests on it.
 
+## Asking the board what to do next
+
+You do not need a human to tell you which item to work on. Accepted work is
+already agreed, so taking one needs no permission:
+
+```bash
+mission take          # hands you one ready item and leases it to this session
+mission queue         # the four lanes: ready · in progress · in review · waiting
+```
+
+`take` leases the item to this session so two sessions cannot silently pick the
+same one. **If you cannot finish it, hand it back with a reason** — a release
+with no reason is indistinguishable from a crashed session, and the next taker
+learns nothing:
+
+```bash
+mission release 4a1c9e02 "needs a ruling on which of the two texts wins"
+```
+
+A handback is a real outcome, not a failure. It is recorded, it stops the item
+being offered to every other session in turn, and the reason is what the human
+rules on.
+
+**Check before you build.** `mission queue` marks an item that was agreed long
+ago and never leased, claimed or handed back. On this board that has meant
+ALREADY BUILT more often than not — five items sat 43 to 45 days that way and
+every one was finished. Read the repo first; if it is done, claim it rather
+than rebuilding it.
+
+```bash
+mission audit         # the brief for exactly those items
+```
+
+**One item, its own goal.** When a piece of agreed work is big enough to need
+its own plan — or small enough that a fresh session could finish it without
+your context — spin it out rather than describing it in a prompt:
+
+```bash
+mission delegate 4a1c9e02            # a child mission for that one item
+```
+
+The child inherits the constraints and the non-goals, so the session that
+picks it up is bound by the same deal, and its claim still comes back to the
+parent's row. A pasted instruction inherits nothing.
+
+## Checking work, when the work is not yours
+
+A session that both finds a defect and fixes it is the thing these roles
+separate. If you are checking:
+
+```bash
+mission verify                       # every claim, its artifacts, the disk's verdict
+mission checked 4a1c9e02 "what you read, and why it holds"
+mission finding 4a1c9e02 "what is missing or wrong"
+```
+
+`checked` is an OPINION and the board labels it as one — you are the same model
+reading the same disk, and the honest value is the fresh context, not
+independence. `finding` sends the item back to the ready queue carrying your
+reason; it does not un-accept it, because a defect in agreed work is that work
+continuing. **Do not fix what you find.** Say it and let it route.
+
+If you are the one holding work and someone needs to pick something up:
+
+```bash
+mission dispatch                     # prints what to hand out, and the message
+```
+
+It delivers nothing. It composes the message from the store, and a session
+decides who to send it to — the board has no agent socket and must not have
+one.
+
 ## The tool changes under you
 
 This CLI is under active development and a long session holds a picture of it
 from whenever it last looked. One session, working from an older picture, told
-Jonathan to run `mission init --force` to fix a badly-worded objective — that
+the maintainer to run `mission init --force` to fix a badly-worded objective — that
 discards the whole plan, and `mission set objective` (which does not) already
 existed.
 

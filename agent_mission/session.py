@@ -13,6 +13,7 @@ import functools
 import os
 import re
 import subprocess
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,7 +34,7 @@ def transcript_for(session_id: str) -> Path | None:
     from a different cwd writes into a DIFFERENT project folder. Taking the
     first glob hit read whichever dir sorted first -- a live session showed
     dead on the board (dimmed, numbers frozen) while its real transcript grew
-    elsewhere. Seen live: 5fd98e2e, written seconds earlier, reported dead."""
+    elsewhere. Seen live: a session written seconds earlier, reported dead."""
     if not PROJECTS.exists():
         return None
     hits = list(PROJECTS.glob(f"*/{session_id}.jsonl"))
@@ -93,6 +94,12 @@ def _fingerprint(path):
         return (str(path), 0, 0.0)
 
 
+# One entry per transcript, with the oldest dropped past this. Bounded so a
+# long-lived board cannot accumulate entries for sessions that ended weeks
+# ago, and large enough that a board tracking a dozen goals never thrashes.
+MEMO_MAX = 64
+
+
 def memo_by_file(fn):
     """Cache a whole-file parse against the file's size and mtime.
 
@@ -101,62 +108,146 @@ def memo_by_file(fn):
     JSONL -- so requests overlapped permanently and the page went blank while
     it waited. Transcripts only ever grow, so the fingerprint is exact rather
     than a guess with a TTL.
+
+    ⚠️ AND IT CACHED NOTHING. `cache.clear()` on every miss kept ONE entry
+    for the whole process, not one per file -- the comment said "one entry
+    per file is enough" and the code did something else. The board polls N
+    transcripts in a loop, so each call evicted the previous session's entry
+    and the hit rate was exactly ZERO: measured 1 entry for 3 files across
+    two full rounds. Every poll re-parsed every byte the board could see --
+    1.58 GB of JSONL every 4 seconds on the author's own board, which is
+    what took the process to 4.5 GB RSS with an 8.4 GB peak.
+
+    Keyed per PATH now, so a new fingerprint replaces that file's entry and
+    leaves the others alone.
     """
-    cache: dict = {}
+    cache: "OrderedDict[tuple, tuple]" = OrderedDict()
 
     @functools.wraps(fn)
     def wrapper(path, *a, **kw):
-        key = (_fingerprint(path), a, tuple(sorted(kw.items())))
-        if key not in cache:
-            cache.clear()          # one entry per file is enough; never grows
-            cache[key] = fn(path, *a, **kw)
-        return cache[key]
+        slot = (str(path), a, tuple(sorted(kw.items())))
+        fp = _fingerprint(path)
+        hit = cache.get(slot)
+        if hit is not None and hit[0] == fp:
+            cache.move_to_end(slot)
+            return hit[1]
+        out = fn(path, *a, **kw)
+        cache[slot] = (fp, out)
+        cache.move_to_end(slot)
+        while len(cache) > MEMO_MAX:
+            cache.popitem(last=False)          # oldest out, not everything
+        return out
 
     wrapper.cache = cache
     return wrapper
 
 
-@memo_by_file
-def activity(path: Path, since_ts: float = 0.0) -> Activity:
-    a = Activity()
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return a
-    pending: dict[str, bool] = {}
-    for line in lines:
+# How many recent user asks a card shows. A deque with this as its maxlen,
+# NOT a list trimmed at the end: the list accumulated every qualifying user
+# message in the file before throwing all but three away.
+ASKS_KEPT = 3
+
+# path -> [offset_of_last_complete_line, size_then, Activity, asks_deque]
+# A transcript is append-only, so the parse resumes where it stopped instead
+# of starting over. The board re-read 1.58 GB every 4 seconds; with this it
+# reads the bytes that were actually added.
+_RESUME: "OrderedDict[str, list]" = OrderedDict()
+
+
+def _fold_record(rec: dict, a: Activity, asks) -> None:
+    """One transcript record into the running totals."""
+    msg = rec.get("message") or {}
+    role, c = msg.get("role"), msg.get("content")
+    blocks = ([{"type": "text", "text": c}] if isinstance(c, str)
+              else c if isinstance(c, list) else [])
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        t = b.get("type")
+        if t == "tool_use":
+            a.calls += 1
+            inp = b.get("input") or {}
+            name = b.get("name") or ""
+            target = inp.get("file_path") or inp.get("command") or ""
+            if name in WRITE_TOOLS and inp.get("file_path"):
+                k = Path(inp["file_path"]).name
+                a.files[k] = a.files.get(k, 0) + 1
+            if _TEST.search(str(target)):
+                a.tests += 1
+            # The old code also did `pending[b["id"]] = True` here and never
+            # read `pending` again -- one dict entry per tool call in the
+            # file, which on a 1 GB transcript is hundreds of thousands of
+            # entries held for the length of the parse, for nothing.
+        elif t == "tool_result" and b.get("is_error"):
+            a.failures += 1
+        elif t == "text" and role == "user":
+            txt = " ".join((b.get("text") or "").split())
+            if txt and not txt.startswith("<") and 12 < len(txt) < 300:
+                asks.append(txt[:200])
+
+
+def _consume(fh, a: Activity, asks) -> int:
+    """Fold complete lines from `fh`, returning the offset to resume at.
+
+    Iterates the file object, so one line is in memory at a time. The old
+    `read_text().splitlines()` held the whole file as ONE string AND a list
+    of every line -- about 2x the file size before any JSON was parsed, which
+    is why a 1.09 GB transcript produced a multi-gigabyte spike.
+
+    A final line with no newline is a record being written RIGHT NOW. It is
+    not folded and the offset stops before it, so the next pass sees it whole
+    rather than losing it.
+    """
+    offset = fh.tell()
+    for raw in fh:
+        if not raw.endswith(b"\n"):
+            break                       # partial write; stop before it
+        offset += len(raw)
+        line = raw.strip()
+        if not line:
+            continue
         try:
             rec = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             continue
-        msg = rec.get("message") or {}
-        role, c = msg.get("role"), msg.get("content")
-        blocks = ([{"type": "text", "text": c}] if isinstance(c, str)
-                  else c if isinstance(c, list) else [])
-        for b in blocks:
-            if not isinstance(b, dict):
-                continue
-            t = b.get("type")
-            if t == "tool_use":
-                a.calls += 1
-                inp = b.get("input") or {}
-                name = b.get("name") or ""
-                target = inp.get("file_path") or inp.get("command") or ""
-                if name in WRITE_TOOLS and inp.get("file_path"):
-                    k = Path(inp["file_path"]).name
-                    a.files[k] = a.files.get(k, 0) + 1
-                if _TEST.search(str(target)):
-                    a.tests += 1
-                pending[b.get("id")] = True
-            elif t == "tool_result" and b.get("is_error"):
-                a.failures += 1
-            elif t == "text" and role == "user":
-                s = " ".join((b.get("text") or "").split())
-                if s and not s.startswith("<") and 12 < len(s) < 300:
-                    a.last_asks.append(s[:200])
-    a.last_asks = a.last_asks[-3:]
-    a.files = dict(sorted(a.files.items(), key=lambda kv: -kv[1]))
-    return a
+        if isinstance(rec, dict):
+            _fold_record(rec, a, asks)
+    return offset
+
+
+@memo_by_file
+def activity(path: Path, since_ts: float = 0.0) -> Activity:
+    key = str(path)
+    try:
+        size = Path(path).stat().st_size
+    except OSError:
+        return Activity()
+
+    state = _RESUME.get(key)
+    # Restart when the file shrank (rotated, or a different session reusing
+    # the name): the accumulated totals would describe bytes that are gone.
+    if state is None or size < state[1]:
+        state = [0, 0, Activity(), deque(maxlen=ASKS_KEPT)]
+
+    offset, _, acc, asks = state
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset)
+            offset = _consume(fh, acc, asks)
+    except OSError:
+        return Activity()
+
+    _RESUME[key] = [offset, size, acc, asks]
+    _RESUME.move_to_end(key)
+    while len(_RESUME) > MEMO_MAX:
+        _RESUME.popitem(last=False)
+
+    # A snapshot, so a caller holding the result cannot see it change under
+    # them on the next poll -- and cannot mutate the accumulator either.
+    return Activity(calls=acc.calls, tests=acc.tests, failures=acc.failures,
+                    files=dict(sorted(acc.files.items(),
+                                      key=lambda kv: -kv[1])),
+                    last_asks=list(asks), since=dict(acc.since))
 
 
 def short_id(sid: str) -> str:
@@ -199,7 +290,7 @@ def resolve_session(explicit: str | None, cwd: str | None = None) -> str:
     answered a question it does not know: what a session can SEE, offered as
     what it is FOR.
 
-    It ran once for real. A career objective was written onto the Tripnom
+    It ran once for real. A career objective was written onto the Wayfinder
     mission and renamed it, because both were recorded under the same root.
 
     So the router is gone. Resolution is `--on <name>`, then the session id in
