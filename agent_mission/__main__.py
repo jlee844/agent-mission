@@ -23,6 +23,7 @@ from .daemon import ensure as ensure_board, running as board_running, stop as bo
 from .session import (NoSessionError, activity, current_session_id,
                       find_session, resolve_session, short_id,
                       transcript_for)
+from . import guards as GUARDS
 from .store import (FIELD_AUTHORITY, Authority, Item, MissionStore,
                     NoMissionError, NoSuchItemError, ProtectedFieldError,
                     children_of, root_for)
@@ -299,6 +300,8 @@ def _human_gate(what: str) -> bool:
     reason = ("this terminal was opened underneath a coding agent"
               if has_tty and whoami.spawned_by_agent()
               else "this is not a terminal")
+    from . import guards
+    guards.record("refused_no_human", what)
     print(f"  {what} is yours, and {reason} — refusing.\n"
           f"  If you are an agent: `mission propose \"...\"` instead; it needs\n"
           f"  no permission and stays inert until a person accepts it.\n"
@@ -402,8 +405,25 @@ def cmd_init(a) -> int:
         stack.append((indent, ev["item_id"]))
     if new_goal_mid is not None:
         from . import missions as M
+        # ⚠️ Creating a goal for ANOTHER project is the common case, so this
+        # used to move the running session onto the goal it had just made --
+        # silently. Hit live 2026-10-24: a session doing agent-mission work
+        # was re-routed onto a game's goal, and its next claim would have
+        # landed there. Same shape as the C11 cwd-router inversion. An
+        # already-attached session keeps its goal and is told how to switch.
+        held = M.attachments().get(sid)
         M.attach(sid, new_goal_mid, by="human")
-        print(f"\n  new goal {new_goal_mid} — {short_id(sid)} attached\n")
+        if held and held != new_goal_mid:
+            # The MOVE is the tested promise ("one session, several goals" --
+            # test_init_on_a_new_name_creates_a_sibling_goal:127). The defect
+            # was that it happened in SILENCE: on 2026-10-24 a session doing
+            # agent-mission work opened a goal for a game and was moved onto
+            # it without a word, so its next claim would have landed there.
+            # Announce the move and name the way back; do not prevent it.
+            print(f"\n  new goal {new_goal_mid} — {short_id(sid)} MOVED here\n"
+                  f"  it was on {held}; to go back: mission attach {held}\n")
+        else:
+            print(f"\n  new goal {new_goal_mid} — {short_id(sid)} attached\n")
     else:
         print(f"\n  mission set for {short_id(sid)}\n")
     # Start/join the board BEFORE showing: otherwise the mission prints
@@ -483,6 +503,9 @@ def cmd_show(a) -> int:
             print(f"    ({hidden} finished, hidden — `mission show --all`)")
         if m.unaccepted:
             print(f"\n    {len(m.unaccepted)} proposed, awaiting your accept")
+        if m.pending_criteria:
+            print(f"    {len(m.pending_criteria)} criterion amendment(s) "
+                  f"awaiting your accept — `mission pending`")
         if m.suggested:
             print(f"    {len(m.suggested)} suggested finished — `mission "
                   f"pending` shows the evidence, the board shows the verdict")
@@ -772,6 +795,17 @@ def cmd_whereami(a) -> int:
                       "then run `mission attach <name>`. Existing goals:")
                 for mid, m in live[:6]:
                     print(f"  {mid} — {(m.objective or '')[:64]}")
+                # ⚠️ Offering only the goals that ALREADY EXIST is why projects
+                # stay invisible: every session was steered into attaching to
+                # something already listed, so a project that belongs on the
+                # board never got there. One game project reached 188 tests
+                # and 60+ commits unlisted before a human noticed on
+                # 2026-10-24. The third option has to be on the menu, and the
+                # fourth has to be "none" -- not every session is a project.
+                print("  — none of these? if this project belongs on the board, "
+                      "ask, then `mission init --on <slug>`")
+                print("  — a one-off question or quick fix needs no goal; "
+                      "unattached is a fine end state")
                 return 0
     try:
         sid = _resolve(a)
@@ -979,7 +1013,70 @@ def cmd_dispatch(a) -> int:
                             if i.id in stale else 0.0),
                 reply_to=getattr(a, "reply_to", "") or "").split("\n"):
             print(f"    {line}")
+    if getattr(a, "spawn", False):
+        if not _at_a_keyboard():
+            print("  spawning sessions is yours to do, not the agent's.\n"
+                  "  A worker writes: it leases, edits files and claims. Run\n"
+                  f"    mission dispatch --spawn --on {mid}\n"
+                  "  in your own terminal, or send the message(s) above to\n"
+                  "  sessions yourself.")
+            return 1
+        print(f"  SPAWNING {len(picks)} session(s). Each one runs on your\n"
+              f"  plan, holds a lease, and may edit files under {m.cwd}.\n")
+        bad = 0
+        for i in picks:
+            bad += _spawn_worker(
+                mid, i.id,
+                _dispatch_message(mid, m, i,
+                                  stale_days=(m.days_since_accepted(i)
+                                              if i.id in stale else 0.0),
+                                  reply_to=getattr(a, "reply_to", "") or ""),
+                m.cwd or "")
+        print("\n  They take their own items and claim their own work.\n"
+              "  Nothing they do ticks anything: your confirm is still the\n"
+              "  only thing that moves the counter.\n")
+        return 1 if bad else 0
     print()
+    return 0
+
+
+def _spawn_worker(mid: str, item_id: str, prompt: str, cwd: str) -> int:
+    """Start ONE worker on ONE item with `claude -p`, detached.
+
+    Human-gated for the same reason the verifier is, and a stronger one: a
+    worker WRITES. It leases, it edits files, it claims. `verify --spawn`
+    starts something that can only file findings; this starts something that
+    does the work. It must never be reachable from an agent's own shell --
+    an agent that can spawn workers can spawn workers that spawn workers, and
+    nobody asked for that.
+
+    It does NOT lease here. The worker leases under its own session id when
+    it runs `mission take <id>`, so the lease records who actually has the
+    work rather than who was told about it. If the worker dies before taking
+    it, the item is simply still ready -- which is the correct outcome and
+    needs no cleanup.
+    """
+    import shutil
+    import subprocess
+    exe = shutil.which("claude")
+    if not exe:
+        print("  no `claude` on PATH — cannot spawn. Send the message above "
+              "to a session yourself.")
+        return 1
+    log = _home_dir() / "dispatch" / f"{mid}-{item_id}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with log.open("a", encoding="utf-8") as fh:
+            proc = subprocess.Popen(
+                [exe, "-p", prompt],
+                cwd=cwd or None, stdout=fh, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,      # outlives this terminal
+            )
+    except Exception as e:
+        print(f"  could not spawn: {e}")
+        return 1
+    print(f"    spawned for {item_id} (pid {proc.pid}) → {log}")
     return 0
 
 
@@ -1422,6 +1519,48 @@ def cmd_finding(a) -> int:
     return 0
 
 
+def cmd_snapshot(a) -> int:
+    """Every goal as JSON, for a surface that is not this terminal.
+
+    Exists because the alternative was worse: a mod drawing the lanes in a
+    pane either parses `queue`'s prose, which is written for a person and
+    reformatted whenever a person reads it badly, or folds the log a second
+    time in another language. A second fold is the defect this codebase has
+    hit repeatedly (DENY_RULES in two files, LEASE_TTL on two objects), and
+    it would be the worst instance yet: the pane would disagree with the
+    board about what is waiting, and nothing would say which was right.
+
+    So this is the board's OWN payload, the same `snapshot()` the page
+    consumes, printed instead of served. Read-only, no gate: it writes
+    nothing and reveals nothing the board does not already show.
+    """
+    import json as _json
+    from .board import snapshot
+    rows = snapshot()
+    # WHICH GOAL IS THIS SESSION ON.
+    #
+    # A surface that lists every goal by "what awaits you" answers a question
+    # the person did not ask. The first pane built on this showed three goals
+    # needing a ruling and hid the one the session was actually working in,
+    # because that one had nothing pending -- so it listed three unrelated
+    # goals and read as a pane about somebody else's work. Where you ARE is
+    # not derivable from what is waiting, so it has to be reported.
+    #
+    # Resolved by the SAME resolver every command uses, never re-derived here.
+    # ⚠️ `resolve_session(None)` returns the SESSION id, not the goal -- it is
+    # the legacy session-keyed fallback. The attach map is the lookup.
+    try:
+        from . import missions as _M
+        from .session import current_session_id
+        mine = _M.attachments().get(current_session_id() or "")
+    except Exception:
+        mine = None
+    for r in rows:
+        r["attached"] = bool(mine) and r.get("id") == mine
+    print(_json.dumps(rows, default=str))
+    return 0
+
+
 def cmd_queue(a) -> int:
     """The four lanes, as text. The board shows the same thing."""
     mid, st = _target(a, "queue")
@@ -1501,6 +1640,8 @@ def cmd_claims_done(a) -> int:
     v = verdict_for(a.text, cwd=(_m.cwd if _m else "") or "")
     cwd = (_m.cwd if _m else "") or ""
     if v.get("too_broad"):
+        GUARDS.record("claim_unverified",
+                      "names everything: " + ", ".join(v["too_broad"]))
         # Say it at WRITE time, like the other two. A claim naming the whole
         # mission folder cannot fail, so it would sit on the board looking
         # corroborated until somebody read it.
@@ -1510,6 +1651,8 @@ def cmd_claims_done(a) -> int:
     elif v["exists"] and not v["unbacked"]:
         print(f"  named artifact(s) exist: {v['backed']}")
     elif v["unbacked"]:
+        GUARDS.record("claim_unverified",
+                      "not on disk: " + ", ".join(v["unbacked"]))
         # Say WHERE it looked. Without this the message is "not on disk",
         # which reads as "your work is missing" when the real fault is a
         # repo-relative path against a mission rooted higher up -- it bit the
@@ -1521,6 +1664,7 @@ def cmd_claims_done(a) -> int:
             print("    a repo-relative path needs its prefix "
                   "(projects/builds/<repo>/...)")
     else:
+        GUARDS.record("claim_unverified", "no parsable artifact in the claim")
         print("  ⚠ nothing checkable — the board will show this as unverified.")
         print("    Name a file in parentheses:  done: <what> (path/to/file)")
         if cwd:
@@ -1683,13 +1827,21 @@ def cmd_pending(a) -> int:
     if m is None:
         raise NoMissionError(sid)
     waiting, sugg = m.unaccepted, m.suggested
-    if not waiting and not sugg:
+    # C19-4: criterion amendments wait on you exactly like proposals. They are
+    # NOT in `checklist` by design, so listing only rows made them invisible
+    # and therefore unacceptable -- a proposal nobody can see is worse than
+    # none, because the agent reports having filed it.
+    crit = list(m.pending_criteria)
+    if not waiting and not sugg and not crit:
         print("\n  nothing awaiting you here.\n")
         return 0
-    print(f"\n  {len(waiting) + len(sugg)} awaiting you in {m.title}\n")
+    print(f"\n  {len(waiting) + len(sugg) + len(crit)} awaiting you in "
+          f"{m.title}\n")
     for i in waiting:
         print(f"    [+] {i.id}  {i.text}")
-    if waiting:
+    for c in crit:
+        print(f"    [≡] {c['id']}  criterion for [{c['target']}]: {c['text']}")
+    if waiting or crit:
         print(f"\n    mission accept --pending"
               f"{'' if not a.session else ' --session ' + a.session}")
     if sugg:
@@ -1791,6 +1943,12 @@ def _print_tree(nodes, depth: int = 0, prefix: str = "",
         tag = (f"   → {child.session_id} {child.done_count}/{child.total_count}"
                if child else "")
         print(f"    {prefix}{elbow}[{mark}] {item.id}  {item.text}{roll}{tag}")
+        # C19-4: accepted criteria belong UNDER their item, indented -- they
+        # are how you know the item is finished, not separate work. Printing
+        # them as rows is the noise this replaced.
+        for c in getattr(item, "criteria", None) or []:
+            pad = prefix + ("" if depth == 0 else ("   " if last else "│  "))
+            print(f"    {pad}      ≡ {c}")
         if n.children:
             _print_tree(n.children, depth + 1,
                         prefix + ("" if depth == 0 else ("   " if last else "│  ")),
@@ -1954,11 +2112,23 @@ def cmd_sharpen(a) -> int:
               f"--on {sid}` files these as proposals for you to accept.\n")
         return 0
 
-    wrote = []
+    wrote, amended = [], 0
     for s in found[:a.limit]:
-        ev = st.propose(s.as_proposal(), by="agent",
-                        from_session=current_session_id() or "")
+        # C19-4: a criterion for an ITEM is an amendment to that item, not a
+        # sibling row. Ten findings used to mean ten new top-level rows. A
+        # DONE-WHEN has no item to attach to -- it sharpens a protected field
+        # -- so that one stays an ordinary proposal.
+        if s.kind == "item":
+            ev = st.propose_criterion(s.ref, s.template, by="agent",
+                                      from_session=current_session_id() or "")
+            amended += 1
+        else:
+            ev = st.propose(s.as_proposal(), by="agent",
+                            from_session=current_session_id() or "")
         wrote.append(ev["item_id"])
+    if amended:
+        print(f"\n  {amended} as criteria ON their items (not new rows), "
+              f"{len(wrote) - amended} as proposals")
     print(f"\n  proposed {len(wrote)} — inert until you accept them: "
           f"{' '.join(wrote)}")
     print(f"  → {_where(sid)}\n")
@@ -1996,7 +2166,15 @@ def _select(a, m, want: str) -> list[str] | None:
         return None
     by_id = {i.id: i for i in m.items}
     if want == "accept":
-        return [i for i in pool if not by_id[i].accepted]
+        out = [i for i in pool if not by_id[i].accepted]
+        # C19-4: criterion amendments wait on the human like proposals, and
+        # `--pending` means "everything awaiting you" -- so they belong in the
+        # sweep. They are not in `m.items` (that is the point), hence the
+        # separate add. Only for --all/--pending: naming ids still works
+        # because `_require` resolves a criterion id.
+        if wide:
+            out += [c["id"] for c in m.pending_criteria]
+        return out
     if want == "done":
         # Only leaves are work, and only agreed work can be ticked.
         leaves = {i.id for i in m.leaves}
@@ -2038,6 +2216,39 @@ def _apply(a, verb: str, fn, want: str = "") -> int:
         else:
             print(f"  {verb} {iid}")
     return bad
+
+
+def cmd_guards(a) -> int:
+    """C19: the guardrails' own record. Evidence, never enforcement.
+
+    The authority split works by refusing things, so its successes left no
+    trace: how often a guard had actually caught something could only be
+    answered from memory. This prints the count and the newest details,
+    because a bare number cannot be argued with -- or learned from.
+    """
+    t = GUARDS.tally()
+    if not t:
+        print("  no guard has fired yet — nothing refused, nothing unverified")
+        print("  (this is a record of REFUSALS, not of security; the log is a "
+              "plain file)")
+        return 0
+    label = {
+        "refused_protected_field": "writes refused — the field is yours",
+        "refused_no_human": "human-only verbs refused at the gate",
+        "claim_unverified": "claims the disk could not check",
+        "wrong_write_code": "wrong board write-codes",
+    }
+    print(f"\n  GUARD LEDGER — {sum(t.values())} activation(s)\n")
+    for kind, n in sorted(t.items(), key=lambda kv: -kv[1]):
+        print(f"  {n:>5}  {label.get(kind, kind)}")
+    rows = GUARDS.recent(8)
+    if rows:
+        print("\n  most recent:")
+        for r in rows:
+            when = time.strftime("%m-%d %H:%M", time.localtime(r.get("at") or 0))
+            print(f"    {when}  {r.get('kind','')}  {str(r.get('detail',''))[:80]}")
+    print()
+    return 0
 
 
 def cmd_accept(a) -> int:
@@ -2518,6 +2729,33 @@ def cmd_remove(a) -> int:
     return rc or cmd_show(a)
 
 
+def cmd_watch(a) -> int:
+    """Open a READ-ONLY board. Agent-runnable, and that is the whole point.
+
+    `mission board` is denied to agents because it opens the write surface:
+    it mints a code, prints it to a terminal, and serves the Setup panel. The
+    slash command advertised `board` anyway, so `/mission board` told the
+    agent to run a command the rules then blocked -- an instruction and a
+    refusal describing the same action.
+
+    The fix is a DIFFERENT NAME rather than a carve-out in the deny rule. A
+    prefix matcher cannot reliably express "deny `mission board` except with
+    this flag", and a rule with an exception is a rule people get wrong. So
+    the write surface keeps its name and its blanket deny, and the read-only
+    view gets its own.
+
+    What this board cannot do, by construction and not by hiding: no code is
+    minted, `/api/setup` is 404, every POST is 403. Same page, same data,
+    no buttons.
+    """
+    from .board import serve
+    port = int(getattr(a, "port", 0) or 8976)
+    print("\n  read-only board — no write code, no buttons, no setup panel.")
+    print("  For the one with buttons, run `mission board` yourself.\n")
+    serve(port, writable=False)
+    return 0
+
+
 def cmd_board(a) -> int:
     from .board import serve
     if a.stop:
@@ -2596,15 +2834,34 @@ def _build() -> argparse.ArgumentParser:
     # Shared flags live on a parent so they work AFTER the subcommand too --
     # `mission show --session X` is what anyone actually types, and a
     # top-level-only flag rejects it.
+    # ⚠️ EVERY flag here needs `default=argparse.SUPPRESS`, and the reason is
+    # a routing bug another session hit on 2026-10-11:
+    #
+    #   mission --on <goal> propose "..."      -> went to a DIFFERENT goal
+    #
+    # `common` is a parent of the top-level parser AND of every subparser.
+    # argparse applies the SUBPARSER's defaults after the main parse, so a
+    # value typed before the subcommand was overwritten by the subcommand's
+    # own empty default. The command then fell back to whatever goal the
+    # session was attached to -- silently, and four proposals landed on the
+    # wrong board. A misroute is worse than an error: the write succeeds and
+    # says so.
+    #
+    # SUPPRESS makes the subparser leave the attribute ALONE when the flag is
+    # absent, so whichever position it was typed in survives. Defaults are
+    # then filled in once, explicitly, in `main`.
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--on", metavar="GOAL",
+    common.add_argument("--on", metavar="GOAL", default=argparse.SUPPRESS,
                         help="which goal this is about, by name")
     # Provenance and disambiguation, not routing. `--on` is the one address a
     # person types; four targeting flags on one command was the complexity this
     # pass exists to remove, so these two stay working and stay out of --help.
-    common.add_argument("--session", default=None, help=argparse.SUPPRESS)
-    common.add_argument("--cwd", default=".", help=argparse.SUPPRESS)
+    common.add_argument("--session", default=argparse.SUPPRESS,
+                        help=argparse.SUPPRESS)
+    common.add_argument("--cwd", default=argparse.SUPPRESS,
+                        help=argparse.SUPPRESS)
     common.add_argument("--all", action="store_true",
+                        default=argparse.SUPPRESS,
                         help="show finished items too (hidden by default)")
 
     ap = argparse.ArgumentParser(prog="mission", description=__doc__,
@@ -2767,6 +3024,9 @@ def _build() -> argparse.ArgumentParser:
                     help="name of the session to message when the work is "
                          "claimed or handed back (the board's own signal is "
                          "reliable but only lands at the next prompt)")
+    dp.add_argument("--spawn", action="store_true",
+                    help="start a session per item (you, at a tty) — a worker "
+                         "writes, so this is never the agent's to run")
     dp.add_argument("--delegable", action="store_true",
                     help="hand out only items a fresh session could prove "
                          "finished (C19: named artifact, never handed back)")
@@ -2780,6 +3040,11 @@ def _build() -> argparse.ArgumentParser:
                     help="override the threshold (default: 14)")
     au.set_defaults(fn=cmd_audit)
 
+    sn = sub.add_parser("snapshot", parents=[common],
+                        help="every goal as JSON (for a pane or another "
+                             "surface); read-only")
+    sn.set_defaults(fn=cmd_snapshot)
+
     qu = sub.add_parser("queue", parents=[common],
                         help="the four lanes: ready, in progress, in review, "
                              "waiting on you")
@@ -2788,6 +3053,10 @@ def _build() -> argparse.ArgumentParser:
     cl = sub.add_parser("claims", parents=[common],
                         help="verify recent completion claims against disk (hook)")
     cl.set_defaults(fn=cmd_claims)
+
+    gd = sub.add_parser("guards", parents=[common],
+                        help="what the guardrails have refused (evidence)")
+    gd.set_defaults(fn=cmd_guards)
 
     sg = sub.add_parser("signal", parents=[common],
                         help="one line if something newly awaits you (hook)")
@@ -2823,6 +3092,12 @@ def _build() -> argparse.ArgumentParser:
                         help="when a protected field changed, and to what")
     wy.add_argument("field")
     wy.set_defaults(fn=cmd_why)
+
+    wt = sub.add_parser("watch", parents=[common],
+                        help="open a READ-ONLY board (no code, no buttons) — "
+                             "this one a session may start")
+    wt.add_argument("--port", type=int, default=8976)
+    wt.set_defaults(fn=cmd_watch)
 
     bd = sub.add_parser("board", parents=[common])
     bd.add_argument("--port", type=int, default=8976)
@@ -2874,6 +3149,13 @@ def _build() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     ap = _build()
     a = ap.parse_args(argv)
+    # The defaults SUPPRESS removed, applied once. Done here rather than in
+    # the parser so there is exactly one place that says what "not given"
+    # means for each -- two places was the bug.
+    for name, default in (("on", None), ("session", None),
+                          ("cwd", "."), ("all", False)):
+        if not hasattr(a, name):
+            setattr(a, name, default)
     try:
         return (a.fn if getattr(a, "fn", None) else cmd_show)(a)
     except NoMissionError:

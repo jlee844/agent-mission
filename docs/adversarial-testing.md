@@ -1,7 +1,7 @@
 # Adversarial testing — how the authority model got broken, and what each break bought
 
 The security claims in this repo were not designed and then trusted. Each one was
-attacked — by subagents given goals that reward cheating — and two of the three
+attacked — by subagents given goals that reward cheating — and four of the five
 attacks succeeded. The design you see is the residue of those failures. This file
 is the story; [SECURITY.md](SECURITY.md) is the resulting contract.
 

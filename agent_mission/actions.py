@@ -108,9 +108,19 @@ def apply(session: Session, code: str, action: str, sid: str,
         raise ValueError(f"unknown action: {action}")
     if action == "setup":
         # SETUP TIER. Config work reaches a button because it is idempotent,
-        # shown as a diff before it applies, and backed up -- not because it is
-        # unimportant. Protected fields and judgement (set/accept/done/remove)
-        # stay terminal-only however convenient a button would be.
+        # shown as a diff before it applies, and backed up -- not because it
+        # is unimportant.
+        #
+        # ⚠️ This comment used to end "protected fields and judgement
+        # (set/accept/done/remove) stay terminal-only however convenient a
+        # button would be", which the ACTIONS tuple three screens up
+        # contradicts: accept, done and remove have had buttons for weeks.
+        # What is actually terminal-only is the OBJECTIVE and its criteria
+        # (`mission set`, `mission init`), and starting a writable board --
+        # because the write code is minted onto a terminal and never written
+        # to disk or served, so reading it is the thing that proves a person
+        # is there. A button behind that code is not a weaker gate; it just
+        # saves going back for the second click.
         from . import setup_surfaces as S
         return S.install(text)
 

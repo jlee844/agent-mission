@@ -227,6 +227,11 @@ def _writable_board(monkeypatch, tmp_path, answers):
     import agent_mission.daemon as D
     monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
     monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    # A person at a terminal is in its FOREGROUND group. Stubbed because
+    # pytest has no tty at all, and without it these tests now take the
+    # background branch — which is the correct new behaviour and the wrong
+    # thing for a helper named "as a person at a tty".
+    monkeypatch.setattr("agent_mission.passcode.in_foreground", lambda: True)
     monkeypatch.setattr(whoami, "ancestors", lambda pid=None: ["-zsh"])
     monkeypatch.setattr(D, "identify", lambda port, timeout=0.6: None)
     monkeypatch.setattr(D, "claim", lambda port: None)
@@ -477,3 +482,65 @@ def test_the_docs_no_longer_say_setsid_reparents():
     doc = ast.get_docstring(ast.parse(src)) or ""
     assert "do NOT reparent" in doc
     assert "double fork" in doc
+
+
+# ── the background board must not ask for a passcode ─────────────────────
+
+def test_no_terminal_at_all_is_not_the_foreground():
+    """Under pytest there is no tty, and that alone must answer False."""
+    from agent_mission import passcode as P
+    assert P.in_foreground() is False
+
+
+def test_a_background_job_is_not_asked_for_the_passcode(monkeypatch):
+    """`--auto-board` hung for anyone who had set one.
+
+    A background job inherits its parent's tty, so `isatty()` says yes while
+    READING raises SIGTTIN and the shell suspends it — with no output, since
+    the prompt had not been printed yet. Found by a second reader.
+    """
+    from agent_mission import passcode as P
+    monkeypatch.setattr(P, "_tty_fd", lambda: 0)
+    monkeypatch.setattr(P.os, "tcgetpgrp", lambda fd: 111)
+    monkeypatch.setattr(P.os, "getpgrp", lambda: 222)
+    assert P.in_foreground() is False
+
+
+def test_the_foreground_is_recognised(monkeypatch):
+    from agent_mission import passcode as P
+    # `_tty_fd` is stubbed because pytest captures stdin, so there is no real
+    # terminal here — which is the honest reason the first version of this
+    # test failed, and why that helper is its own function.
+    monkeypatch.setattr(P, "_tty_fd", lambda: 0)
+    monkeypatch.setattr(P.os, "tcgetpgrp", lambda fd: 333)
+    monkeypatch.setattr(P.os, "getpgrp", lambda: 333)
+    assert P.in_foreground() is True
+
+
+def test_no_terminal_is_not_the_foreground(monkeypatch):
+    """Unknown is not permission to block on a read."""
+    from agent_mission import passcode as P
+    def boom(_fd):
+        raise OSError("not a tty")
+    monkeypatch.setattr(P.os, "tcgetpgrp", boom)
+    assert P.in_foreground() is False
+
+
+def test_a_backgrounded_board_comes_up_read_only_and_says_why(
+        monkeypatch, tmp_path, capsys):
+    from agent_mission import board, passcode as P
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
+    P.save("a real passcode")
+    monkeypatch.setattr(board.ThreadingHTTPServer, "__init__",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(board.ThreadingHTTPServer, "serve_forever",
+                        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    monkeypatch.setattr(P, "in_foreground", lambda: False)
+    def must_not_ask(*a, **k):
+        raise AssertionError("it asked for the passcode from a background job")
+    monkeypatch.setattr(P, "confirm_at_terminal", must_not_ask)
+    board.serve(8996)
+    out = capsys.readouterr().out
+    assert "READ-ONLY" in out and "background" in out
+    assert board.WRITES.enabled is False

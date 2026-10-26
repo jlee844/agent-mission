@@ -666,3 +666,89 @@ def test_two_findings_in_one_gap_are_both_reported(tmp_path, monkeypatch):
     st.finding(b, "wrong B", session_id="v1")
     out = S.check("watcher")
     assert len(out) == 1 and "+1 more" in out[0], out
+
+
+# ── the accept: the one transition nothing announced ─────────────────────
+#
+# A session proposes, the human accepts, and the session that asked for the
+# work never learns it may start — it had to poll `mission queue`, or a
+# person had to go and tell it, which is the hand-feeding this routing layer
+# exists to remove. Every other transition in the loop was announced.
+
+def test_an_accept_reaches_the_sessions(tmp_path, monkeypatch):
+    from agent_mission import signal as S
+    st = _goal(tmp_path, monkeypatch)
+    i = st.propose("do the thing", by="agent")["item_id"]
+    S.check("worker")                       # consume the proposal edge
+    assert S.check("worker") == []
+    st.accept(i, by="human")
+    lines = S.check("worker")
+    assert any("ACCEPTED and ready" in l for l in lines), lines
+    assert any(f"mission take {i}" in l for l in lines), \
+        "it must say how to take it, with the id"
+
+
+def test_the_accept_announces_once(tmp_path, monkeypatch):
+    from agent_mission import signal as S
+    st = _goal(tmp_path, monkeypatch)
+    i = _accepted(st)
+    S.check("worker")
+    assert S.check("worker") == [], "edge, not level"
+
+
+def test_a_handback_is_not_announced_twice(tmp_path, monkeypatch):
+    """A released item re-enters `ready`. It already has its own line, and
+    an item announced by two rules is noise with a citation."""
+    from agent_mission import signal as S
+    st = _goal(tmp_path, monkeypatch)
+    i = _accepted(st)
+    S.check("worker")
+    st.lease(i, "w1")
+    st.release(i, "cannot")
+    lines = S.check("worker")
+    assert sum(1 for l in lines if i in l) == 1, lines
+    assert "handed BACK" in lines[0]
+
+
+def test_a_lapsed_lease_is_not_reannounced_as_newly_accepted(tmp_path,
+                                                             monkeypatch):
+    """It was leased once, so it is not new work."""
+    from agent_mission import signal as S
+    from agent_mission.store import LEASE_TTL
+    st = _goal(tmp_path, monkeypatch)
+    i = _accepted(st)
+    S.check("worker")
+    st.lease(i, "w1")
+    m = st.load()
+    next(x for x in m.checklist if x["id"] == i)["leased_at"] -= LEASE_TTL + 1
+    assert S.check("worker") == []
+
+
+def test_several_accepts_in_one_gap_are_all_counted(tmp_path, monkeypatch):
+    from agent_mission import signal as S
+    st = _goal(tmp_path, monkeypatch)
+    S.check("worker")
+    a, b, c = (_accepted(st, f"item {n}") for n in range(3))
+    lines = S.check("worker")
+    assert len(lines) == 1 and "+2 more" in lines[0], lines
+
+
+def test_a_newly_added_edge_does_not_replay_the_backlog(tmp_path, monkeypatch):
+    """Seen live: the accept edge announced 5 goals' whole ready lanes at
+    once — "+60 more" — because its key was new and an empty set made every
+    existing item look like it had just arrived. A session with state must
+    baseline a key it has never seen, not replay it."""
+    from agent_mission import signal as S
+    st = _goal(tmp_path, monkeypatch)
+    for n in range(5):
+        _accepted(st, f"item {n}")
+    S.check("worker")                        # this session now has state
+    # Simulate the upgrade: drop the accept key as if it never existed.
+    state = S._load("worker")
+    state["ids"] = {k: v for k, v in state["ids"].items()
+                    if not k.startswith("acc:")}
+    S._save("worker", state)
+    assert S.check("worker") == [], "the new key replayed the whole lane"
+    # …and the NEXT accept still fires.
+    i = _accepted(st, "brand new")
+    assert any("ACCEPTED and ready" in l for l in S.check("worker"))

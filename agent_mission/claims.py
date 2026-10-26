@@ -615,6 +615,12 @@ def looks_like_a_file(tok: str) -> bool:
     return bool(_SUFFIX.search(last))
 
 
+# A trailing `:517` or `:1114-1124` on a cited path -- an editor/grep
+# coordinate, not part of the filename. Anchored to the END so a Windows
+# drive letter (`C:\\x`) and prose colons are left alone.
+_LINE_SUFFIX = re.compile(r":\d+(?:-\d+)?$")
+
+
 def _artifacts(text: str) -> list[str]:
     """Every checkable artifact named in the legible `done: ... (...)` format."""
     out: list[str] = []
@@ -637,6 +643,15 @@ def _artifacts(text: str) -> list[str]:
             # than it was earned.
             for w in tok.split():
                 w = w.strip("`'\"")
+                # A `path:line` citation is the most precise form an author
+                # can give, and it was the one that FAILED: `_PATHY` has no
+                # colon in its class, so `a/b.yaml:517` matched nothing and
+                # was dropped -- leaving backed=0 with an EMPTY unbacked list,
+                # i.e. "nothing checkable" while the file sat on disk. Strip a
+                # trailing line or line-range suffix before the test. Only a
+                # suffix on something already path-shaped is stripped, so
+                # prose like `ratio 3:2` is untouched.
+                w = _LINE_SUFFIX.sub("", w)
                 if _PATHY.match(w):
                     out.append(w)
     return out
@@ -725,7 +740,29 @@ def _too_broad(p: Path, cwd: str) -> bool:
     except OSError:
         return False
     # The mission root itself, or any ancestor of it.
-    return p == root or p in root.parents
+    if p == root or p in root.parents:
+        return True
+    # A DIRECTORY OUTSIDE THE MISSION ROOT.
+    #
+    # The 2026-10-11 re-review found the first version of this function
+    # catching only ancestors, `/` and `$HOME` -- so `/var/log/` walked
+    # straight through and `done: rewrote the auth flow (/var/log/)` came
+    # back ok=True, sweepable by=human. `/var/log` is the worst case
+    # available: something under it has always changed in the last minute,
+    # so freshness is satisfied by the machine merely being switched on.
+    #
+    # The rule is NOT "must be inside the root" -- real claims on this very
+    # board name files in another repo (`career/outputs/...`) while cwd is
+    # this one, and rejecting those would be wrong. What cannot be evidence
+    # is a DIRECTORY nobody can tie to this mission: inside the root,
+    # `tests/` is a real answer to "what did you change"; outside it,
+    # "something under /usr changed" is a statement about the computer.
+    try:
+        if p.is_dir() and root not in p.parents:
+            return True
+    except OSError:
+        return False
+    return False
 
 
 def verdict_for(text: str, cwd: str = "", accepted_at: float = 0.0) -> dict:

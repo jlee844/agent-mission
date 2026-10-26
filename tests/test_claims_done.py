@@ -134,6 +134,12 @@ def test_the_read_only_board_serves_no_confirm_route(st):
 def test_signal_announces_suggested_ticks_edge_triggered(st, tmp_path):
     from agent_mission import signal as S
     iid = _accepted_item(st)
+    # The FIRST look at a fresh session legitimately announces the accepted
+    # item — that edge was added on 2026-10-11 so a session learns it may
+    # start, and a new session being told what is ready is the point of it.
+    # What this test is about is the CLAIM edge, so baseline past it.
+    first = S.check("conv-a")
+    assert all("ACCEPTED and ready" in l for l in first), first
     assert S.check("conv-a") == [], "baseline consumes the current state"
 
     st.claim_done(iid, "done: widget (src/widget.py)", by="agent")

@@ -298,3 +298,21 @@ def test_a_malformed_pid_does_not_break_liveness(home, monkeypatch):
     (d / "bad.json").write_text(json.dumps(
         {"sid": "bad", "pid": "not-a-pid", "at": time.time()}))
     assert HB.live_ids() == {"good"}
+
+
+def test_the_no_goals_view_drops_sessions_the_beats_say_are_gone(home,
+                                                                 monkeypatch):
+    """The last place the old mtime guess survives, now narrowed by facts."""
+    monkeypatch.setattr(HB, "_ps", lambda pid: (0, ""))      # nothing alive
+    _record("ended-session", 777)
+    monkeypatch.setattr(B, "live", lambda: [{"cwd": "/tmp/x", "procs": 2}])
+    d = B.PROJECTS / B._slug("/tmp/x")
+    d.mkdir(parents=True, exist_ok=True)
+    for sid in ("ended-session", "never-reported"):
+        (d / f"{sid}.jsonl").write_text("x" * 2100)
+    rows = B._session_snapshot()
+    ids = {r["full"] for r in rows}
+    assert "ended-session" not in ids, "a reported-ended session was resurrected"
+    assert "never-reported" in ids, "absence of a heartbeat is not death"
+    assert next(r for r in rows if r["full"] == "never-reported")[
+        "liveness"] == "guessed"

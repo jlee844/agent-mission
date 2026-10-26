@@ -260,3 +260,63 @@ def test_setup_from_the_board_needs_the_code_like_everything_else(tmp_path,
     s = Session(enabled=True)
     with pytest.raises(Unauthorised):
         actions.apply(s, "000000", "setup", "", [], "deny rules")
+
+
+# ── `mission watch`: the read-only board a session may start ─────────────
+#
+# `/mission board` used to tell an agent to run a command the deny rules then
+# blocked. The fix is a DIFFERENT NAME, not a carve-out: a prefix matcher
+# cannot reliably express "deny `mission board` except with this flag", and a
+# rule with an exception is a rule people get wrong.
+
+def test_watch_is_not_denied_while_board_still_is():
+    from agent_mission.setup_surfaces import _DENIED
+    assert "board" in _DENIED, "the write surface must stay denied"
+    assert "watch" not in _DENIED
+
+
+def test_watch_serves_read_only(monkeypatch, tmp_path):
+    from agent_mission import board
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(board.ThreadingHTTPServer, "__init__",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(board.ThreadingHTTPServer, "serve_forever",
+                        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))
+    # A tty is present — and must NOT make this one writable, or the name
+    # would mean nothing when a person runs it from their own terminal.
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    from agent_mission.__main__ import cmd_watch
+    cmd_watch(type("A", (), {"port": 8996, "on": None})())
+    assert board.WRITES.enabled is False
+    assert board.WRITES.code == "", "a read-only board must mint no code"
+
+
+def test_a_person_is_told_when_the_running_board_cannot_take_writes(
+        monkeypatch, tmp_path, capsys):
+    """Otherwise an agent holding the port denies the human their buttons."""
+    from agent_mission import board
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(board, "_isatty", lambda: True)
+    monkeypatch.setattr("agent_mission.daemon.identify",
+                        lambda port, timeout=0.6: (
+                            {"mission_board": True, "pid": 999, "writes": False}
+                            if port == 8977 else None))
+    board.serve(8976)
+    out = capsys.readouterr().out
+    assert "READ-ONLY" in out
+    assert "mission board --stop" in out
+
+
+def test_a_writable_board_already_up_is_just_reported(monkeypatch, tmp_path,
+                                                      capsys):
+    from agent_mission import board
+    monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(board, "_isatty", lambda: True)
+    monkeypatch.setattr("agent_mission.daemon.identify",
+                        lambda port, timeout=0.6: (
+                            {"mission_board": True, "pid": 999, "writes": True}
+                            if port == 8977 else None))
+    board.serve(8976)
+    out = capsys.readouterr().out
+    assert "READ-ONLY" not in out
+    assert "single source" in out

@@ -1,6 +1,6 @@
 ---
 description: The goal for this session — interview the user to write it, show it, tick it off, open the board
-argument-hint: "init | show | propose <text> | take | queue | audit"
+argument-hint: "init | show | propose <text> | take | queue | audit | watch"
 ---
 
 # mission
@@ -35,6 +35,17 @@ Print the command for the person to run themselves, and say why in one line:
 
 > `mission board` opens the write surface, so it has to come from your
 > terminal rather than from me. Run: `mission board`
+
+**For `board` there is something you CAN do.** `mission watch` opens the same
+page with no write code, no buttons and no setup panel — enough to read the
+plan, the lanes and the verdicts:
+
+```bash
+mission watch
+```
+
+It holds port 8976, so say in one line that the person's own `mission board`
+will need `mission board --stop` first. Do not start one uninvited.
 
 ---
 
@@ -242,7 +253,15 @@ already agreed, so taking one needs no permission:
 ```bash
 mission take          # hands you one ready item and leases it to this session
 mission queue         # the four lanes: ready · in progress · in review · waiting
+mission guards        # what the guardrails have refused — evidence, read-only
 ```
+
+`guards` is the ledger of refusals: writes to fields you do not own, human-only
+verbs stopped at the gate, claims the disk could not check, wrong write-codes.
+It exists because guards work by refusing, so their successes left no trace and
+"are these worth the complexity?" could only be answered from memory. It is
+**evidence, not enforcement** — nothing reads it to make a decision, and the
+log is a plain file, so it is not a security record.
 
 `take` leases the item to this session so two sessions cannot silently pick the
 same one. **If you cannot finish it, hand it back with a reason** — a release
@@ -305,6 +324,11 @@ mission dispatch                     # prints what to hand out, and the message
 It delivers nothing. It composes the message from the store, and a session
 decides who to send it to — the board has no agent socket and must not have
 one.
+
+`mission dispatch --spawn` starts a session per item instead of printing the
+message, and it will refuse you: a worker leases, edits files and claims, so
+starting one is the human's. Print the plan, and say they can run `--spawn`
+themselves if they would rather not forward the messages by hand.
 
 ## The tool changes under you
 

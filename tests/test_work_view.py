@@ -370,20 +370,30 @@ def test_a_new_finding_outranks_an_older_handback(goal):
 def test_dispatch_delivers_nothing(goal, capsys):
     """The board has no agent socket and no token, and if it could talk on
     that bus it would be reachable FROM it — the write gate undone."""
+    import ast
     from agent_mission import __main__ as MM
-    src = (Path(MM.__file__)).read_text()
-    fn = src[src.index("def cmd_dispatch("):src.index("def _dispatch_message(")]
-    # Strip the DOCSTRING as well as the `#` comments. The docstring
-    # explains that the board has no agent socket, so a guard looking for
-    # "socket" matched its own rationale -- the sixth time in this repo,
-    # and the first where stripping comments alone was not enough.
-    body = fn.split('"""')
-    code = body[0] + ("".join(body[2:]) if len(body) > 2 else "")
-    code = "\n".join(ln for ln in code.split("\n")
-                      if not ln.strip().startswith("#"))
-    for forbidden in ("SendMessage", "socket", "subprocess", "Popen",
-                      "st.lease", "urlopen"):
+    # ⚠️ Sliced by AST, not by the text between two `def` lines. The old
+    # slice swept up whatever function happened to be defined next, so
+    # adding a spawn helper there failed this test for a reason that had
+    # nothing to do with the law. A guard whose scope depends on file order
+    # reports the author's edit, not the rule.
+    tree = ast.parse(Path(MM.__file__).read_text())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "cmd_dispatch")
+    for node in ast.walk(fn):               # docstrings and comments out
+        if (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            node.value.value = ""
+    code = ast.unparse(fn)
+    # The law is about the BUS. Dispatch must not be able to talk to a
+    # running session, because anything that can talk on that bus is
+    # reachable from it, and the write gate goes with it.
+    for forbidden in ("SendMessage", "socket", "urlopen", "st.lease"):
         assert forbidden not in code, forbidden
+    # Spawning a NEW process is a different act — it joins no bus — and it is
+    # the human's: `--spawn` refuses unless a person is at a terminal.
+    assert "_at_a_keyboard" in code, \
+        "spawning must be gated, and the gate must be in this function"
 
 
 def test_dispatch_does_not_lease(goal, capsys):
@@ -630,3 +640,71 @@ def test_another_session_still_cannot_steal_a_live_lease(goal):
     assert MM.main(["take", i, "--on", "g", "--as-session", "w1"]) == 0
     assert MM.main(["take", i, "--on", "g", "--as-session", "w2"]) == 1
     assert next(x for x in goal.load().items if x.id == i).leased_by == "w1"
+
+
+# ── 672e7c40: dispatch can start the worker itself, if YOU do it ─────────
+
+def test_spawn_is_refused_without_a_person_at_a_terminal(goal, capsys):
+    """A worker WRITES — it leases, edits files and claims. The verifier it
+    mirrors can only file findings, so this gate matters more, not less."""
+    from agent_mission import __main__ as MM
+    i = goal.propose("do it", by="agent")["item_id"]
+    goal.accept(i, by="human")
+    assert MM.main(["dispatch", "--spawn", "--on", "g"]) == 1
+    out = capsys.readouterr().out
+    assert "yours to do, not the agent's" in out
+    assert "mission dispatch --spawn" in out, "it must say how to proceed"
+
+
+def test_spawn_starts_one_session_per_item_and_leases_nothing(goal,
+                                                              monkeypatch,
+                                                              capsys):
+    from agent_mission import __main__ as MM
+    calls = []
+    monkeypatch.setattr(MM, "_at_a_keyboard", lambda: True)
+    monkeypatch.setattr(MM, "_spawn_worker",
+                        lambda mid, iid, prompt, cwd: calls.append(
+                            (iid, prompt)) or 0)
+    a = goal.propose("first", by="agent")["item_id"]
+    b = goal.propose("second", by="agent")["item_id"]
+    for x in (a, b):
+        goal.accept(x, by="human")
+    assert MM.main(["dispatch", "--spawn", "--peers", "2", "--on", "g"]) == 0
+    assert [c[0] for c in calls] == [a, b], "one session per item, in order"
+    for iid, prompt in calls:
+        assert f"mission take {iid}" in prompt, "it must be told its own item"
+    # The worker leases under its OWN id when it runs take; dispatch must not
+    # pre-lease, or the lease records who was TOLD rather than who has it.
+    assert not [x for x in goal.load().items if x.leased_by]
+
+
+def test_spawn_says_what_it_will_cost_before_doing_it(goal, monkeypatch,
+                                                      capsys):
+    """Each session runs on the person's plan and may edit their files."""
+    from agent_mission import __main__ as MM
+    monkeypatch.setattr(MM, "_at_a_keyboard", lambda: True)
+    monkeypatch.setattr(MM, "_spawn_worker", lambda *a, **k: 0)
+    i = goal.propose("do it", by="agent")["item_id"]
+    goal.accept(i, by="human")
+    MM.main(["dispatch", "--spawn", "--on", "g"])
+    out = capsys.readouterr().out
+    assert "runs on your" in out and "plan" in out
+    assert "edit files" in out
+    assert "only thing that moves the counter" in out
+
+
+def test_spawn_still_obeys_the_pending_threshold(goal, monkeypatch, capsys):
+    """The governor is the whole reason dispatch refuses: spawning workers
+    while the human's accept queue is deep widens the measured bottleneck."""
+    from agent_mission import __main__ as MM
+    monkeypatch.setattr(MM, "_at_a_keyboard", lambda: True)
+    spawned = []
+    monkeypatch.setattr(MM, "_spawn_worker",
+                        lambda *a, **k: spawned.append(1) or 0)
+    i = goal.propose("ready one", by="agent")["item_id"]
+    goal.accept(i, by="human")
+    for n in range(MM.DISPATCH_MAX + 1):
+        goal.propose(f"pending {n}", by="agent")
+    assert MM.main(["dispatch", "--spawn", "--on", "g"]) == 1
+    assert not spawned, "it spawned while the accept queue was over threshold"
+    assert "HELD" in capsys.readouterr().out

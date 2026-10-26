@@ -41,6 +41,7 @@ EXEMPT = {
     "signal": "a hook calls it; a session never types it",
     "claims": "a hook calls it",
     "whereami": "the statusline calls it",
+    "snapshot": "a pane or other surface calls it; read-only, never typed",
     "import": "a one-off migration",
     "migrate": "a one-off migration",
     "show": "the default, described throughout",
@@ -62,6 +63,7 @@ EXEMPT = {
     "checked": "documented in the routing section",
     "audit": "documented in the routing section",
     "dispatch": "documented in the routing section",
+    "watch": "documented beside the human-only words it answers",
 }
 
 

@@ -105,16 +105,34 @@ def check(sid: str, base=None) -> list[str]:
     # point — two existing tests pin that and caught this when the first
     # version suppressed both cases.
     seen_ids = state.get("ids")
-    first_look = seen_ids is None and bool(state)
+    had_state = bool(state)
+    first_look = seen_ids is None and had_state
     seen_ids = seen_ids or {}
     now_ids: dict = {}
 
     def risen(key: str, items: list) -> list:
-        """The items under `key` that were not there last time."""
+        """The items under `key` that were not there last time.
+
+        ⚠️ A key this session has NEVER SEEN baselines, exactly like a state
+        file written before `ids` existed. Seen live the first time the
+        accept edge ran: every ready item on five goals was announced at once
+        — "+18 more", "+60 more" — because `acc:<goal>` was a new key and an
+        empty set made the whole backlog look new. Per-key, not per-file:
+        adding an edge must not replay history to everyone who already has
+        state.
+        """
         ids = [i.id for i in items]
         now_ids[key] = ids
+        # Two different "no record" cases, and they want opposite answers:
+        #   * a BRAND-NEW session (no state at all) SHOULD be told what is
+        #     outstanding — that is the point of the first look, and two
+        #     older tests pin it.
+        #   * an EXISTING session meeting a key added since it last ran must
+        #     baseline, or every upgrade replays the backlog to everyone.
+        if first_look or (had_state and key not in seen_ids):
+            return []
         before = set(seen_ids.get(key, []))
-        return [] if first_look else [i for i in items if i.id not in before]
+        return [i for i in items if i.id not in before]
 
     for mid, st in M.all_missions(base):
         m = st.load()
@@ -150,6 +168,33 @@ def check(sid: str, base=None) -> list[str]:
             lines.append(
                 f"[{last.id}] on {m.title} is claimed finished{who}: "
                 f"“{title}”{more} — the board shows whether the disk agrees")
+
+        # THE ACCEPT. Every other transition in this loop was announced and
+        # this one was not, so the loop had a dead end: a session proposes,
+        # the human accepts, and the session that asked for the work never
+        # learns it may start. It had to poll `mission queue`, or a person
+        # had to go and tell it — which is the hand-feeding this whole
+        # routing layer exists to remove.
+        #
+        # Addressed to SESSIONS, not to the human: the proposal line above
+        # says "accept this", and this one says "it is accepted, take it".
+        # Deliberately narrow — ready AND never leased, released, claimed or
+        # sent back — so it means "newly agreed work" and not "an item came
+        # back". A handback and a lapsed lease have their own lines, and an
+        # item announced twice by two rules is noise with a citation.
+        fresh = [i for i in m.lanes()["ready"]
+                 if not i.leased_at and not i.released_at
+                 and not i.claimed_done and not i.rework]
+        akey = f"acc:{mid}"
+        now_counts[akey] = len(fresh)
+        newly = risen(akey, fresh)
+        if newly:
+            last = newly[-1]
+            more = f" (+{len(newly) - 1} more)" if len(newly) > 1 else ""
+            lines.append(
+                f"[{last.id}] on {m.title} is ACCEPTED and ready{more} — "
+                f"any session may take it: `mission take {last.id} "
+                f"--on {mid}`")
 
         # A HANDBACK is the reply a dispatcher most needs and the only one
         # nothing announced. A peer that takes an item, finds it cannot be

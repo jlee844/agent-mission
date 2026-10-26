@@ -187,10 +187,25 @@ def test_an_unattached_session_is_offered_the_goals_that_exist(tmp_path,
     assert "Ship the docs pages" in out
 
 
-def test_the_reanchor_hook_offers_attach_not_init(monkeypatch, capsys):
-    """The hook told a session with no goal to run `mission init` -- creating a
-    SECOND goal for work that already has one. The duplicate-mission failure,
-    recommended by the tool itself."""
+def test_the_reanchor_hook_offers_attach_first_then_a_guarded_init(
+        monkeypatch, capsys):
+    """Attach leads; a new goal is offered only as a guarded fallback.
+
+    ⚠️ This test used to forbid the string `mission init` outright, because
+    the hook once told a session with no goal to run it -- creating a SECOND
+    goal for work that already had one, the duplicate-mission failure
+    recommended by the tool itself. That protection is KEPT as the ordering
+    and the guard, not as a ban: attach is named first, the existing goals
+    are listed, and `init` appears only behind "none of these?" and an
+    explicit instruction to ASK the human.
+
+    The ban was relaxed on 2026-10-24 on the maintainer's instruction, because the
+    ban had its own cost: offering only the goals that already exist steered
+    every session into attaching to one, so a project that belonged on the
+    board never reached it -- one game project ran to 188 tests and 60+
+    commits unlisted. Both failures are real; the guard is what separates
+    them. A human still decides, so the tool never creates the duplicate.
+    """
     from agent_mission.__main__ import main
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "fresh")
     _legacy("s1", "Docs site", "Ship the docs pages")
@@ -200,4 +215,9 @@ def test_the_reanchor_hook_offers_attach_not_init(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "NOT ATTACHED" in out and "mission attach" in out
     assert "docs-site" in out and "Ship the docs pages" in out
-    assert "mission init" not in out, "never advise a second goal"
+    # Attach must come FIRST -- the existing goal is the likely answer.
+    assert out.index("mission attach") < out.index("mission init"), \
+        "attach leads; a new goal is the fallback"
+    # And `init` must never read as the default action.
+    assert "none of these" in out.lower(), "the offer must be conditional"
+    assert "ask" in out.lower(), "a human decides, or it makes the duplicate"

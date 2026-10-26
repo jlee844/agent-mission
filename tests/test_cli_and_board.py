@@ -1110,18 +1110,24 @@ def test_the_boards_javascript_parses():
     js = PAGE.split("<script>")[1].split("</script>")[0]
 
     node = shutil.which("node")
-    if node:
-        r = subprocess.run([node, "--check", "-"], input=js,
-                           capture_output=True, text=True)
-        assert r.returncode == 0, r.stderr
-        return
+    if not node:
+        # ⚠️ There used to be a hand-rolled fallback here that counted quotes
+        # per line. It reported 24 FAILURES on correct code: an apostrophe in
+        # a comment ("that isn't on screen"), a nested quote in a ternary, a
+        # quote inside a template literal. A stranger cloning this repo
+        # without node met two dozen failures that were not defects, which is
+        # a worse first impression than a skip.
+        #
+        # Counting quotes cannot distinguish code from comment without
+        # lexing JavaScript, and this suite is not going to lex JavaScript.
+        # CI runners have node, so the check holds where it is load-bearing.
+        pytest.skip("node is not on PATH, so the board's JavaScript was not "
+                    "parsed — CI runners have it; this is the one check that "
+                    "needs it")
 
-    # No node: catch the specific class anyway -- an unterminated string
-    # literal on a single line.
-    for n, line in enumerate(js.splitlines(), 1):
-        for q in ("'", '"'):
-            if line.count(q) % 2 and "\\" + q not in line and "`" not in line:
-                raise AssertionError(f"line {n}: odd number of {q}: {line[:70]}")
+    r = subprocess.run([node, "--check", "-"], input=js,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
 
 
 def test_every_actionable_state_shows_how_to_act_on_it():

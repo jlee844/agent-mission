@@ -40,6 +40,7 @@ import hashlib
 import hmac
 import json
 import os
+import sys
 import secrets
 from pathlib import Path
 
@@ -231,6 +232,50 @@ def set_on() -> str:
         return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
     except OSError:
         return ""
+
+
+def _tty_fd() -> int:
+    """A descriptor that really is a terminal, or -1.
+
+    Split out because `sys.stdin.fileno()` RAISES under pytest's capture, so
+    the first version of `in_foreground` returned False before it ever asked
+    about process groups -- correct by accident, untestable on purpose.
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            fd = stream.fileno()
+        except Exception:
+            continue
+        try:
+            if os.isatty(fd):
+                return fd
+        except Exception:
+            continue
+    return -1
+
+
+def in_foreground() -> bool:
+    """Can this process read from the terminal without being suspended?
+
+    A background job shares its parent's tty, so `isatty()` says yes while
+    any attempt to READ raises SIGTTIN and the shell suspends the job. That
+    is how `mission init --auto-board` hung for anyone who had set a
+    passcode: the board inherited a terminal, decided it was writable, asked
+    for the passcode, and stopped — with no output explaining it, because the
+    prompt had not been printed yet.
+
+    The test is whether we are the terminal's FOREGROUND process group. No
+    terminal at all returns False: nothing to be in the foreground of.
+    """
+    fd = _tty_fd()
+    if fd < 0:
+        return False
+    try:
+        return os.tcgetpgrp(fd) == os.getpgrp()
+    except Exception:
+        # No job control, or a platform without tcgetpgrp. Not being able to
+        # establish it is not permission to block on a read.
+        return False
 
 
 def confirm_at_terminal(rec: dict, ask=None, tries: int = MAX_TRIES) -> bool:

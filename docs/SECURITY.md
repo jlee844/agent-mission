@@ -62,9 +62,17 @@ restarted.
 
 A rule, not a list, so the next command has an obvious home:
 
-**Terminal only** — anything that writes a protected field or exercises
-judgement: `set`, `accept`, `done`, `remove`, `add`. No button, however
-convenient, because the point of the gate is that convenience does not move it.
+**Terminal only** — the OBJECTIVE and its criteria (`set`, `init`), and
+starting a WRITABLE board. Those stay typed because the write code is minted
+onto a terminal and never written to disk or served, so reading it is the
+thing that evidences a person.
+
+⚠️ This section used to say `accept`, `done` and `remove` were terminal-only
+with "no button, however convenient" — which the `ACTIONS` tuple in
+`actions.py` has contradicted for weeks: accept, decline, confirm, sweep and
+notes all have buttons, behind that same code. The rule is not "judgement is
+typed"; it is that the judgement is a PERSON'S, and the code is what carries
+that from the terminal to the page.
 
 **Setup tier — may reach a button** — configuration that is *idempotent*, shown
 as a *diff before it applies*, and *backed up*. Installing the statusline is

@@ -370,6 +370,23 @@ def snapshot() -> list[dict]:
 
 
 def _session_snapshot() -> list[dict]:
+    """The no-goals view: what a person sees before they write a mission.
+
+    ⚠️ This is the last place the OLD liveness guess survives — map a live
+    process's cwd to one project dir, take the top N transcripts by mtime.
+    Measured on a real machine, that reported six ~4-hour-dead sessions as
+    live. Goals moved to reported heartbeats; this path could not, because a
+    session with no mission has nothing to attach a heartbeat to in the
+    board's model.
+    
+    So it is narrowed rather than left: a session the heartbeats say is NOT
+    live is dropped, and anything still shown is marked as a guess. Honest
+    and smaller beats honest and absent — a brand-new user sees this view
+    first, and an empty page would say "nothing is running" just as wrongly.
+    """
+    from . import heartbeat as HB
+    reported_live = HB.live_ids()
+    reported_any = HB.known_ids()
     rows, seen = [], set()
     for proc in live():
         d = PROJECTS / _slug(proc["cwd"])
@@ -380,6 +397,11 @@ def _session_snapshot() -> list[dict]:
         for tp in tps:
             sid = tp.stem
             if sid in seen:
+                continue
+            # A session that HAS reported and is not live is known-ended, and
+            # the mtime guess must not resurrect it. One that never reported
+            # stays, flagged, because absence of a heartbeat is not death.
+            if sid in reported_any and sid not in reported_live:
                 continue
             seen.add(sid)
             m = _safe_load(root_for(sid))
@@ -392,6 +414,11 @@ def _session_snapshot() -> list[dict]:
                 "cwd": proc["cwd"].replace(str(Path.home()), "~"),
                 "procs": proc["procs"],
                 "has_mission": m is not None, "ended": False,
+                # Three states here too, so the page never prints a guess as
+                # a measurement. "guessed" is this view's own: the session
+                # has never reported, and it is on screen because a recent
+                # transcript suggests it exists.
+                "liveness": ("live" if sid in reported_live else "guessed"),
                 "title": m.title if m else "", "objective": m.objective if m else "",
                 "named": bool(m.name) if m else False,
                 "criteria": m.success_criteria if m else [],
@@ -1106,8 +1133,8 @@ function askForCode(){
     <code>mission board</code>.
     <div style="margin-top:.5rem"><input id=codein maxlength=6 placeholder="······"
       autocomplete=off spellcheck=false><button id=codego>unlock</button></div>
-    <div class=hint>The agent never sees this, which is why these buttons are
-    yours. Skip it and the board stays read-only.</div>`;
+    <div class=hint>Printed only in the terminal that started this board.
+    Skip it and the board stays read-only.</div>`;
   document.getElementById('codego').onclick = ()=>{
     const v = document.getElementById('codein').value.trim();
     if (v){ localStorage.setItem('mission-code', v); box.hidden = true; box.dataset.up=''; tick(); }
@@ -1540,9 +1567,11 @@ async function tick(force){
      ${(s.sessions||[]).length?`<div class=kids><h3>Sessions on this goal</h3>${
         s.sessions.map(x=>`<div class=kid>
           <span class="dot ${x.liveness==='live'?'working':
-                             x.liveness==='unknown'?'unknown':'ended'}"></span>
+                             (x.liveness==='unknown'||x.liveness==='guessed')
+                               ?'unknown':'ended'}"></span>
           <span class=kn>${esc(x.id)}</span>
           <span class=kt>${x.liveness==='live'?'live':
+            x.liveness==='guessed'?'possibly live — guessed from file times':
             x.liveness==='unknown'?'liveness unknown — no heartbeat':'ended'}</span>
           <span class=kp>${x.calls.toLocaleString()} calls</span></div>`).join('')}</div>`:''}
      ${(s.children||[]).length?`<div class=kids><h3>Delegated</h3>${
@@ -2022,6 +2051,13 @@ class _H(BaseHTTPRequestHandler):
         pass
 
 
+def _isatty() -> bool:
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
+
+
 def serve(port: int = 8976, writable: bool | None = None) -> None:
     # A person running `mission board` has a terminal; the background board that
     # `mission init` spawns does not, and its stdout goes to a log file the
@@ -2047,10 +2083,29 @@ def serve(port: int = 8976, writable: bool | None = None) -> None:
             continue
         found = identify(probe)
         if found:
+            # ⚠️ The identity endpoint has always reported `writes`, and its
+            # own comment said this is where that gets used -- while the code
+            # said "use it" whatever was running. That gap matters now that
+            # `mission watch` exists: an agent can start a READ-ONLY board,
+            # and a person arriving afterwards would be told to use a board
+            # with no buttons and no explanation of why. An agent holding the
+            # port would then be denying the human their write surface, which
+            # is a worse outcome than the one `watch` was built for.
+            theirs_writable = bool(found.get("writes"))
+            want_writable = (writable is True
+                             or (writable is None and _isatty()))
             print(f"\n  a board for this store is already running:"
-                  f"\n    http://127.0.0.1:{probe}   (pid {found.get('pid')})"
-                  f"\n\n  that one is the single source. Use it, or stop it first"
-                  f"\n  with `mission board --stop`.\n")
+                  f"\n    http://127.0.0.1:{probe}   (pid {found.get('pid')})")
+            if want_writable and not theirs_writable:
+                print("\n  BUT it is READ-ONLY — it has no write code and will"
+                      "\n  refuse every button. A session can start one of"
+                      "\n  those (`mission watch`); only you can start a"
+                      "\n  writable one. To take the port:"
+                      f"\n    mission board --stop"
+                      f"\n    mission board\n")
+            else:
+                print("\n  that one is the single source. Use it, or stop it"
+                      " first\n  with `mission board --stop`.\n")
             return
 
     global WRITES
@@ -2082,6 +2137,15 @@ def serve(port: int = 8976, writable: bool | None = None) -> None:
     # you and can write one. So a writable board asks for it once, here, in
     # the terminal that already proved somebody is sitting at it. Failing
     # that, the board still comes up: read-only, saying why.
+    if _rec is not None and not _pc.in_foreground():
+        # A background job cannot be asked: reading the tty suspends it, and
+        # the person sees a board that never came up and never said why.
+        print("\n  a passcode is set, and this board is running in the"
+              "\n  background, where it cannot ask you for it."
+              "\n  Coming up READ-ONLY. For the buttons, run `mission board`"
+              "\n  in the foreground.\n")
+        writable = False
+        _rec = None
     if _rec is not None and not _pc.confirm_at_terminal(_rec):
         _rec = None
         writable = False
@@ -2121,8 +2185,9 @@ def serve(port: int = 8976, writable: bool | None = None) -> None:
     elif WRITES.enabled:
         print(f"\n  write code: {WRITES.code}"
               f"\n  type it into the board once to accept and tick from there."
-              f"\n  it is not on disk and no page returns it — only this terminal"
-              f"\n  has it, which is why the agent cannot use these buttons."
+              f"\n  it is not on disk and no page returns it — this terminal"
+              f"\n  is the only place it appears. A speed bump, not a wall:"
+              f"\n  paste this terminal into a chat and you have shared it."
               f"\n\n  tired of re-typing a new one after every restart?"
               f"  `mission passcode`")
     else:

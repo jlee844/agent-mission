@@ -373,6 +373,44 @@ def test_a_real_file_is_unaffected(tmp_path):
     assert v["ok"] is True and v["backed"] == 1
 
 
+def test_a_directory_outside_the_mission_is_not_evidence(tmp_path):
+    """The 2026-10-11 re-review's finding: only ANCESTORS were refused.
+
+    `/var/log` is not an ancestor of any mission, so the first version of
+    `_too_broad` passed it and `done: rewrote the auth flow (/var/log/)` came
+    back ok=True — sweepable by=human. It is the worst case available:
+    something under it has changed in the last minute on any running machine,
+    so the freshness test is satisfied by the computer being switched on.
+    """
+    import time
+    from agent_mission.claims import verdict_for
+    cwd = _store_at(tmp_path)
+    for d in ("/var/log/", "/usr/", "/tmp/"):
+        v = verdict_for(f"done: rewrote the auth flow ({d})", cwd=cwd,
+                        accepted_at=time.time() - 60)
+        assert v["ok"] is not True, f"{d} counted as evidence"
+        assert v["too_broad"] == [d], f"{d} refused for the wrong reason"
+
+
+def test_a_file_outside_the_mission_is_still_evidence(tmp_path):
+    """The rule is not "inside the root" — that would reject real claims.
+
+    Items on this board legitimately name files in another repo (a career
+    walkthrough pack) while cwd is this one. A FILE out there is a specific
+    answer; a DIRECTORY out there is a statement about the computer. Only
+    the second is refused, and this test is what stops the fix for the hole
+    above from being widened into rejecting the first.
+    """
+    import time
+    from agent_mission.claims import verdict_for
+    far = tmp_path / "elsewhere"
+    far.mkdir()
+    (far / "pack.md").write_text("written")
+    v = verdict_for(f"done: wrote the pack ({far / 'pack.md'})",
+                    cwd=_store_at(tmp_path), accepted_at=time.time() - 60)
+    assert v["ok"] is True and v["too_broad"] == []
+
+
 def test_the_backed_only_sweep_cannot_tick_a_too_broad_claim(tmp_path,
                                                              monkeypatch):
     """The sweep reads `ok`, so closing the verdict closes the button.

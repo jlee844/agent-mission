@@ -68,7 +68,20 @@ LIST_FIELDS = {"success_criteria", "constraints", "non_goals", "checklist",
 
 
 class ProtectedFieldError(PermissionError):
-    """Raised when an agent tries to write a field the human owns."""
+    """Raised when an agent tries to write a field the human owns.
+
+    Recording happens in __init__, not at the four-plus raise sites and not
+    in the callers that catch it: that way no refusal can be added later and
+    silently skip the ledger. Best-effort by design -- `guards.record`
+    swallows its own errors, so a ledger problem can never turn a clean
+    refusal into a crash.
+    """
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        from . import guards
+        guards.record("refused_protected_field",
+                      str(args[0]) if args else "")
 
 
 class NoMissionError(LookupError):
@@ -108,6 +121,12 @@ class Item:
     # text, so the verifier can bind a disk verdict to this exact row. A
     # SUGGESTION, never a state change: `done` still has one writer.
     claimed_done: str = ""
+    # C19-4: acceptance criteria attached to THIS item. `sharpen --propose`
+    # used to file one new top-level row per finding, so sharpening ten loose
+    # items added ten rows of noise -- the C12d wallpaper failure again. A
+    # criterion is an AMENDMENT to the item it sharpens, so it lives here.
+    # Human-accepted only, exactly like the item itself; the agent proposes.
+    criteria: list[str] = field(default_factory=list)
     # WHEN the human accepted it. Needed because "the named file exists" was
     # the whole of "disk agrees", so `done: rewrote auth (README.md)` came
     # back backed in any repo that has a README -- and the one-click "confirm
@@ -211,6 +230,10 @@ class Mission:
     # when it is going off, rather than a detector guessing.
     detours: list[str] = field(default_factory=list)
     archived: bool = False
+    # Criterion amendments awaiting your accept. Deliberately NOT in
+    # `checklist`: they are not work, and putting them there is the noise
+    # C19-4 exists to remove. Each is {id, target, text, by}.
+    pending_criteria: list[dict] = field(default_factory=list)
 
     @property
     def items(self) -> list[Item]:
@@ -503,8 +526,35 @@ class MissionStore:
 
     def _require(self, item_id: str) -> None:
         m = self.load()
-        if m is None or not any(d["id"] == item_id for d in m.checklist):
+        if m is None:
             raise NoSuchItemError(item_id)
+        # A pending criterion is accepted and removed by the SAME verbs as an
+        # item, so its id has to resolve here too -- otherwise `accept` would
+        # reject the very thing it is meant to apply.
+        if any(d["id"] == item_id for d in m.checklist):
+            return
+        if any(c["id"] == item_id for c in m.pending_criteria):
+            return
+        raise NoSuchItemError(item_id)
+
+    def propose_criterion(self, target: str, text: str, by: str = "agent",
+                          from_session: str = "") -> dict:
+        """Suggest an acceptance criterion FOR an existing item.
+
+        Same tier as `propose` and the same accept flow -- inert until a
+        human accepts it by id. The difference is where it lands: on the
+        item, not beside it. `_require(target)` means a criterion cannot be
+        proposed for an item that does not exist, which would otherwise sit
+        in `pending_criteria` forever waiting for a row nobody can accept it
+        onto.
+        """
+        self._require_mission()
+        with _LogLock(self.root):
+            self._require(target)
+            extra = {"from_session": from_session} if from_session else {}
+            return self._append("criterion_proposed", by,
+                                item_id=uuid.uuid4().hex[:8],
+                                target=target, text=text, **extra)
 
     def accept(self, item_id: str, by: str) -> dict:
         if by != "human":
@@ -794,7 +844,21 @@ class MissionStore:
                     m.checklist.append(Item(ev["item_id"], ev["text"],
                                             proposed_by=ev.get("by", "agent"),
                                             parent=ev.get("parent")).to_dict())
+                elif k == "criterion_proposed":
+                    m.pending_criteria.append({
+                        "id": ev["item_id"], "target": ev.get("target", ""),
+                        "text": ev.get("text", ""), "by": ev.get("by", "agent")})
                 elif k == "accepted":
+                    # A criterion amendment is accepted by the same verb as an
+                    # item, and lands on the item instead of beside it.
+                    pend = next((c for c in m.pending_criteria
+                                 if c["id"] == ev["item_id"]), None)
+                    if pend is not None:
+                        m.pending_criteria.remove(pend)
+                        for d in m.checklist:
+                            if d["id"] == pend["target"]:
+                                d.setdefault("criteria", []).append(pend["text"])
+                        continue
                     for d in m.checklist:
                         if d["id"] == ev["item_id"]:
                             d["accepted"] = True
@@ -871,6 +935,11 @@ class MissionStore:
                     # `init --force --discard-plan`, explicitly, by a person.
                     m = None
                 elif k == "removed":
+                    pend = next((c for c in m.pending_criteria
+                                 if c["id"] == ev["item_id"]), None)
+                    if pend is not None:
+                        m.pending_criteria.remove(pend)
+                        continue
                     gone = {ev["item_id"]}
                     # a removed subgoal takes its subtree with it
                     changed = True

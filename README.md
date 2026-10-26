@@ -1,7 +1,8 @@
 # mission
 
-**The goal that outlives the detours — the agent cannot quietly rewrite it, and
-you cannot quietly forget it.**
+**Goal provenance for coding-agent sessions: every goal change records who made
+it, and every completion claim is checked against the disk before you rule on
+it — which is evidence, not prevention, and not proof the work is right.**
 
 [![tests](https://github.com/jlee844/agent-mission/actions/workflows/tests.yml/badge.svg)](https://github.com/jlee844/agent-mission/actions/workflows/tests.yml)
 [![python](https://img.shields.io/badge/python-3.9%20–%203.14-0E6E68)](pyproject.toml)
@@ -15,10 +16,9 @@ Code sessions, built on three write authorities:
 - **proposed** work — agent-suggested, human-accepted
 - **observable** state — evidence the agent records freely
 
-A claim naming a file is checked against the disk; one naming nothing is unchecked.
-Integration: Claude Code hooks, statusline, deny rules, the board — architecture
-in [one diagram below the fold](#architecture). Reproduce every claim:
-`pip install -e ".[dev]" && python -m pytest -q`.
+A claim naming nothing is unchecked, never counted as backed. Integration:
+Claude Code hooks, statusline, deny rules, the board — [architecture below the
+fold](#architecture). Reproduce: `pip install -e ".[dev]" && python -m pytest -q`.
 
 Why it exists: 800 tool calls into a session, the summary is written by the
 thing being summarised, and nothing answers *what was this for — is it done?*
@@ -149,8 +149,9 @@ one per 10 minutes).
 | `take` | ask the board for the next item and take it — no human needed to say what |
 | `release <id>` | hand an item back without claiming it is finished |
 | `finding <id> <text>` | say an accepted item is NOT done, and why; clears its claim and re-queues it |
-| `dispatch` | what to hand out, and the message to hand over — prints a plan, delivers nothing |
+| `dispatch` | what to hand out, and the message to hand over — prints a plan; `--spawn` starts the sessions, and only you can |
 | `queue` | the four lanes: ready · in progress · in review · waiting on you |
+| `watch` | open a READ-ONLY board — no write code, no buttons; a session may start this one |
 | `audit` | items agreed long ago that nobody ever touched — the brief for checking whether they are already built |
 | `verify` | the brief a verification session reads — claims, artifacts, the disk's verdict |
 | `checked <id> <text>` | a second session re-derived a claim and agrees (an opinion, not evidence) |
@@ -158,6 +159,8 @@ one per 10 minutes).
 | `claims` | verify recent completion claims against the disk; silent when backed (for hooks) |
 | `sharpen` | which criteria name no file, so finishing them can't be checked (`--propose`) |
 | `doctor` | what is wrong with the missions themselves, not the install |
+| `snapshot` | every goal as JSON, for a pane or another surface; read-only |
+| `guards` | what the guardrails have refused: the evidence they earn their keep |
 | `board` | the shared board; at a tty it is writable (`--stop`) |
 | `passcode` | set the board's write code yourself, so it survives restarts (`--clear`) |
 | `setup` / `help <cmd>` / `version` | install; usage without running; the build + every live command |
@@ -214,11 +217,10 @@ table, not a classifier.
   the first version of which missed it entirely. [SECURITY.md](docs/SECURITY.md) says what each layer does
   and does not buy.
 - **Known rough edges**, named because a stranger meets the first two early:
-  - `--auto-board` stalls when a passcode is set — the prompt runs from a
-    background job, which the terminal suspends. Start it yourself with
-    `mission board`.
-  - Liveness: with no goals yet, it falls back to a recency guess —
-    inferred, not measured, and the only place in the tool that is.
+  - Liveness: with no goals yet there is no heartbeat to read, so the board
+    falls back to recent file times and labels those rows "possibly live —
+    guessed". It is the only inferred thing in the tool and it says so.
+  - The board's JavaScript syntax check skips without `node` on PATH.
   - Leases last 90 minutes. Re-taking your own item renews it; a session
     that stops lets it lapse.
   - The board's JavaScript syntax test needs `node` on PATH. CI runners have
@@ -227,6 +229,7 @@ table, not a classifier.
 
 ## Docs
 
+- [FINDINGS.md](FINDINGS.md) — what 56 days of real use measured, including where the design failed
 - [DESIGN.md](docs/DESIGN.md) — why it is shaped this way; the five dead drift detectors
 - [SECURITY.md](docs/SECURITY.md) — what is enforced, and the honest limits
 - [adversarial-testing.md](docs/adversarial-testing.md) — five rounds of attacks on the authority model, four of which got through, and what each one bought
