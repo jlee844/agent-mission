@@ -765,6 +765,28 @@ def _too_broad(p: Path, cwd: str) -> bool:
     return False
 
 
+def _outside(p: Path, cwd: str) -> bool:
+    """Does this artifact live outside the goal's folder?
+
+    Measured 2026-10-11, the third hole in one evening: freshness is checked
+    by mtime, so `done: rewrote auth (/var/log/system.log)` came back ok --
+    any constantly-written file anywhere satisfies "changed since you
+    accepted". Path rules cannot close it (the next target, ~/.zsh_history,
+    passes a home-prefix rule). The true statement is that nothing can
+    attribute a change in another tree to THIS goal.
+
+    Resolved, so a symlink INTO the folder counts as inside. With no folder
+    to compare against, there is nothing to say -- False, not a guess.
+    """
+    if not cwd:
+        return False
+    try:
+        root, rp = Path(cwd).resolve(), p.resolve()
+    except OSError:
+        return False
+    return rp != root and root not in rp.parents
+
+
 def verdict_for(text: str, cwd: str = "", accepted_at: float = 0.0) -> dict:
     """C17: the disk's verdict on one claims-done suggestion.
 
@@ -784,7 +806,7 @@ def verdict_for(text: str, cwd: str = "", accepted_at: float = 0.0) -> dict:
     means freshness is UNKNOWN, not false: nothing is marked stale on the
     strength of a missing timestamp.
     """
-    backed, unbacked, stale, broad = [], [], [], []
+    backed, unbacked, stale, broad, outside = [], [], [], [], []
     for a in _artifacts(text or ""):
         p = resolve(a, mission_cwd=cwd)
         if _too_broad(p, cwd):
@@ -796,13 +818,77 @@ def verdict_for(text: str, cwd: str = "", accepted_at: float = 0.0) -> dict:
         if not p.exists():
             unbacked.append(a)
             continue
+        if _outside(p, cwd):
+            # Present, but not this goal's to vouch for. NOT "backed": a file
+            # elsewhere changing proves nothing about the work, and "confirm
+            # all backed" keys off `ok`, so counting it would tick the item
+            # by=human on the strength of a log file.
+            outside.append(a)
+            continue
         backed.append(a)
         if accepted_at and not _touched_since(p, accepted_at):
             stale.append(a)
-    exists = bool(backed) and not unbacked and not broad
+    exists = bool(backed) and not unbacked and not broad and not outside
     return {"backed": len(backed), "unbacked": unbacked,
-            "stale": stale, "too_broad": broad,
+            "stale": stale, "too_broad": broad, "uncheckable": outside,
             # Kept as its own field: the board still wants to say "the named
             # file exists" where that is all it knows.
             "exists": exists,
             "ok": exists and not stale}
+
+
+# ── measured claims ──────────────────────────────────────────────────────
+
+def verdict_word(v: dict) -> str:
+    """One word for a verdict_for() result, as stamped on a claims_done event.
+
+    Ordered by what is WORST about the claim, so a claim naming one good file
+    and one missing one reads `unbacked`, not `ok`.
+    """
+    if v.get("too_broad"):
+        return "too_broad"      # named the whole folder: nothing was checked
+    if v.get("unbacked"):
+        return "unbacked"       # named a file that is not there
+    if v.get("uncheckable"):
+        return "uncheckable"    # named a file outside the goal's folder
+    if v.get("ok"):
+        return "ok"
+    if v.get("stale"):
+        return "stale"          # there, but untouched since it was agreed
+    return "unchecked"          # named no artifact at all
+
+
+def claim_report(stores) -> dict:
+    """Read-only: what the disk said about claims WHEN they were made.
+
+    Claims stamped before this existed have no verdict and count as
+    'unrecorded' -- never re-derived, because a verdict computed today about
+    a claim made weeks ago would be a fabrication presented as a measurement.
+    Percentages are over RECORDED claims only, for the same reason.
+
+    `unbacked_later_ticked` counts completions where the claim STANDING at
+    the time of the tick was unbacked. A claim corrected before the tick
+    does not count against it.
+    """
+    from collections import Counter
+    by: Counter = Counter()
+    claims = ticked_unbacked = 0
+    for st in stores:
+        standing: dict = {}                    # item -> verdict of its latest claim
+        for e in st.events():
+            k = e.get("kind")
+            if k == "claims_done":
+                claims += 1
+                w = e.get("verdict") or "unrecorded"
+                by[w] += 1
+                standing[e.get("item_id")] = w
+            elif k == "completed" and e.get("by") == "human":
+                if standing.get(e.get("item_id")) == "unbacked":
+                    ticked_unbacked += 1
+    recorded = claims - by["unrecorded"]
+    checkable = by["ok"] + by["stale"] + by["unbacked"]
+    pct = lambda n: round(100.0 * n / recorded, 1) if recorded else 0.0
+    return {"claims": claims, "recorded": recorded, "by_verdict": dict(by),
+            "pct_checkable": pct(checkable), "pct_unbacked": pct(by["unbacked"]),
+            "unbacked_later_ticked": ticked_unbacked}
+

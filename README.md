@@ -25,7 +25,7 @@ thing being summarised, and nothing answers *what was this for — is it done?*
 
 ```bash
 pip install git+https://github.com/jlee844/agent-mission
-mission setup      # slash command, deny rules, statusline, re-anchor hook, attention hook, claim hook
+mission setup      # slash command, deny rules, statusline, re-anchor hook, attention hook, claim hook, pane
 ```
 
 ## Your whole job
@@ -161,6 +161,9 @@ one per 10 minutes).
 | `doctor` | what is wrong with the missions themselves, not the install |
 | `snapshot` | every goal as JSON, for a pane or another surface; read-only |
 | `guards` | what the guardrails have refused: the evidence they earn their keep |
+| `skip-dir` | this folder does not belong on the board — stop asking |
+| `needs-human` | a verifier read the claim and cannot decide, and says why |
+| `verifier` | this session is the goal's standing verifier |
 | `board` | the shared board; at a tty it is writable (`--stop`) |
 | `passcode` | set the board's write code yourself, so it survives restarts (`--clear`) |
 | `setup` / `help <cmd>` / `version` | install; usage without running; the build + every live command |

@@ -256,7 +256,7 @@ def test_the_page_asks_rather_than_asserts(st):
     page = B.PAGE
     assert "untouched_days" in page
     assert "may already be built" in page
-    assert "d untouched</span>" in page, "the chip must carry the age"
+    assert "untouched ${" in page, "the chip must carry the age"
     assert "mission audit" in page
 
 

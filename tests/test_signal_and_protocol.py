@@ -232,10 +232,25 @@ def test_board_at_a_tty_replaces_a_read_only_board(monkeypatch, tmp_path,
                    "race on the first real run (Errno 48)")
 
     calls.clear()
-    monkeypatch.setattr(D, "identify", lambda port: {"writes": True})
+    # The ruling stands for a CURRENT board: every restart issues a new write
+    # code the person must re-enter, so replacing a board that is fine has a
+    # real cost.
+    monkeypatch.setattr(D, "identify",
+                        lambda port: {"writes": True, "code": "c", "stale": False})
     MM.main(["board"])
-    assert calls == [], "a writable board is pointed at, never restarted"
+    assert calls == [], "a current writable board is pointed at, never restarted"
     assert "writable" in capsys.readouterr().out
+
+    # ...and stops at a STALE one. A writable board ran 17 days on old code,
+    # and this was the command that kept it: being out of date is as good a
+    # reason to replace it as being read-only. A board that predates the
+    # fingerprint cannot report one, so it is older than the check.
+    for ident in ({"writes": True, "code": "c", "stale": True}, {"writes": True}):
+        calls.clear(); freed.clear()
+        monkeypatch.setattr(D, "identify", lambda port, i=ident: i)
+        MM.main(["board"])
+        assert calls == ["stop", "serve"], f"stale is replaced: {ident}"
+    assert "old code" in capsys.readouterr().out
 
 
 def test_board_not_at_a_tty_still_detaches_read_only(monkeypatch, tmp_path,

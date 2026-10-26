@@ -18,5 +18,13 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["agent_mission"]
 
+# The pane mod ships INSIDE the package so it exists after `pip install`.
+# Patterns are explicit, not `**`: recursive globs need setuptools>=62.3 and
+# this file asks for >=61, and the hidden `.claude-plugin` dir must be named.
+[tool.setuptools.package-data]
+agent_mission = ["pane/.claude-plugin/plugin.json", "pane/.gitignore",
+                 "pane/hooks/*", "pane/types/*", "pane/tests/*",
+                 "pane/tsconfig.json"]
+
 [tool.setuptools.data-files]
 "share/agent-mission/commands" = ["commands/mission.md"]

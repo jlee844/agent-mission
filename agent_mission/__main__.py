@@ -24,6 +24,7 @@ from .session import (NoSessionError, activity, current_session_id,
                       find_session, resolve_session, short_id,
                       transcript_for)
 from . import guards as GUARDS
+from .store import label_of
 from .store import (FIELD_AUTHORITY, Authority, Item, MissionStore,
                     NoMissionError, NoSuchItemError, ProtectedFieldError,
                     children_of, root_for)
@@ -494,7 +495,8 @@ def cmd_show(a) -> int:
         print(f"\n  PLAN  {m.done_count}/{m.total_count}")
         show_all = getattr(a, "all", False)
         roots = m.tree()
-        _print_tree(roots, show_all=show_all, kids=children_of(sid))
+        _print_tree(roots, show_all=show_all, kids=children_of(sid),
+                    full=getattr(a, 'long', False))
         # Every finished leaf is folded away -- itself, or under a finished
         # branch -- so the count is done_count. Counting only the finished
         # ROOTS said "1 finished" while two were off the screen.
@@ -790,6 +792,17 @@ def cmd_whereami(a) -> int:
         if sid_now and not M.attachments().get(sid_now):
             live = [(mid, st.load()) for mid, st in M.all_missions()]
             live = [(mid, m) for mid, m in live if m and not m.archived]
+            # The person already said this folder does not belong on the
+            # board. Asking again in every session is the noise they asked
+            # to be spared; say why it is quiet, in one line, and stop.
+            from . import skipdirs
+            skip = skipdirs.covering(Path.cwd())
+            if live and skip:
+                when = time.strftime("%Y-%m-%d", time.localtime(skip.get("at", 0)))
+                print(f"NOT ATTACHED — this folder was marked not for the board "
+                      f"on {when}; nothing to ask. (`mission skip-dir --undo` "
+                      f"to change that)")
+                return 0
             if live:
                 print("NOT ATTACHED: this session has no goal yet. Ask which one, "
                       "then run `mission attach <name>`. Existing goals:")
@@ -892,6 +905,12 @@ Your job, for each item below:
   3. Then exactly one of:
        agrees    ->  mission checked <id> "<what you read, and why it holds>"
        disagrees ->  mission finding <id> "<what is missing or wrong>"
+       can't say ->  mission needs-human <id> "<what you could not decide>"
+     The third is not a failure. A forced guess is worse than saying so.
+  4. You are this goal's STANDING verifier (one per project). If the board
+     does not already name you, register: `mission verifier --on <goal>`.
+     New claims are then put to you at your next prompt. Judge each from
+     its brief, as if fresh -- not from what you decided about earlier ones.
 
 What you may NOT do, and the tool will refuse anyway:
   * tick an item (`mission done`) — that is the human's, and only theirs
@@ -1272,6 +1291,9 @@ def cmd_verify(a) -> int:
         if v["unbacked"]:
             say(f"      DISK: named but NOT present: "
                   f"{', '.join(v['unbacked'])}")
+        elif v.get("uncheckable"):
+            say(f"      DISK: outside this goal's folder, so not evidence for "
+                f"it: {', '.join(v['uncheckable'])}")
         elif v["stale"]:
             say(f"      DISK: present but UNTOUCHED since you accepted: "
                   f"{', '.join(v['stale'])}")
@@ -1359,6 +1381,47 @@ def cmd_checked(a) -> int:
     print("  this is an OPINION, not evidence — it changes no lane and ticks")
     print("  nothing. Your confirm on the board is still the only thing that")
     print("  moves the counter.")
+    return 0
+
+
+def cmd_needs_human(a) -> int:
+    """C20's third verdict: a verifier read the claim and cannot decide."""
+    mid, st = _target(a, "needs-human")
+    if mid is None:
+        return 1
+    sid = getattr(a, "as_session", "") or current_session_id() or ""
+    try:
+        st.needs_human(a.item_id, a.text, session_id=sid,
+                       by="human" if _at_a_keyboard() else "agent")
+    except (ValueError, KeyError) as e:
+        print(f"  refused: {e}")
+        return 1
+    except NoSuchItemError:
+        print(f"  no item {a.item_id!r} in this plan — `mission` to see the ids")
+        return 1
+    print(f"  recorded: [{a.item_id}] needs the human's judgement — it stays")
+    print("  in review, and the board shows your reason beside the claim.")
+    return 0
+
+
+def cmd_verifier(a) -> int:
+    """C20, one verifier per project: register this session as the goal's."""
+    mid, st = _target(a, "verifier")
+    if mid is None:
+        return 1
+    sid = current_session_id() or ""
+    if a.clear:
+        st.set_verifier("", clear=True,
+                        by="human" if _at_a_keyboard() else "agent")
+        print(f"  {mid} has no standing verifier now")
+        return 0
+    if not sid:
+        print("  no session id here — run this from the session that will "
+              "verify, so claims can be routed to it")
+        return 1
+    st.set_verifier(sid, by="human" if _at_a_keyboard() else "agent")
+    print(f"  {short_id(sid)} is {mid}'s verifier — each new claim on it will")
+    print("  be put to you at your next prompt. `mission verify` is the brief.")
     return 0
 
 
@@ -1584,7 +1647,7 @@ def cmd_queue(a) -> int:
         print(f"      already be built. `mission audit --on {mid}`")
     for i in lanes["ready"]:
         flag = "  rework" if i.rework else ""
-        print(f"    [ ] {i.id}  {i.text[:62]}{flag}")
+        print(f"    [ ] {i.id}  {label_of(i)}{flag}")
         if i.rework:
             print(f"          ← {i.rework[:70]}")
         if i.id in stale:
@@ -1597,14 +1660,14 @@ def cmd_queue(a) -> int:
     print(f"\n  IN PROGRESS ({len(lanes['progress'])})")
     for i in lanes["progress"]:
         mins = int((_t.time() - i.leased_at) // 60)
-        print(f"    [~] {i.id}  {i.text[:52]}  {short_id(i.leased_by)} "
+        print(f"    [~] {i.id}  {label_of(i)}  {short_id(i.leased_by)} "
               f"{mins}m")
     print(f"\n  IN REVIEW ({len(lanes['review'])}) — a claim awaiting a check")
     for i in lanes["review"]:
-        print(f"    [◦] {i.id}  {i.text[:62]}")
+        print(f"    [◦] {i.id}  {label_of(i)}")
     print(f"\n  WAITING ON YOU ({len(lanes['waiting'])})")
     for i in lanes["waiting"][:5]:
-        print(f"    [+] {i.id}  {i.text[:62]}")
+        print(f"    [+] {i.id}  {label_of(i)}")
     print()
     return 0
 
@@ -1624,6 +1687,15 @@ def cmd_claims_done(a) -> int:
     try:
         st.claim_done(a.item_id, a.text, by=who,
                       session_id=current_session_id() or "")
+    except NoSuchItemError:
+        # Every other per-item verb reports this through `_apply`; this one
+        # raised it all the way out and printed a stack trace. A goal id and
+        # an item id are both short hex strings, so passing the wrong one is
+        # ordinary -- and a traceback reads as a broken tool rather than a
+        # wrong argument.
+        print(f"  no item {a.item_id!r} in this plan — `mission` to see the "
+              f"ids (a GOAL id is not an item id)")
+        return 1
     except ValueError as e:
         print(f"  refused: {e}")
         return 1
@@ -1648,6 +1720,13 @@ def cmd_claims_done(a) -> int:
         print(f"  ⚠ names everything, so nothing is checked: "
               f"{', '.join(v['too_broad'])}")
         print("    name the file or directory you actually changed")
+    elif v.get("uncheckable"):
+        GUARDS.record("claim_unverified",
+                      "outside the goal's folder: " + ", ".join(v["uncheckable"]))
+        print(f"  ⚠ outside this goal's folder, so it cannot back the claim: "
+              f"{', '.join(v['uncheckable'])}")
+        if cwd:
+            print(f"    the goal's folder is {cwd} — name a file inside it")
     elif v["exists"] and not v["unbacked"]:
         print(f"  named artifact(s) exist: {v['backed']}")
     elif v["unbacked"]:
@@ -1699,6 +1778,33 @@ def _hook_mission_cwd(sid: str) -> str:
         return ""
 
 
+def _claims_report(a) -> int:
+    """What the disk said about claims AT THE TIME they were made. Read-only."""
+    from . import missions as M
+    from .claims import claim_report
+    want = getattr(a, "on", None)
+    stores = [st for mid, st in M.all_missions() if not want or mid == want]
+    r = claim_report(stores)
+    scope = f"on {want}" if want else f"across {len(stores)} goal(s)"
+    unrec = r["by_verdict"].get("unrecorded", 0)
+    print(f"\n  CLAIMS AS MADE — {scope}")
+    if not r["recorded"]:
+        print(f"    no claim has a stamped verdict yet ({unrec} older ones "
+              f"are unrecorded).\n    Verdicts are recorded from now on; "
+              f"older claims are never re-derived.\n")
+        return 0
+    print(f"    {r['recorded']} recorded when made"
+          f"{f' · {unrec} older, unrecorded' if unrec else ''}")
+    print(f"    named a checkable file   {r['pct_checkable']:>5}%")
+    print(f"    unbacked when claimed    {r['pct_unbacked']:>5}%")
+    order = ("ok", "stale", "unbacked", "uncheckable", "too_broad", "unchecked")
+    parts = [f"{k} {r['by_verdict'][k]}" for k in order if r["by_verdict"].get(k)]
+    print(f"    by verdict: {' · '.join(parts)}")
+    print(f"    unbacked claims a human then ticked: "
+          f"{r['unbacked_later_ticked']}\n")
+    return 0
+
+
 def cmd_claims(a) -> int:
     """C16: the claim verifier as a Stop hook. Reads the hook payload on
     stdin, checks only the claims made since last time, and speaks only when
@@ -1706,6 +1812,10 @@ def cmd_claims(a) -> int:
     no session, foreign format, weird cwd -- because a verifier that can
     break a turn is worse than no verifier (whereami's bar).
     """
+    # Before the stdin read: `--report` is typed at a terminal, and reading a
+    # hook payload there would sit waiting for input that never comes.
+    if getattr(a, "report", False):
+        return _claims_report(a)
     try:
         payload = json.loads(sys.stdin.read() or "{}")
         tpath = payload.get("transcript_path") or ""
@@ -1854,6 +1964,10 @@ def cmd_pending(a) -> int:
             word = (f"exists and changed since accepted ({v['backed']})"
                     if v["ok"] else
                     f"{len(v['unbacked'])} claim(s) NOT backed" if v["unbacked"]
+                    # Not "nothing checkable": the claim names a file clearly,
+                    # it is just not this goal's to vouch for.
+                    else f"outside this goal's folder, not evidence: "
+                         f"{', '.join(v['uncheckable'])}" if v.get("uncheckable")
                     else f"exists, UNTOUCHED since accepted: "
                          f"{', '.join(v['stale'])}" if v["stale"]
                     else "nothing checkable in the claim")
@@ -1911,6 +2025,9 @@ def cmd_why(a) -> int:
         if e.get("tty_without_shell"):
             where.append("terminal with no shell above it — a detached job, "
                          "yours or not")
+            # The fact itself, not only its paraphrase.
+            if e.get("session_led_by"):
+                where.append(f"session led by: {e['session_led_by']}")
         elif e.get("session_leader"):
             where.append("led its own session")
         elif e.get("orphaned"):
@@ -1922,7 +2039,8 @@ def cmd_why(a) -> int:
 
 
 def _print_tree(nodes, depth: int = 0, prefix: str = "",
-                show_all: bool = False, kids: dict | None = None) -> None:
+                show_all: bool = False, kids: dict | None = None,
+                full: bool = False) -> None:
     """Indented, with a branch's progress rolled up from its leaves.
 
     Finished work is folded away by default — what is left is what you act on
@@ -1942,7 +2060,16 @@ def _print_tree(nodes, depth: int = 0, prefix: str = "",
         child = (kids or {}).get(item.id)
         tag = (f"   → {child.session_id} {child.done_count}/{child.total_count}"
                if child else "")
-        print(f"    {prefix}{elbow}[{mark}] {item.id}  {item.text}{roll}{tag}")
+        # C19-5: the LABEL by default. One `mission` call on a live goal
+        # printed 26 paragraphs, which is unreadable and unreferenceable --
+        # so the plan scans as short names and `--full` brings the text back.
+        from .store import label_of
+        body = item.text if full else label_of(item)
+        # No second ellipsis when the label already ends in one -- the cap
+        # adds it, and "every… …" reads as a rendering bug.
+        more = ("" if (full or body == item.text or body.endswith("\u2026"))
+                else " …")
+        print(f"    {prefix}{elbow}[{mark}] {item.id}  {body}{more}{roll}{tag}")
         # C19-4: accepted criteria belong UNDER their item, indented -- they
         # are how you know the item is finished, not separate work. Printing
         # them as rows is the noise this replaced.
@@ -1952,7 +2079,7 @@ def _print_tree(nodes, depth: int = 0, prefix: str = "",
         if n.children:
             _print_tree(n.children, depth + 1,
                         prefix + ("" if depth == 0 else ("   " if last else "│  ")),
-                        show_all=show_all, kids=kids)
+                        show_all=show_all, kids=kids, full=full)
 
 
 def _where(sid: str) -> str:
@@ -2216,6 +2343,27 @@ def _apply(a, verb: str, fn, want: str = "") -> int:
         else:
             print(f"  {verb} {iid}")
     return bad
+
+
+def cmd_skip_dir(a) -> int:
+    """Record that a folder does not belong on the board, so no later session
+    in it asks again. Observable tier: a session records the person's no."""
+    from . import skipdirs
+    folder = Path(a.folder or Path.cwd())
+    if not folder.is_dir():
+        print(f"  not a folder: {folder}")
+        return 1
+    if skipdirs.too_wide(folder):
+        print(f"  refusing: skipping {folder.resolve()} would silence every "
+              f"session on this machine — name the project folder itself")
+        return 1
+    skipdirs.record(folder, undo=a.undo,
+                    by="human" if _at_a_keyboard() else "agent",
+                    session=current_session_id() or "")
+    where = folder.resolve()
+    print(f"  {where} — " + ("sessions here will be asked again"
+          if a.undo else "no session here will ask to put it on the board"))
+    return 0
 
 
 def cmd_guards(a) -> int:
@@ -2788,16 +2936,22 @@ def cmd_board(a) -> int:
         rec = board_running()
         if rec:
             from .daemon import identify
+            from .board import _replace_reason
             ident = identify(int(rec.get("port", 0))) or {}
-            if ident.get("writes"):
+            why = _replace_reason(ident, getattr(a, "restart", False))
+            if why is None:
                 print(f"\n  board: http://127.0.0.1:{rec['port']}"
-                      f"  (already running, writable)\n")
+                      f"  (already running, writable, current)\n")
                 return 0
-            # Read-only, or too old to say. A person asking for the board
-            # wants the writable one, and the read-only one cannot be
-            # upgraded in place -- the code must print to THIS terminal.
+            # ⚠️ "stale" is new. A writable board used to be kept whatever
+            # code it was running -- one ran 17 days, so no board change in
+            # that time was visible and reloading showed nothing new. Being
+            # out of date is as good a reason to replace it as being
+            # read-only, and this is the command a person naturally types.
             board_stop()
-            print("  replacing the read-only board with a writable one…")
+            print({"read-only": "  replacing the read-only board with a writable one…",
+                   "stale": "  replacing the board — it was running old code…",
+                   "restart": "  restarting the board…"}[why])
             # The stop is a signal; the death is not instant. Binding right
             # away lost the race on the first real run -- Errno 48, a
             # traceback in the face of the person following the instructions.
@@ -2860,6 +3014,12 @@ def _build() -> argparse.ArgumentParser:
                         help=argparse.SUPPRESS)
     common.add_argument("--cwd", default=argparse.SUPPRESS,
                         help=argparse.SUPPRESS)
+    # NOT --full: `whereami --full` already means "the whole anchor block".
+    # ⚠️ Must live HERE, beside the other shared flags: `parents=[common]`
+    # copies actions when each subparser is created, so a flag added further
+    # down reaches only the parsers defined after it -- `show` did not get it.
+    common.add_argument("--long", action="store_true",
+                        help="print each item's full text, not its short label")
     common.add_argument("--all", action="store_true",
                         default=argparse.SUPPRESS,
                         help="show finished items too (hidden by default)")
@@ -3007,6 +3167,20 @@ def _build() -> argparse.ArgumentParser:
                     help="start a verification session on it (you, at a tty)")
     vf.set_defaults(fn=cmd_verify)
 
+    nh = sub.add_parser("needs-human", parents=[common],
+                        help="a verifier read the claim and cannot decide — "
+                             "the human's call (an opinion, not evidence)")
+    nh.add_argument("item_id", metavar="ID")
+    nh.add_argument("text")
+    nh.add_argument("--as-session", default="")
+    nh.set_defaults(fn=cmd_needs_human)
+
+    vf = sub.add_parser("verifier", parents=[common],
+                        help="register this session as the goal's standing verifier")
+    vf.add_argument("--clear", action="store_true",
+                    help="the goal has no standing verifier")
+    vf.set_defaults(fn=cmd_verifier)
+
     ck = sub.add_parser("checked", parents=[common],
                         help="record that a second session re-derived a claim "
                              "and agrees (an opinion, not evidence)")
@@ -3052,7 +3226,18 @@ def _build() -> argparse.ArgumentParser:
 
     cl = sub.add_parser("claims", parents=[common],
                         help="verify recent completion claims against disk (hook)")
+    cl.add_argument("--report", action="store_true",
+                    help="what the disk said about claims when they were made")
     cl.set_defaults(fn=cmd_claims)
+
+    # C19-5: `show` prints short labels so a 26-item plan is scannable;
+    # --full restores the authored text. On `common` so `mission --full` and
+    # `mission show --full` both work, which is how it will actually be typed.
+    sk = sub.add_parser("skip-dir", parents=[common],
+                        help="this folder does not belong on the board; stop asking")
+    sk.add_argument("folder", nargs="?", default=None)
+    sk.add_argument("--undo", action="store_true", help="ask again in this folder")
+    sk.set_defaults(fn=cmd_skip_dir)
 
     gd = sub.add_parser("guards", parents=[common],
                         help="what the guardrails have refused (evidence)")
@@ -3103,6 +3288,8 @@ def _build() -> argparse.ArgumentParser:
     bd.add_argument("--port", type=int, default=8976)
     bd.add_argument("--open", action="store_true", help="open it in your browser")
     bd.add_argument("--stop", action="store_true")
+    bd.add_argument("--restart", action="store_true",
+                    help="replace the running board even if it looks current")
     bd.add_argument("--rc", action="store_true", help=argparse.SUPPRESS)
     bd.add_argument("--foreground", action="store_true",
                     help=argparse.SUPPRESS)   # used by the spawner

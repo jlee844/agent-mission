@@ -167,6 +167,55 @@ def own_session_leader() -> bool:
         return False            # no getsid (Windows): unknown, not suspicious
 
 
+# The shells a person's terminal session is led by. `login` is what Terminal
+# itself starts.
+_SHELLS = {"sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"}
+
+
+def session_leader_command() -> str:
+    """The command line of whoever LEADS this process's session, or ''."""
+    try:
+        return _ps(os.getsid(0))[1]
+    except (AttributeError, OSError):
+        return ""
+
+
+def leader_is_a_persons_shell(command: str) -> bool:
+    """Is this session led by what a person's terminal is led by?
+
+    ⚠️ This replaces asking `own_session_leader()` -- "is the WRITER the
+    leader?" -- which the attacker controls by where they put the writer. A
+    second reader showed it on 2026-10-11: `sh -c "writer"` execs, so the
+    writer leads and was stamped, but `sh -c "writer; true"` makes sh fork,
+    the writer becomes a child, and nothing was stamped. One character. So
+    the question moves from the writer's position to the SESSION itself.
+
+    Measured on this machine, every terminal session was led by one of:
+        login -pf <user>                             (Terminal)
+        /bin/zsh -l                                    (a login shell)
+        login -pfl <user> /bin/bash -c exec ...      (an IDE terminal)
+    That third one has a `-c` in it and is honest, because the LEADER is
+    `login` -- which is why the executable is looked at before any argument.
+
+    The attack's sessions are led by `sh -c "...; true"` (a shell running a
+    command, not waiting for a person) or by the python process that took
+    the pty. Unreadable means unknown, which is not suspicious: this only
+    ever adds a note to the log, it never refuses a write.
+    """
+    if not command:
+        return True
+    toks = command.split()
+    exe = toks[0]
+    base = os.path.basename(exe).lstrip("-")
+    if base == "login":
+        return True
+    if base in _SHELLS:
+        # A login shell is spelled with a leading dash ("-zsh"); otherwise
+        # interactive unless it was handed a command to run.
+        return exe.startswith("-") or "-c" not in toks[1:]
+    return False
+
+
 def orphaned() -> bool:
     """Has this process been cut loose from whatever started it?
 
@@ -217,11 +266,19 @@ def provenance() -> dict:
         out["orphaned"] = True
     if own_session_leader():
         out["session_leader"] = True
-    if tty and own_session_leader() and not out.get("ancestor_agent"):
-        # The measured shape of round 5: a terminal, this process leading its
-        # own session, and nothing admitting to an agent. A person's write
-        # comes from a shell that leads the session while the command does
-        # not, so this is absent on the honest path rather than merely rarer.
+    leader = session_leader_command()
+    led_by_a_person = leader_is_a_persons_shell(leader)
+    if tty and not led_by_a_person:
+        # WHAT led it, so `mission why` can show the reader rather than
+        # paraphrase it. Truncated: it is a fact for a person to read.
+        out["session_led_by"] = leader[:80]
+    if tty and not led_by_a_person and not out.get("ancestor_agent"):
+        # A terminal whose SESSION is not led by a person's shell, and nothing
+        # admitting to an agent. Covers both measured shapes: round 5 (the
+        # writer itself leads, from python) and its one-character variant
+        # (`sh -c "writer; true"` leads, the writer is its child). A person's
+        # write comes from a session led by `login` or a login shell, so this
+        # is absent on the honest path rather than merely rarer.
         #
         # Named rather than scored. It records what was true, `mission why`
         # prints it, and the human decides what it means -- because a

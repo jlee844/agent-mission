@@ -231,7 +231,10 @@ def test_every_key_is_bound_and_announced():
     for k in ("'j'", "'k'", "'a'", "'c'", "'x'", "'o'"):
         assert k in page, k
     # An affordance nobody notices is not a feature.
-    assert "j/k move · a accept · c confirm · x decline · o open goal" in page
+    # Announced as built: a/c/x only with a write code (they click the row's
+    # own buttons, which a read-only board does not draw); j/k and o always.
+    assert "'j/k move' + ((WRITABLE && CODE())" in page
+    assert "' · a accept · c confirm · x decline' : '') + ' · o open goal'" in page
 
 
 def test_a_key_clicks_the_rows_own_button():
@@ -493,7 +496,7 @@ def test_nothing_ready_says_so(goal, capsys):
 
 def test_the_advisories_are_chips_not_a_line_on_every_row():
     page = B.PAGE
-    assert "d untouched</span>" in page and ">delegable</span>" in page
+    assert "untouched ${" in page and " days</span>" in page and ">delegable</span>" in page
     for dead in ("qstale", "qnodeleg", "qdeleg"):
         assert dead not in page, f"dead rule {dead} left behind"
 
@@ -531,7 +534,7 @@ def test_the_legend_explains_the_chips_once():
     """Rather than every row explaining itself."""
     page = B.PAGE
     assert "Hover a chip for the fact behind it." in page
-    assert "<b>delegable</b>" in page and "<b>Nd untouched</b>" in page
+    assert "<b>delegable</b>" in page and "<b>untouched N days</b>" in page
 
 
 # ── `take <id>`: the dispatched item must be takeable ────────────────────

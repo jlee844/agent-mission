@@ -165,9 +165,17 @@ def check(sid: str, base=None) -> list[str]:
             # whole question it is waiting on.
             who = (f" by {last.claimed_by[:8]}"
                    if getattr(last, "claimed_by", "") else "")
-            lines.append(
-                f"[{last.id}] on {m.title} is claimed finished{who}: "
-                f"“{title}”{more} — the board shows whether the disk agrees")
+            if getattr(m, "verifier", "") and m.verifier == sid:
+                # C20, one verifier per project: the goal's registered
+                # verifier is ASKED, everyone else is told. Instead of the
+                # generic line, not beside it -- two lines about one claim.
+                lines.append(
+                    f"[{last.id}] on {m.title} needs your check{more} — you "
+                    f"are this goal's verifier: `mission verify --on {mid}`")
+            else:
+                lines.append(
+                    f"[{last.id}] on {m.title} is claimed finished{who}: "
+                    f"“{title}”{more} — the board shows whether the disk agrees")
 
         # THE ACCEPT. Every other transition in this loop was announced and
         # this one was not, so the loop had a dead end: a session proposes,

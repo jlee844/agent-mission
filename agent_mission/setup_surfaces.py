@@ -55,7 +55,7 @@ SIGNAL_CMD = "mission signal 2>/dev/null || true"
 # PATH, no absolute paths, any cwd.
 CLAIMS_CMD = "mission claims 2>/dev/null || true"
 SURFACES = ("slash command", "deny rules", "statusline",
-            "re-anchor hook", "attention hook", "claim hook")
+            "re-anchor hook", "attention hook", "claim hook", "pane")
 
 # Opt-in surfaces. Not in SURFACES because `mission setup` must never install
 # them unasked: one starts a server from your shell rc, the other pops OS
@@ -136,6 +136,28 @@ def _template() -> Path:
     return Path(__file__).resolve().parent.parent / "commands" / "mission.md"
 
 
+def pane_dir() -> Path:
+    """The pane mod, shipped with the tool -- ONE copy every session loads.
+
+    It used to live in a session-scoped dev folder, so only the session that
+    wrote it ever loaded it.
+
+    ⚠️ It lives INSIDE the package, as package data, unlike `_template`. A
+    `pip install` carries only the package, so a pane beside it at the repo
+    root would not exist after install -- and `setup` would then write a dead
+    path into the person's settings: a broken install that reports success.
+    """
+    return Path(__file__).resolve().parent / "pane"
+
+
+PLUGIN_DIRS = "CLAUDE_CODE_PLUGIN_DIRS"
+
+
+def _plugin_dirs(data: dict) -> list[str]:
+    raw = (data.get("env") or {}).get(PLUGIN_DIRS, "")
+    return [d for d in str(raw).split(os.pathsep) if d]
+
+
 def status(settings: str | None = None, dest: str | None = None) -> list[dict]:
     """Each surface: installed or not, and what is there now."""
     sp, cd = settings_path(settings), commands_dir(dest)
@@ -180,6 +202,9 @@ def status(settings: str | None = None, dest: str | None = None) -> list[dict]:
          "ok": "mission claims" in json.dumps(
              data.get("hooks", {}).get("Stop", [])),
          "detail": "Stop — speaks only when a claim and the disk disagree"},
+        {"name": "pane",
+         "ok": str(pane_dir()) in _plugin_dirs(data),
+         "detail": f"env.{PLUGIN_DIRS} — the mission pane, in every session"},
         {"name": "auto-board", "opt_in": True,
          "ok": rc_path().exists() and RC_MARK in rc_path().read_text(
              encoding="utf-8", errors="replace"),
@@ -255,6 +280,12 @@ def plan(name: str, settings: str | None = None,
             return {"changes": [], "why": "already current"}
         return {"changes": [f"hooks.Stop += {CLAIMS_CMD} "
                             f"(keeping your {len(stops)})"], "why": ""}
+    if name == "pane":
+        have = _plugin_dirs(data)
+        if str(pane_dir()) in have:
+            return {"changes": [], "why": "already current"}
+        return {"changes": [f"env.{PLUGIN_DIRS} += {pane_dir()} "
+                            f"(keeping your {len(have)})"], "why": ""}
     if name == "board bookmark":
         f = home() / "board.html"
         return ({"changes": [], "why": "already current"} if f.exists()
@@ -338,6 +369,13 @@ def install(name: str, settings: str | None = None,
         data.setdefault("hooks", {}).setdefault("UserPromptSubmit", []).append(
             {"hooks": [{"type": "command", "command": SIGNAL_CMD,
                         "timeout": 5}]})
+    elif name == "pane":
+        # ⚠️ APPEND, never replace: this variable is shared with every other
+        # plugin folder the person names, and overwriting it would silently
+        # unload their plugins -- a far worse failure than not loading ours.
+        env = data.setdefault("env", {})
+        have = _plugin_dirs(data)
+        env[PLUGIN_DIRS] = os.pathsep.join(have + [str(pane_dir())])
     elif name == "claim hook":
         data.setdefault("hooks", {}).setdefault("Stop", []).append(
             {"hooks": [{"type": "command", "command": CLAIMS_CMD,

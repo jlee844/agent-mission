@@ -130,3 +130,52 @@ def test_an_ordinary_agent_write_is_refused_not_merely_marked(store):
     assert out.returncode == 1
     assert "refusing" in out.stdout
     assert not [e for e in _events(store, "demo") if e.get("kind") == "set"]
+
+
+def _run_bypass_forking(home: Path, text: str) -> None:
+    """The same attack with ONE more character: the writer run as a CHILD.
+
+    Measured 2026-10-11 by a second reader: `sh -c "writer"` execs, so the
+    writer still leads the session and was stamped -- but `sh -c "writer;
+    true"` makes sh FORK, the writer becomes sh's child, sid != pid, and
+    `own_session_leader()` never fired. An unstamped write that reads as a
+    person's. ⚠️ A fixer re-running the reviewer's literal `sh -c "writer"`
+    gets a FALSE PASS; only the forking form proves anything, so it is the
+    form used here.
+    """
+    script = home.parent / "bypass_fork.py"
+    writer = (f"{sys.executable} -m agent_mission set objective "
+              f"{text!r} --on demo; true")
+    script.write_text(textwrap.dedent(f"""
+        import pty, sys, time
+        time.sleep(1.5)
+        pty.spawn(["/bin/sh", "-c", {writer!r}])
+    """))
+    cmd = (f"( env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID "
+           f"-u CLAUDE_CODE_ENTRYPOINT "
+           f"{sys.executable} {script} </dev/null >/dev/null 2>&1 & )")
+    env = dict(os.environ, AGENT_MISSION_HOME=str(home),
+               PYTHONPATH=str(ROOT))
+    subprocess.run(["/bin/sh", "-c", cmd], env=env, cwd=str(ROOT),
+                   timeout=30, check=False)
+    for _ in range(80):
+        time.sleep(0.25)
+        if any(e.get("kind") == "set" for e in _events(home, "demo")):
+            return
+
+
+def test_the_forking_bypass_is_marked_too(store):
+    """The stamp must be a property of the SESSION, not of where the writer
+    happens to sit in it."""
+    _run_bypass_forking(store, "rewritten by the forking bypass")
+    sets = [e for e in _events(store, "demo") if e.get("kind") == "set"]
+    assert sets, ("the forking bypass did not complete, so this proved "
+                  "nothing -- find out why rather than skipping it")
+    ev = sets[-1]
+    assert ev.get("tty"), "it took a pty"
+    assert ev.get("session_leader") is not True, (
+        "precondition: in the forking form the WRITER does not lead the "
+        "session -- if this fails the test is not exercising the bypass")
+    assert ev.get("tty_without_shell") is True, (
+        "the forking form went through UNMARKED: the leader of this session "
+        "is `sh -c`, not a person's shell, and nothing said so")

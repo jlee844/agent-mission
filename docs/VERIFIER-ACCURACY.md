@@ -1,3 +1,90 @@
+# How often is the claim verifier right?
+
+*Measured 2026-10-26. This replaces a first attempt, retracted on 2026-10-11
+and kept unedited at the bottom of this file as the record of what went
+wrong. This study was built to the standard that retraction set: a blind set
+of about forty claims, labelled without seeing the verdict, with git-log
+timing, and the claims that cite nothing checkable kept in the denominator.*
+
+## The short answer
+
+The verifier answers a narrower question than "was the work done". It answers
+"did a file the claim names change after the work was agreed". Measured
+against what was actually done:
+
+| | claims | rate | 95% CI |
+|---|---|---|---|
+| verdict agrees with the work | 27 of 40 | 68% | 52–80% |
+| **when it says *backed*, the work was done** | 23 of 27 | **85%** | 68–94% |
+| when it says *not backed*, the work was done anyway | 9 of 13 | 69% | 42–87% |
+
+Read it as two different instruments:
+
+- **"Backed" is a good signal.** In 23 of 27 cases the work was done. All four
+  misses were work that was *partly* done — a named file changed, but the task
+  was not finished. It never called work backed that was not done at all.
+- **"Not backed" is a weak signal about the work** and a strong one about the
+  *claim*. Of the 13 claims it did not back, 9 described work that was done.
+  Six of those nine cited no checkable file at all, so what "not backed"
+  mostly detects is a badly-cited claim, not missing work.
+
+Neither verdict can see partial work. A changed file says something
+happened, not that all of it did.
+
+## Method
+
+- **Sample.** 40 of the 225 `claims_done` events in the maintainer's store,
+  drawn uniformly with a fixed seed (`20261026`) so it can be redrawn. The
+  225 come from the five real goals that hold any claims; the draw landed in
+  four of them (the fifth holds 6 claims and drew none). Six goals left behind
+  by an old test leak were excluded. The
+  claims that name no checkable file are included: 10 of the 40.
+- **Ground truth, blind.** A separate agent with no part in this code labelled
+  each claim `done`, `partly`, `not_done` or `cannot_tell`, from git history
+  (with `--since`/`--until` taken from the claim's own timestamps) and the
+  files on disk, judged against the TASK rather than the claim's wording. It
+  was given no verdicts, told not to read or run the verifier, and not shown
+  the retracted study. It labelled 32 done, 7 partly, 1 not done, 0 cannot
+  tell, each with a cited commit or file.
+- **Then the verdicts.** `verdict_for` was run on each claim only after the
+  labels were written. `backed` means verdict `ok`; everything else —
+  `stale`, `unbacked`, `uncheckable`, `too_broad`, `unchecked` — is
+  *not backed*. `partly` counts as not fully done.
+
+## The full table
+
+| verdict \ truth | done | partly | not done |
+|---|---|---|---|
+| ok (backed) | 23 | 4 | 0 |
+| stale | 2 | 0 | 0 |
+| unbacked | 1 | 0 | 0 |
+| unchecked (cites no file) | 6 | 3 | 1 |
+
+The one claim that was not done at all — a feature claimed for three web
+files and actually built only for the backend and mobile app — cited no
+checkable file, so the verifier said nothing either way. The two `stale`
+verdicts were finished work whose named file had not changed after the item
+was agreed.
+
+## What this does not show
+
+- **One labeller, of the same model family as the verifier.** Independent of
+  the verifier's code and of this author's reasoning, but not a person. A
+  human-labelled set would be stronger.
+- **n = 40.** The intervals above are wide; quote the interval, not the point.
+- **Today's verifier on historical claims.** Files have changed since many of
+  these claims were made, so some verdicts here differ from what the verifier
+  would have said at the time. Claims are now stamped with their verdict when
+  they are made (`mission claims --report`), so a future study can measure
+  the verdict as it was.
+- **Some labels are low confidence**, where the task never said exactly what
+  "done" meant or the evidence was a deploy that cannot be re-checked from
+  disk. They are counted as labelled.
+
+---
+
+## The retracted first attempt, kept as the record
+
 > # ⚠️ RETRACTED 2026-10-11 — DO NOT QUOTE THESE NUMBERS
 >
 > A second reader checked this document the day it was written and found

@@ -15,7 +15,7 @@ from pathlib import Path
 from .actions import Session, Unauthorised, apply as apply_action
 from .health import collisions, inspect as inspect_health
 from .session import PROJECTS, activity, live, short_id, transcript_for
-from .store import LEASE_TTL, MissionStore, root_for
+from .store import LEASE_TTL, MissionStore, root_for, label_of
 
 
 def _slug(cwd: str) -> str:
@@ -91,6 +91,7 @@ def _tree(m) -> list[dict]:
                 "hid": hidden or done,
                 "hue": h,
                 "cd": cd,
+                "nh": (getattr(n.item, "needs_human_note", "") or "")[:200],
             })
             out.extend(walk(n.children, depth + 1, (*guides, not last),
                             hidden or done, h))
@@ -175,7 +176,17 @@ def _queue_rows(m, mid: str) -> dict:
         if lane == "done":
             continue
         out[lane] = [{
-            "id": i.id, "text": i.text[:160], "goal": mid,
+            # The WHOLE text. It was `i.text[:160]`, so the board never had
+            # the rest and no amount of UI could show it. Display is clamped
+            # in CSS and a tap expands it -- truncation belongs at the
+            # surface, which knows its width, never in the payload.
+            "id": i.id, "text": i.text, "goal": mid,
+            # ONE label rule, computed here and consumed by every surface.
+            # The pane used to derive its own (cut at " — " then ". ", 68
+            # chars) while the CLI cut at a different delimiter set and 52 --
+            # two copies of one rule, already diverged on the day the second
+            # was written.
+            "label": label_of(i),
             "goal_title": m.title,
             "rework": (i.rework or "")[:200],
             "rework_by": short_id(i.rework_by) if i.rework_by else "",
@@ -194,6 +205,11 @@ def _queue_rows(m, mid: str) -> dict:
             # verdict so the page can never print one as the other.
             "checked_note": (i.checked_note or "")[:200],
             "checked_by": short_id(i.checked_by) if i.checked_by else "",
+            # C20's third verdict. Shown where the human decides, or a
+            # verifier's "I can't tell" is recorded and seen by nobody.
+            "needs_human_note": (getattr(i, "needs_human_note", "") or "")[:200],
+            "needs_human_by": (short_id(i.needs_human_by)
+                               if getattr(i, "needs_human_by", "") else ""),
             # C19: could a FRESH instance be handed this one? Mechanical,
             # from the fields above -- never a reading of the text. The
             # negative case is the useful one, so the fact travels with the
@@ -253,6 +269,7 @@ def mission_rows() -> list[dict]:
                 "title": mid, "objective": "", "named": False,
                 "criteria": [], "constraints": [], "non_goals": [],
                 "tree": [], "done": 0, "total": 0, "pending_accept": 0,
+                "pending_confirm": 0,
                 "sessions": [], "procs": 0, "ended": True,
                 "has_mission": True,
                 "calls": 0, "files": 0, "tests": 0, "failures": 0,
@@ -310,6 +327,10 @@ def mission_rows() -> list[dict]:
             "non_goals": m.non_goals, "tree": _tree(m),
             "done": m.done_count, "total": m.total_count,
             "pending_accept": len(m.unaccepted),
+            "verifier": short_id(m.verifier) if getattr(m, "verifier", "") else "",
+            # Claims awaiting YOUR confirm. Named separately from "review",
+            # which is a verifier finding -- different question, different fix.
+            "pending_confirm": len(m.suggested),
             "sessions": sess, "procs": sum(1 for x in sess if x["live"]),
             # Ended only when every session REPORTED and none is live. One
             # unknown and the goal is not called ended -- dimming a card on
@@ -358,7 +379,7 @@ def snapshot() -> list[dict]:
         for r in rows:
             r["review"] = per.get(r["full"], [])
             r["state"] = _state(r, now)
-            r["needs_you"] = r["state"] in ("waiting", "nomission", "review")
+            r["needs_you"] = _needs_you(r)
         order = {"review": 0, "waiting": 1, "nomission": 2, "working": 3,
                  "idle": 4, "ended": 5}
         # Live work outranks a finished goal, whatever is pending on it. A
@@ -428,6 +449,7 @@ def _session_snapshot() -> list[dict]:
                 "done": m.done_count if m else 0,
                 "total": m.total_count if m else 0,
                 "pending_accept": len(m.unaccepted) if m else 0,
+                "pending_confirm": len(m.suggested) if m else 0,
                 "calls": a.calls, "files": len(a.files), "tests": a.tests,
                 "failures": a.failures, "asks": a.last_asks,
                 "topfiles": [{"f": k, "n": v} for k, v in list(a.files.items())[:8]],
@@ -510,7 +532,7 @@ def _session_snapshot() -> list[dict]:
     for r in rows:
         r["review"] = per.get(r["full"], [])
         r["state"] = _state(r, now)
-        r["needs_you"] = r["state"] in ("waiting", "nomission")
+        r["needs_you"] = _needs_you(r)
     # Sorted by who needs you, not by what you touched last: a session with
     # proposals waiting outranks one that is merely more recent.
     order = {"review": 0, "waiting": 1, "nomission": 2, "working": 3,
@@ -527,6 +549,25 @@ IDLE_AFTER = 15 * 60          # no transcript write for this long = parked
 # refresh would re-scan every transcript ever written, which is why the scan
 # was live-only before liveness became reportable.
 SCAN_WINDOW = 24 * 3600
+
+
+def _needs_you(r: dict) -> bool:
+    """Is this goal waiting on the human? ONE definition, two callers.
+
+    ⚠️ This used to be computed twice with different sets -- `snapshot`
+    included "review", `_session_snapshot` did not -- so the same goal needed
+    attention in one surface and not the other. Two copies of one rule, and
+    the copy nobody re-read was the wrong one.
+
+    ⚠️ And BOTH were incomplete: a claim awaiting the human's confirm left
+    this False, because `review` means a verifier FINDING, which is a
+    different thing. Measured 2026-10-25: a goal with one claims_done and
+    nothing else read state='working', needs_you=False. Confirming a claim is
+    the human's job and the only writer of `done`, so it is exactly what this
+    has to report.
+    """
+    return bool(r["state"] in ("waiting", "nomission", "review")
+                or r.get("pending_confirm"))
 
 
 def _state(r: dict, now: float) -> str:
@@ -631,7 +672,11 @@ text-decoration-color:var(--rule);text-decoration-thickness:1px}
    Unclamped, one item owns the card and the plan under it is pushed off the
    screen. Three lines, full text on hover. */
 .chk .txt{flex:1;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
-overflow:hidden}
+overflow:hidden;cursor:pointer}
+/* Tap to read it all. Hover alone was the only way in, which is invisible
+   until found and does not exist on a touch screen. The clamp stays the
+   default for the reason above; this is the way past it. */
+.chk .txt.open,#work .qtext.open{display:block;-webkit-line-clamp:unset;overflow:visible}
 .chk .roll{flex:none;font-family:var(--mono);font-size:.68rem;color:var(--mut);
 padding-left:.6rem;display:flex;align-items:center;gap:.4rem}
 .chk .mini{width:2.4rem;height:3px;background:var(--soft);border-radius:2px;overflow:hidden}
@@ -753,7 +798,8 @@ padding:.5rem .7rem;border-bottom:1px solid var(--rule)}
 #work .qid{font-family:var(--mono);font-size:.72rem;color:var(--mut);
 min-width:4.6rem}
 #work .qbody{flex:1;min-width:0}
-#work .qtext{font-size:.84rem}
+#work .qtext{font-size:.84rem;display:-webkit-box;-webkit-line-clamp:3;
+-webkit-box-orient:vertical;overflow:hidden;cursor:pointer}
 #work .qgoal{color:var(--mut);font-size:.72rem;margin-left:.4rem}
 #work .qmeta{color:var(--mut);font-size:.73rem;margin-top:.1rem}
 /* Deliberately NOT coloured. The mockup for this drew rework in red; this
@@ -810,6 +856,11 @@ font-size:.87rem;border-bottom:1px solid var(--soft)}
 #inbox li.prop .box{color:var(--bad)}
 #inbox li .txt{flex:1}
 #inbox li .act{opacity:1}
+/* Always visible, as in the inbox: these are the rows waiting on you, and
+   `.act` is opacity:0 until hovered -- clickable but invisible, and on a
+   touch screen, never shown at all. */
+#work .qrow .act{opacity:1;margin-left:0}
+#work .qacts{display:flex;gap:.35rem;flex:none;align-items:flex-start}
 #inbox .verdict{color:var(--mut);font-size:.74rem;margin-top:.12rem}
 #inbox .none{color:var(--mut);padding:2rem 0}
 /* The keyboard cursor. A left rule rather than a background, because a filled
@@ -819,10 +870,26 @@ font-size:.87rem;border-bottom:1px solid var(--soft)}
 padding-left:.45rem;margin-left:-.57rem}
 #inbox .keys{color:var(--mut);font-size:.72rem;margin:.1rem 0 1rem}
 .chips{display:flex;gap:.3rem}
+/* An author `display` rule beats the `hidden` attribute, so without this
+   `.chips{display:flex}` kept the goals-only filter row visible in every view
+   -- where it lit up and changed the counter while filtering nothing. It broke
+   the `▸ more` control the same way. */
+[hidden]{display:none!important}
 .chip{font-family:var(--mono);font-size:.66rem;letter-spacing:.04em;padding:.26rem .55rem;
 border-radius:3px;border:1px solid var(--rule);background:var(--card);color:var(--mut);
 cursor:pointer}
 .chip[aria-pressed=true]{background:var(--ok);border-color:var(--ok);color:var(--bg)}
+/* R8: the three VIEWS are one segmented control, so they stop looking like
+   the filters beside them -- tabs, filters, a toggle and a debug button were
+   one identical chip, and nothing said which row picked the page. Kept as
+   .chip so every `.chip[data-v]` selector still finds them. */
+.tabs{gap:0;border:1px solid var(--rule);border-radius:4px;overflow:hidden}
+.tabs .chip{border:0;border-radius:0;background:none;padding:.3rem .75rem}
+.tabs .chip+.chip{border-left:1px solid var(--rule)}
+.tabs .chip[aria-pressed=true]{background:var(--ok);color:var(--bg)}
+.linkish{background:none;border:0;padding:0;font-family:var(--mono);font-size:.62rem;
+color:var(--mut);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.linkish:hover{color:var(--ink)}
 .kids{margin-top:.75rem;padding-top:.6rem;border-top:1px solid var(--soft)}
 .kid{display:flex;gap:.5rem;align-items:baseline;font-size:.8rem;padding:.14rem 0}
 .kid .kn{font-family:var(--mono);font-size:.66rem;color:var(--mut);flex:none}
@@ -936,6 +1003,25 @@ cursor:copy;overflow-x:auto;white-space:nowrap}
 padding:.3rem .55rem .45rem;margin:.5rem 0 .6rem}
 .asks h3{margin:.15rem 0 .1rem;color:var(--bad)}
 .asks .chk{max-height:11rem}
+/* A list you opened a row in grows to fit it. The caps above keep one card
+   from owning the screen, which is right for scanning -- but expanding a row
+   inside an 11rem list turned it into a little scroll box that cut off the
+   NEXT row mid-line, which is worse than the clamp it replaced. :has() takes
+   its argument's specificity, so this outranks every cap above. */
+.chk:has(.txt.open){max-height:none}
+/* ▸ more / ▾ less -- the SAME control as the "▸ N finished" fold above, so a
+   long row expands the way the rest of the board already does. Shown only on
+   a row that is actually cut off: a "more" that expands nothing is a control
+   that lies, and clipping depends on width, so markClipped() measures it
+   after every draw. */
+.chk .txtw{flex:1;min-width:0}
+.more{display:block;font-family:var(--mono);font-size:.66rem;letter-spacing:.06em;
+text-transform:uppercase;color:var(--mut);background:none;border:0;cursor:pointer;
+padding:.15rem 0 0;-webkit-user-select:none;user-select:none}
+.more::before{content:"▸ ";font-size:.7rem}
+.more[aria-expanded="true"]::before{content:"▾ "}
+.more:hover{color:var(--ink)}
+.more[hidden]{display:none}
 .st{display:flex;align-items:center;gap:.4rem}
 /* No border tint for "waiting". On a real board five of six sessions had
    proposals outstanding, so every card lit up and the accent meant nothing
@@ -957,20 +1043,20 @@ flex:none;width:9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 <header>
   <h1>Missions</h1>
   <input id=q type=search placeholder="filter by goal, task, folder…" autocomplete=off>
-  <div class=chips>
+  <div class="chips tabs">
     <button class=chip data-v=work aria-pressed=true>work</button>
-    <button class=chip data-v=inbox aria-pressed=false>inbox</button>
+    <button class=chip data-v=inbox aria-pressed=false>inbox<span id=inboxn></span></button>
     <button class=chip data-v=goals aria-pressed=false>goals</button>
   </div>
   <div class=chips id=fchips hidden>
     <button class=chip data-f=all aria-pressed=true>all</button>
-    <button class=chip data-f=live aria-pressed=false>live</button>
+    <button class=chip data-f=live aria-pressed=false>active</button>
     <button class=chip data-f=todo aria-pressed=false>needs you</button>
     <button class=chip data-f=ended aria-pressed=false>ended</button>
+    <button class=chip id=dense aria-pressed=false>compact</button>
   </div>
   <span class=spacer></span>
-  <button class=chip id=dense aria-pressed=false>compact</button>
-  <button class=chip id=report aria-pressed=false title="collect what just went wrong, for pasting to Claude">report</button>
+  <button class=linkish id=report aria-pressed=false title="collect what just went wrong, for pasting to Claude">report a problem</button>
   <span id=age></span>
 </header>
 <div id=strip></div>
@@ -1020,6 +1106,7 @@ function row(i,flat,sid){
   const cdline = cd? `<div class=verdict>agent says done — ${
       cd.ok? `named file${cd.backed>1?'s':''} exist${cd.backed>1?'':'s'}, changed since accepted (${cd.backed})`
        : cd.unbacked.length? `${cd.unbacked.length} claim${cd.unbacked.length>1?'s':''} NOT backed: ${esc(cd.unbacked[0].split('/').slice(-2).join('/'))}`
+       : (cd.uncheckable&&cd.uncheckable.length)? `outside this goal's folder, not evidence: ${esc(cd.uncheckable[0].split('/').slice(-2).join('/'))}`
        : (cd.stale&&cd.stale.length)? `exists, UNTOUCHED since you accepted: ${esc(cd.stale[0].split('/').slice(-2).join('/'))}`
        : `nothing checkable in the claim`}</div>` : '';
   return `<li style="${hu}" class="${i.branch?'branch':''} ${
@@ -1027,7 +1114,8 @@ function row(i,flat,sid){
       ${cd&&cd.ok?`data-backed="${i.id}"`:''} data-i="${i.id}">
     ${guides}${elbow}
     <span class=box>${i.done?'▪':(cd?'◦':(i.ok?'▫':'+'))}</span>
-    <span class=txt title="${esc(i.t)}">${esc(i.t)}${cdline}</span>
+    <span class=txtw><span class="txt${OPEN.has(i.id)?' open':''}" data-x="${i.id}">${esc(i.t)}${cdline}${
+      i.nh? `<div class=verdict>the verifier could not decide — your call: ${esc(i.nh)}</div>` : ''}</span>${moreBtn(i.id)}</span>
     ${i.roll?`<span class=roll><span class=mini><i style="width:${i.pct}%"></i></span>${i.roll}</span>`:''}
     ${(WRITABLE && CODE() && !i.done)?
        (!i.ok? `<button class="act ok" data-do=accept data-s="${sid}" data-i="${i.id}">accept</button>`
@@ -1172,6 +1260,10 @@ let FILTER='all', QUERY='', VIEW='work';
 // nowhere else. Rework is urgent for a WORKER, not for the human, so it is
 // red -- painting it amber would put it in competition with the only signal
 // that means "nothing moves until you click".
+// goal id -> the `session` the write endpoint expects. For every goal today
+// they are the same string; mapped rather than assumed, because a legacy
+// session-keyed mission can differ.
+let GOALFULL = {};
 function laneRow(r, kind, withGoal){
   // Inside a goal group the heading already said it; printing it again on
   // every row is what made 120 rows read as a wall.
@@ -1190,6 +1282,10 @@ function laneRow(r, kind, withGoal){
     // Two lines, never merged. The disk's verdict is evidence; a second
     // session's read is an opinion, and the word "opinion" is on screen
     // because the verifier is the same model reading the same disk.
+    if (r.needs_human_note){
+      note += `<div class=qopinion>the verifier${r.needs_human_by? ' ('+esc(r.needs_human_by)+')':''}
+               could not decide — your call: ${esc(r.needs_human_note)}</div>`;
+    }
     if (r.checked_by){
       note += `<div class=qopinion>a second session (${esc(r.checked_by)})
                agrees — opinion, not evidence: ${esc(r.checked_note)}</div>`;
@@ -1214,27 +1310,54 @@ function laneRow(r, kind, withGoal){
     if (r.untouched_days) chips.push(`<span class=qchip
       title="agreed ${r.untouched_days} days ago and never taken, claimed or
              handed back — on this board that has usually meant it is already
-             built. mission audit briefs a session to check.">${
-      r.untouched_days}d untouched</span>`);
+             built. mission audit briefs a session to check.">untouched ${
+      r.untouched_days} days</span>`);
     if (r.delegable) chips.push(`<span class=qchip
       title="${esc(r.delegable_fact || '')}">delegable</span>`);
     if (!chips.length) chips.push(`<span class=qchip>fresh</span>`);
   } else if (kind === 'progress'){
     chips.push('<span class=qchip>held</span>');
   }
+  // The SAME buttons the inbox has, on the two waiting lanes only. The work
+  // view leads with what is waiting on you, and it used to show those rows
+  // with no way to act on them. Ready rows stay read-only: sessions take
+  // those, and a button there would invite ticking work nobody claimed.
+  const acts = (() => {
+    if (!(WRITABLE && CODE())) return '';
+    const sid = esc(GOALFULL[r.goal] || r.goal), id = esc(r.id);
+    if (kind === 'waiting')
+      return `<button class="act ok" data-do=accept data-s="${sid}" data-i="${id}">accept</button>`
+           + `<button class="act warn" data-do=decline data-s="${sid}" data-i="${id}">decline</button>`;
+    if (kind === 'review')
+      return `<button class=act data-do=done data-s="${sid}" data-i="${id}">confirm</button>`;
+    return '';
+  })();
   const chip = chips.join('');
   return `<li class=qrow><code class=qid>${esc(r.id)}</code>
-    <div class=qbody><div class=qtext>${esc(r.text)} ${goal}</div>${note}</div>
-    ${chip}</li>`;
+    <div class=qbody><div class="qtext${OPEN.has(r.id)?' open':''}" data-x="${r.id}">${esc(r.text)} ${goal}</div>${moreBtn(r.id)}${note}</div>
+    ${acts? `<div class=qacts>${acts}</div>` : ''}${chip}</li>`;
 }
 
 function renderWork(all){
+  GOALFULL = Object.fromEntries(all.map(s => [s.id, s.full || s.id]));
   const box = document.getElementById('work');
   const goals = all.filter(s => s.has_mission && !s.damaged);
   const lanes = {ready:[], progress:[], review:[], waiting:[]};
   for (const g of goals){
     const q = g.queue || {};
     for (const k of Object.keys(lanes)) (q[k] || []).forEach(r => lanes[k].push(r));
+  }
+  // R6: search narrows the work queue too. It only ever filtered the goals
+  // grid, so the view you would search for a half-remembered task ignored it.
+  // The stats line describes the WHOLE board, so it is counted before the
+  // search narrows the lanes -- otherwise "4 waiting on you" (everything)
+  // sat beside "0 ready" (only what matched), two scales in one line.
+  const all_n = Object.fromEntries(Object.keys(lanes).map(k => [k, lanes[k].length]));
+  const all_stale = lanes.ready.filter(r => r.untouched_days).length;
+  if (QUERY){
+    const hit = r => [r.text, r.label, r.id, r.goal_title, r.goal]
+                       .join(' ').toLowerCase().includes(QUERY);
+    for (const k of Object.keys(lanes)) lanes[k] = lanes[k].filter(hit);
   }
   const n = k => lanes[k].length;
   const sessions = goals.reduce((t,g) => t + (g.procs||0), 0);
@@ -1301,26 +1424,31 @@ function laneGroups(k, rows){
 
   box.innerHTML = `
     <div class=qstats>
-      <span><b>${n('ready')}</b> ready to pick up</span>
-      <span><b>${n('progress')}</b> in progress</span>
-      <span><b>${n('review')}</b> in review</span>
-      <span class=warn><b>${n('waiting')}</b> waiting on you</span>
-      ${stale? `<span class=warn><b>${stale}</b> may be done already</span>`:''}
+      <span class=warn><b>${waitingOn(all).total}</b> waiting on you</span>
+      <span><b>${all_n.progress}</b> in progress</span>
+      <span><b>${all_n.ready}</b> ready to pick up${
+        all_stale? ` <span class=qgstale>· ${all_stale} may be done already</span>`:''}</span>
       <span class=qsess>${sessions} session(s) live</span>
     </div>
     ${bar}
+    ${QUERY? `<p class=qsub>showing items matching “${esc(QUERY)}”</p>` : ''}
+    ${lane('waiting','waiting for your accept',
+           'proposals — nothing here moves until you accept it')}
+    ${lane('review','waiting for your confirm',
+           'a session says these are finished; ticking them done is yours')}
+    ${lane('progress','in progress')}
     ${lane('ready','ready to pick up',
            'accepted work that is not done — a session takes these with '
            + '<code>mission take</code>, no acceptance needed. '
-           + '<b>Nd untouched</b> = agreed that long ago and never taken, '
+           + '<b>untouched N days</b> = agreed that long ago and never taken, '
            + 'claimed or handed back, so it may already be built '
            + '(<code>mission audit</code>). <b>delegable</b> = names a file, '
            + 'so a session with no context could finish it and prove it. '
            + 'Hover a chip for the fact behind it.')}
-    ${lane('progress','in progress')}
-    ${lane('review','in review','a claim awaiting a check')}
-    ${lane('waiting','waiting on you','nothing here moves without a click')}
     ${(n('ready')||n('progress')||n('review')||n('waiting'))? ''
+      // With a search active, an empty view means "nothing matched" -- saying
+      // "nothing queued" there claimed 81 queued items did not exist.
+      : QUERY ? `<p class=qsub>Nothing matches “${esc(QUERY)}”.</p>`
       : '<p class=qsub>Nothing queued, nothing waiting.</p>'}`;
 }
 
@@ -1330,16 +1458,24 @@ function renderInbox(all){
   // archived goal before it reaches the page. A second clause referencing a
   // field the payload does not carry would READ like a filter and do nothing
   // -- the silent no-op this codebase has shipped twice before.
+  const qhit = t => !QUERY || String(t || '').toLowerCase().includes(QUERY);
   const goals = all.filter(s => s.has_mission)
                    .map(s => {
     const v = visible(s.tree || []);
-    return {s, ask: v.filter(i => !i.ok || i.cd), rev: s.review || []};
+    return {s, ask: v.filter(i => (!i.ok || i.cd) && qhit(i.t + ' ' + i.id)),
+            rev: (s.review || []).filter(f => qhit(f.what + ' ' + (f.detail || '')))};
   }).filter(g => g.ask.length || g.rev.length)
     .sort((a, b) => (b.s.mtime || 0) - (a.s.mtime || 0));
 
   const n = goals.reduce((t, g) => t + g.ask.length + g.rev.length, 0);
+  // R10: hint only keys that work here. a/c/x click the row's own buttons,
+  // which a board without a write code does not draw.
+  const keysHint = 'j/k move' + ((WRITABLE && CODE())
+    ? ' · a accept · c confirm · x decline' : '') + ' · o open goal';
   if (!n){
-    box.innerHTML = '<p class=none>Nothing is waiting on you.</p>';
+    box.innerHTML = QUERY
+      ? `<p class=none>Nothing waiting on you matches “${esc(QUERY)}”.</p>`
+      : '<p class=none>Nothing is waiting on you.</p>';
     return;
   }
   const html = goals.map(g => {
@@ -1351,7 +1487,7 @@ function renderInbox(all){
     const bulk = (can && nprop > 1)
       ? `<button class="act ok" data-do=acceptall data-s="${s.full}">accept all ${nprop}</button>` : '';
     return `<div class=gl><h3>${esc(s.title || s.id)}</h3>`
-      + `<span class=when>${ago(s.mtime)}</span>${bulk}</div><ul>`
+      + `<span class=when>${ago(s.mtime)}</span>${bulk}</div><ul data-goal="${esc(s.id)}">`
       + g.rev.map(f => `<li><span class=box>⚑</span><span class=txt>${esc(f.what)}`
           + `<div class=verdict>${esc(f.detail || '')}</div></span>`
           + (can ? `<button class=act data-ack="${esc(f.what)}" data-s="${s.full}">mark read</button>` : '')
@@ -1359,8 +1495,8 @@ function renderInbox(all){
       + g.ask.map(i => row(i, true, s.full)).join('')
       + `</ul>`;
   }).join('');
-  box.innerHTML = `<h2><b>${n}</b> waiting on you</h2>`
-    + `<p class=keys>j/k move · a accept · c confirm · x decline · o open goal</p>`
+  box.innerHTML = `<h2><b>${waitingOn(all).total}</b> waiting on you</h2>`
+    + `<p class=keys>${keysHint}${QUERY? ` · showing ${n} matching` : ''}</p>`
     + `<p class=sub>across ${goals.length} goal${goals.length > 1 ? 's' : ''},`
     + ` most recently active first</p>` + html;
 }
@@ -1380,6 +1516,17 @@ const haystack = s => [s.title, s.objective, s.cwd, s.id,
   ...(s.tree||[]).map(i=>i.t), ...(s.criteria||[]),
   ...(s.children||[]).map(k=>k.title)].join(' ').toLowerCase();
 
+// ONE definition of "waiting on you" for the whole page. There were three:
+// the server's `needs_you`, the work view's (proposals only, so a goal with a
+// claim awaiting confirm read "0 waiting on you"), and the inbox's own count.
+// Built from the fields the server sends, so the page and the CLI agree.
+const waitingOn = rows => rows.reduce((t, s) => {
+  t.accept  += s.pending_accept || 0;
+  t.confirm += s.pending_confirm || 0;
+  t.reread  += (s.review || []).length;
+  t.total    = t.accept + t.confirm + t.reread;
+  return t;
+}, {accept: 0, confirm: 0, reread: 0, total: 0});
 const passes = s =>
   (QUERY === '' || haystack(s).includes(QUERY)) &&
   (FILTER === 'all'
@@ -1388,10 +1535,10 @@ const passes = s =>
    // the board cannot speak for belongs where you will see it.
    || (FILTER === 'live'  && !s.ended)
    || (FILTER === 'ended' && s.ended)
-   // "needs you" is the only filter that is about YOUR attention rather than
-   // the session's state: proposals waiting, or no mission written at all.
-   || (FILTER === 'todo'  && (s.pending_accept > 0 || !s.has_mission
-                              || (s.review||[]).length)));
+   // "needs you" asks the SERVER, which counts claims awaiting your confirm.
+   // This predicate used to be a third copy of the rule that forgot them, and
+   // so hid exactly the goal that was waiting on you.
+   || (FILTER === 'todo'  && s.needs_you));
 
 async function tick(force){
   // The board restarts under this page routinely -- every upgrade, and every
@@ -1408,6 +1555,10 @@ async function tick(force){
   }
   const gone = document.getElementById('reconn'); if(gone) gone.remove();
   const all = payload.rows; WRITABLE = payload.writable;
+  // The count rides on the tab, so "is anything waiting on me?" costs no
+  // click from any view.
+  { const t = waitingOn(all).total;
+    document.getElementById('inboxn').textContent = t ? ` · ${t}` : ''; }
   if (payload.home){
     const w = document.getElementById('strip');
     w.className = ''; w.innerHTML =
@@ -1420,7 +1571,7 @@ async function tick(force){
   askForCode();
   const d = all.filter(passes);
   document.getElementById('age').textContent =
-    (d.length === all.length ? `${all.length} sessions` : `${d.length} of ${all.length}`)
+    (d.length === all.length ? `${all.length} goals` : `${d.length} of ${all.length} goals`)
     + ' · ' + new Date().toLocaleTimeString();
   // Exactly one empty state. "No live sessions" and "Nothing matches that"
   // are different facts and were rendering on top of each other.
@@ -1435,19 +1586,32 @@ async function tick(force){
   const bits = [];
   const rev = all.reduce((t,s)=>t + (s.review||[]).length, 0);
   if (rev) bits.push(`<span>⚑ <b>${rev}</b> need${rev>1?'':'s'} re-reading</span>`
-    + `<button class=go data-jump=todo>show</button>`);
-  if (n) bits.push(`<span><b>${n}</b> proposal${n>1?'s':''} awaiting you`
-    + ` in ${asks.length} session${asks.length>1?'s':''}</span>`
-    + `<button class=go data-jump=todo>show</button>`);
+    + `<button class=go data-jump=inbox>show</button>`);
+  // Proposals AND claims awaiting confirm, from the one definition. It used
+  // to count proposals only, "in N sessions" when it meant goals.
+  const w = waitingOn(all), wg = all.filter(s => s.needs_you && s.has_mission);
+  if (w.accept + w.confirm) bits.push(`<span><b>${w.accept + w.confirm}</b> waiting on you`
+    + ` — ${[w.accept ? `${w.accept} to accept` : '', w.confirm ? `${w.confirm} to confirm` : '']
+            .filter(Boolean).join(' · ')}`
+    + ` in ${wg.length} goal${wg.length>1?'s':''}</span>`
+    + `<button class=go data-jump=inbox>show</button>`);
   if (blank.length) bits.push(`<span><b>${blank.length}</b> session${
     blank.length>1?'s':''} with no mission</span>`
     + `<button class=go data-jump=todo>show</button>`);
+  // Running old code -- the tool changed since this board started. Not amber:
+  // amber means waiting on you, and this is housekeeping.
+  // Kept OUT of `bits`: any line there replaces "Nothing is waiting on you",
+  // and stale code says nothing about what is waiting.
+  const staleLine = payload.stale_code ? '<span><b>This board is running old code</b>'
+    + ` (started ${new Date(payload.stale_code.since*1000).toLocaleString()});`
+    + ' the tool has changed since. Run <code>mission board</code> in a terminal'
+    + ' to replace it.</span>' : '';
   if (!WRITABLE) bits.push('<span class=why>This board is read-only. Run'
     + ' <code>mission board</code> yourself in a terminal for a write code'
     + ' and buttons.</span>');
-  strip.className = bits.length? '' : 'clear';
-  strip.innerHTML = bits.length? bits.join('')
-    : '<span>Nothing is waiting on you.</span>';
+  strip.className = (bits.length || staleLine)? '' : 'clear';
+  strip.innerHTML = staleLine + (bits.length? bits.join('')
+    : '<span>Nothing is waiting on you.</span>');
   renderSetup();
   // The Inbox and the goal grid are two renderings of the same payload, so
   // the poll, the reconnect banner and the write path are shared and only the
@@ -1459,11 +1623,13 @@ async function tick(force){
   if (VIEW === 'work'){
     document.getElementById('empty').hidden = true;
     renderWork(all);
+    markClipped(document.getElementById('work'));
     return;
   }
   if (VIEW === 'inbox'){
     document.getElementById('empty').hidden = true;
     renderInbox(all);
+    markClipped(document.getElementById('inbox'));
     return;
   }
   // Re-rendering destroys the scroll position of every scrollable block
@@ -1473,7 +1639,7 @@ async function tick(force){
   // poll), and when it has, put every scrolled block back where it was.
   const g = document.getElementById('g');
   const html = d.length? d.map(s=>`
-   <div class="card ${s.ended?'ended':''} ${s.state}">
+   <div class="card ${s.ended?'ended':''} ${s.state}" data-card="${esc(s.id)}">
      <div class=rowline><span class="dot ${s.state}" title="${s.state}"></span>
        <span class=rid>${esc(s.id)}</span>
        <span class=rt>${esc(s.title||'no mission yet')}</span>
@@ -1564,6 +1730,7 @@ async function tick(force){
         s.collisions.map(f=>esc(f)).join(' · ')}</div>`:''}
      ${s.worst_repeat&&s.worst_repeat.sim>=0.999?`<div class=flagdet>a reply was repeated
         verbatim ${s.worst_repeat.gap} replies later</div>`:''}
+     ${s.verifier? `<p class=qsub>verifier: <code>${esc(s.verifier)}</code> — checks this goal's claims</p>` : ''}
      ${(s.sessions||[]).length?`<div class=kids><h3>Sessions on this goal</h3>${
         s.sessions.map(x=>`<div class=kid>
           <span class="dot ${x.liveness==='live'?'working':
@@ -1611,6 +1778,7 @@ async function tick(force){
   g.innerHTML = html;
   const chks = g.querySelectorAll('.chk');
   for (const [n, t] of scrolled) if (chks[n]) chks[n].scrollTop = t;
+  markClipped(g);
 }
 let LAST_HTML = '';
 let LAST_TOUCH = 0;
@@ -1703,10 +1871,70 @@ document.addEventListener('keydown', e => {
   if (k === 'a'){ hit('[data-do=accept]'); e.preventDefault(); }
   else if (k === 'c'){ hit('[data-do=done]'); e.preventDefault(); }
   else if (k === 'x'){ hit('[data-do=decline]'); e.preventDefault(); }
-  else if (k === 'o'){ hit('a.goal, [data-open]'); e.preventDefault(); }
+  // `o` was advertised -- and ticked done -- while nothing on the page
+  // matched `a.goal, [data-open]`. Opening a goal is navigation, not a write,
+  // so it acts directly instead of clicking a button the row would offer.
+  else if (k === 'o'){
+    const g = row.closest('[data-goal]');
+    if (g) openGoal(g.dataset.goal);
+    e.preventDefault();
+  }
 });
 
+// Switch to the goals view and bring one goal's card into view. The card
+// draws on the next tick, so look for it a few times rather than once.
+function openGoal(id){
+  document.querySelector('.chip[data-f=all]').click();      // no filter may hide it
+  document.querySelector('.chip[data-v=goals]').click();
+  let tries = 0;
+  const find = () => {
+    const c = document.querySelector(`#g [data-card="${CSS.escape(id)}"]`);
+    if (c){
+      c.scrollIntoView({behavior:'smooth', block:'center'});
+      c.classList.add('flash');
+      setTimeout(() => c.classList.remove('flash'), 1400);
+    } else if (++tries < 20) setTimeout(find, 100);
+  };
+  find();
+}
+
+// Rows the viewer has expanded. Module-level so the 4-second redraw does not
+// snap them shut -- a row that collapses while you read it is worse than one
+// that never opened. Per viewer, in this tab only.
+const OPEN = new Set();
+// Starts hidden; markClipped() reveals it only where the text is cut off.
+const moreBtn = id => `<button class=more data-x="${id}" aria-expanded="${
+  OPEN.has(id)}" hidden>${OPEN.has(id)?'less':'more'}</button>`;
+function markClipped(root){
+  if (!root) return;
+  root.querySelectorAll('.more[data-x]').forEach(m=>{
+    const t = m.parentElement.querySelector(`[data-x="${m.dataset.x}"]:not(.more)`);
+    if (!t) return;
+    // An open row always keeps its "less"; a closed one shows "more" only if
+    // the clamp is actually hiding something at this width.
+    m.hidden = !(t.classList.contains('open') || t.scrollHeight > t.clientHeight + 1);
+  });
+}
+function toggleOpen(id, scope){
+  if (OPEN.has(id)) OPEN.delete(id); else OPEN.add(id);
+  const on = OPEN.has(id);
+  scope.querySelectorAll(`[data-x="${id}"]`).forEach(el=>{
+    if (el.matches('.more')){
+      el.textContent = on ? 'less' : 'more';
+      el.setAttribute('aria-expanded', String(on));
+    } else el.classList.toggle('open', on);
+  });
+  markClipped(scope);
+}
+addEventListener('resize', ()=>requestAnimationFrame(()=>markClipped(document)));
 const onBoardClick = e=>{
+  const x = e.target.closest('[data-x]');
+  // The control, or the text itself -- but never a different button or link
+  // that happens to sit inside a row.
+  if (x && (x.matches('.more') || !e.target.closest('button, a, input, textarea'))){
+    toggleOpen(x.dataset.x, x.closest('li, .qbody') || x.parentElement);
+    return;
+  }
   const ar = e.target.closest('[data-arch]');
   if (ar){
     if (confirm('Archive this goal? It leaves the board. Nothing is deleted — '
@@ -1766,8 +1994,22 @@ const onBoardClick = e=>{
 };
 document.getElementById('g').addEventListener('click', onBoardClick);
 document.getElementById('inbox').addEventListener('click', onBoardClick);
+// The work view is where the board OPENS, and it had no listener at all, so
+// tap-to-expand did nothing there. It holds no action buttons, so the
+// handler's other branches find nothing to act on and fall through.
+document.getElementById('work').addEventListener('click', onBoardClick);
 document.getElementById('strip').addEventListener('click', e=>{
   const b = e.target.closest('[data-jump]'); if(!b) return;
+  // "show" used to filter the goals grid and scroll into it -- a grid that is
+  // HIDDEN in the work and inbox views, so it did nothing where the board
+  // opens. What waits on you is listed in the inbox; go there.
+  if (b.dataset.jump === 'inbox'){
+    document.querySelector('.chip[data-v=inbox]').click();
+    return;
+  }
+  // The rest (sessions with no mission) live in the goals grid: switch to it
+  // FIRST, or the filter below acts on a view you cannot see.
+  document.querySelector('.chip[data-v=goals]').click();
   // Filtering alone looked like nothing happened: when every card is already
   // waiting on you, "show" filtered three cards down to the same three. Take
   // the reader to the first one and mark it instead.
@@ -1825,6 +2067,9 @@ class _Cache:
         self.at = 0.0
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        # Bumped by every write. A background rebuild records it when it
+        # STARTS and keeps its rows only if no write landed meanwhile.
+        self.gen = 0
 
     def get(self) -> list[dict]:
         if not self.rows and not self.at:
@@ -1856,6 +2101,8 @@ class _Cache:
         old, which is this cache's standing contract, not a new compromise.
         A full refresh still runs, in the background, off the click.
         """
+        with self._lock:
+            self.gen += 1
         patched = self._patch(mid) if mid else False
         if not patched:
             # New mission, archived away, or an unknown id: fall back to the
@@ -1884,20 +2131,56 @@ class _Cache:
                     "constraints": m.constraints, "non_goals": m.non_goals,
                     "tree": _tree(m), "done": m.done_count,
                     "total": m.total_count, "pending_accept": len(m.unaccepted),
+                    # ⚠️ These three were missing, so after a click the work
+                    # view -- drawn from `queue` -- sat on the pre-write board
+                    # until the background refresh landed: 3.9s measured on
+                    # a decline. The goals view and inbox draw from `tree`,
+                    # which WAS patched, so they updated at once and the work
+                    # view alone looked dead. This patch is a second copy of
+                    # snapshot()'s row-building and it drifted; the same
+                    # helpers are called here so it cannot drift again.
+                    "queue": _queue_rows(m, mid),
+                    "pending_confirm": len(m.suggested),
+                    # True by construction -- the mission was just loaded --
+                    # and stated, because _state() reads it: a row missing it
+                    # raised KeyError, and the bare `except` below turned that
+                    # into a silent FULL rebuild, i.e. the 4s scan this patch
+                    # exists to keep off the click.
+                    "has_mission": True,
+                    "verifier": (short_id(m.verifier)
+                                 if getattr(m, "verifier", "") else ""),
                     "cwd": (m.cwd or "").replace(str(Path.home()), "~"),
                     "mtime": st.log.stat().st_mtime,
                 }}
+                # Derived from the fields above, exactly as snapshot() derives
+                # them. `review` (verifier findings) is left as it was: it is
+                # a 150ms cross-board scan, kept off the click on purpose, and
+                # refreshes with the background rebuild.
+                self.rows[i]["state"] = _state(self.rows[i], time.time())
+                self.rows[i]["needs_you"] = _needs_you(self.rows[i])
                 return True
         except Exception:
             return False                    # never fail a write over a redraw
         return False
 
     def _refresh(self) -> None:
+        gen = self.gen
         try:
             rows = snapshot()
         except Exception:
             return                        # keep the last good board
-        self.rows, self.at = rows, time.time()
+        with self._lock:
+            # ⚠️ A write landed while this rebuild was reading the store, so
+            # these rows predate it. Assigning them anyway -- as this did,
+            # unconditionally -- put the OLDER board back over the write's
+            # fresh patch: on the page, a click worked and then un-happened
+            # until the next poll. Forced in
+            # test_a_slow_background_refresh_cannot_undo_a_later_write.
+            # Discard, and let the next read start a fresh one.
+            if self.gen != gen:
+                self.at = 0.0
+                return
+            self.rows, self.at = rows, time.time()
 
 
 CACHE = _Cache()
@@ -1973,6 +2256,10 @@ class _H(BaseHTTPRequestHandler):
                 # `mission board` at a tty reads this to decide between "use
                 # the one that is up" and "replace it with a writable one".
                 "writes": bool(WRITES and WRITES.enabled),
+                # So `mission board` can tell a board that is merely running
+                # from one running OLD code, and replace the second.
+                "code": _STARTED["fp"], "started": _STARTED["at"],
+                "stale": _code_stale(),
             }).encode(), "application/json")
         if self.path.startswith("/api/setup"):
             # C10c: a read-only board serves NO setup route at all. Hiding the
@@ -1997,7 +2284,9 @@ class _H(BaseHTTPRequestHandler):
                        # board is otherwise indistinguishable from a board
                        # pointed somewhere else.
                        "home": None if home == str(Path.home() / ".agent-mission")
-                       else home}
+                       else home,
+                       "stale_code": ({"since": _STARTED["at"]}
+                                      if _code_stale() else None)}
             return self._send(200, json.dumps(payload).encode(),
                               "application/json")
         self._send(200, PAGE.encode(), "text/html; charset=utf-8")
@@ -2058,7 +2347,65 @@ def _isatty() -> bool:
         return False
 
 
+# ── is this board running the code on disk? ───────────────────────────────
+# Measured 2026-10-25: the board on 8976 had run for 17 days, so no board work
+# since was visible and reloading the page showed nothing new -- and nothing
+# said so. A long-lived server holds its code in memory; the disk moving on is
+# invisible from the page unless the server checks.
+_CODE_DIR = Path(__file__).resolve().parent
+_STARTED: dict = {"fp": None, "at": 0.0}
+_FP_MEMO: dict = {"stamp": None, "fp": None}
+
+
+def _code_fingerprint(directory: Path | None = None) -> str:
+    """A hash of the package's source. CONTENT, not mtime: a banner that fires
+    on a `touch` teaches you to ignore it."""
+    import hashlib
+    h = hashlib.sha256()
+    for f in sorted(Path(directory or _CODE_DIR).glob("*.py")):
+        h.update(f.name.encode()); h.update(b"\0"); h.update(f.read_bytes())
+    return h.hexdigest()[:16]
+
+
+def _current_fingerprint() -> str:
+    # Hashing on every 4s poll is cheap but pointless; re-hash only when the
+    # files' (mtime, count) stamp moves.
+    try:
+        files = list(_CODE_DIR.glob("*.py"))
+        stamp = (max(f.stat().st_mtime_ns for f in files), len(files))
+    except Exception:
+        return _STARTED["fp"] or ""
+    if stamp != _FP_MEMO["stamp"]:
+        _FP_MEMO["stamp"], _FP_MEMO["fp"] = stamp, _code_fingerprint()
+    return _FP_MEMO["fp"]
+
+
+def _code_stale() -> bool:
+    """True when this SERVING board's code differs from what is on disk.
+    False before serve() records anything: the CLI imports this module too,
+    and only a running board can be behind."""
+    if not _STARTED["fp"]:
+        return False
+    return _current_fingerprint() != _STARTED["fp"]
+
+
+def _replace_reason(ident: dict, restart: bool = False):
+    """Why `mission board` at a terminal should replace the board that is up,
+    or None to use it. It used to replace only a READ-ONLY board; a writable
+    one that was weeks out of date it reported as "already running"."""
+    if restart:
+        return "restart"
+    if not ident.get("writes"):
+        return "read-only"
+    # A board predating the fingerprint cannot report one, so it is older than
+    # this check by definition.
+    if ident.get("code") is None or ident.get("stale"):
+        return "stale"
+    return None
+
+
 def serve(port: int = 8976, writable: bool | None = None) -> None:
+    _STARTED["fp"], _STARTED["at"] = _code_fingerprint(), time.time()
     # A person running `mission board` has a terminal; the background board that
     # `mission init` spawns does not, and its stdout goes to a log file the
     # agent could read. So the tty IS the test, and the code only ever reaches

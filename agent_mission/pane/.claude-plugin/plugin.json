@@ -1,0 +1,6 @@
+{
+  "name": "mission-pane",
+  "version": "0.1.0",
+  "description": "The mission board's waiting-on-you queue, in a pane, where your attention already is",
+  "types": "./types/index.d.ts"
+}

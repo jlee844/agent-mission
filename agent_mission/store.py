@@ -121,6 +121,10 @@ class Item:
     # text, so the verifier can bind a disk verdict to this exact row. A
     # SUGGESTION, never a state change: `done` still has one writer.
     claimed_done: str = ""
+    # C19-5: a short name for this item, <=6 words, so a surface can refer to
+    # it without printing a paragraph. Optional and DERIVED when absent (see
+    # `label_of`) -- it is a display concern, and `text` stays authoritative.
+    label: str = ""
     # C19-4: acceptance criteria attached to THIS item. `sharpen --propose`
     # used to file one new top-level row per finding, so sharpening ten loose
     # items added ten rows of noise -- the C12d wallpaper failure again. A
@@ -167,6 +171,11 @@ class Item:
     # mean the thing that was checked is no longer what is on offer.
     checked_note: str = ""
     checked_by: str = ""
+    # C20's third verdict: the verifier could not decide, and says why. An
+    # OPINION like `checked`, and the competing one: whichever came last
+    # stands, because both are about the same claim.
+    needs_human_note: str = ""
+    needs_human_by: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -198,6 +207,43 @@ class Node:
         """A branch is done when its agreed leaves are; a leaf when ticked."""
         return self.done_count == self.total and self.total > 0
 
+
+
+# The widest a label may be. Six words is the brief; the character cap is what
+# actually holds, because one long word can blow six words past a terminal
+# column. 52 keeps a label plus an 8-char id inside 60 columns.
+LABEL_MAX = 52
+
+
+def label_of(item: "Item") -> str:
+    """A short name for an item: authored if given, else derived from the text.
+
+    Derivation cuts at the first em-dash, colon or newline, because on real
+    rows that is where the title ends and the justification begins -- "Build
+    and upload", "Mode-switch routing", "DEPLOY BLOCKER for navigation". With
+    no delimiter it takes whole words up to the cap and marks the cut.
+
+    ⚠️ A hyphen inside a word is NOT a delimiter: cutting on a bare "-" turns
+    "Mode-switch routing" into "Mode". Only a spaced dash, or an em/en dash,
+    separates a clause.
+    """
+    if getattr(item, "label", ""):
+        return item.label.strip()
+    text = (item.text or "").strip()
+    if not text:
+        return ""
+    for sep in ("\n", " — ", " – ", " -- ", ": "):
+        if sep in text:
+            text = text.split(sep, 1)[0].strip()
+            break
+    if len(text) <= LABEL_MAX:
+        return text
+    out = ""
+    for word in text.split():
+        if len(out) + len(word) + 1 > LABEL_MAX - 1:
+            break
+        out = f"{out} {word}".strip()
+    return (out or text[:LABEL_MAX - 1]) + "\u2026"
 
 @dataclass
 class Mission:
@@ -234,6 +280,9 @@ class Mission:
     # `checklist`: they are not work, and putting them there is the noise
     # C19-4 exists to remove. Each is {id, target, text, by}.
     pending_criteria: list[dict] = field(default_factory=list)
+    # C20, ruled 2026-10-26: ONE standing verifier per project. The session
+    # registered here is told to check each new claim on this goal.
+    verifier: str = ""
 
     @property
     def items(self) -> list[Item]:
@@ -593,8 +642,15 @@ class MissionStore:
                                  "claims-done is for agreed work")
             if d.get("done"):
                 raise ValueError("already ticked — nothing to suggest")
+            # What the disk said NOW, frozen into the event. Recomputed later,
+            # the verdict of an old claim drifts as files change, so "how
+            # often do claims outrun the disk?" had no stable answer. Stamped
+            # here, not in the CLI, so every route is measured identically.
+            from .claims import verdict_for, verdict_word
+            verdict = verdict_word(verdict_for(
+                text, cwd=m.cwd or "", accepted_at=d.get("accepted_at", 0.0)))
             return self._append("claims_done", by, item_id=item_id, text=text,
-                                session_id=session_id)
+                                session_id=session_id, verdict=verdict)
 
     def remove(self, item_id: str, by: str) -> dict:
         """Drop an item from the plan. A soft delete: the event log keeps it.
@@ -729,6 +785,47 @@ class MissionStore:
                                  "one that checks it")
             return self._append("checked", by, item_id=item_id, text=note,
                                 session_id=session_id)
+
+    def needs_human(self, item_id: str, note: str, session_id: str = "",
+                    by: str = "agent") -> dict:
+        """C20's third verdict: a verifier read the claim and cannot decide.
+
+        Beside `checked` (agrees) and `finding` (sends it back), abstaining
+        had no word, so a verifier either guessed or said nothing. This is
+        the honest third answer, and it changes nothing structural: the item
+        stays in review, and the human's confirm is still the only tick.
+        Same guards as `checked`, for the same reasons.
+        """
+        if not (note or "").strip():
+            raise ValueError("say what you could not decide — an unexplained "
+                             "abstention tells the human nothing")
+        with _LogLock(self.root):
+            m = self.load()
+            if m is None:
+                raise NoMissionError(self.root.name)
+            d = next((d for d in m.checklist if d["id"] == item_id), None)
+            if d is None:
+                raise NoSuchItemError(item_id)
+            if not d.get("claimed_done"):
+                raise ValueError("nothing claimed on this item — there is no "
+                                 "claim to judge")
+            if session_id and session_id == (d.get("claimed_by") or ""):
+                raise ValueError("the session that claimed it cannot be the "
+                                 "one that judges it")
+            return self._append("needs_human", by, item_id=item_id, text=note,
+                                session_id=session_id)
+
+    def set_verifier(self, session_id: str, by: str = "agent",
+                     clear: bool = False) -> dict:
+        """Register this goal's standing verifier (C20, one per project).
+
+        Observable: naming who checks claims routes work, it decides nothing.
+        The verifier still cannot tick, accept or set anything, and cannot
+        judge its own claims. The latest registration wins.
+        """
+        self._require_mission()
+        return self._append("verifier", by,
+                            session_id="" if clear else session_id)
 
     def detour(self, label: str, by: str = "agent") -> dict:
         """Declare a side quest. Observable: recording is not deciding."""
@@ -875,6 +972,7 @@ class MissionStore:
                             d["rework"] = ""
                             d["leased_by"] = ""
                             d["checked_note"] = ""
+                            d["needs_human_note"] = ""
                 elif k == "claims_done":
                     for d in m.checklist:
                         if d["id"] == ev["item_id"] and not d["done"]:
@@ -888,6 +986,8 @@ class MissionStore:
                             d["rework"] = ""
                             d["checked_note"] = ""
                             d["checked_by"] = ""
+                            d["needs_human_note"] = ""
+                            d["needs_human_by"] = ""
                 elif k == "leased":
                     for d in m.checklist:
                         if d["id"] == ev["item_id"]:
@@ -921,11 +1021,24 @@ class MissionStore:
                             d["release_note"] = ""
                             d["checked_note"] = ""
                             d["checked_by"] = ""
+                            d["needs_human_note"] = ""
+                            d["needs_human_by"] = ""
                 elif k == "checked":
                     for d in m.checklist:
                         if d["id"] == ev["item_id"]:
                             d["checked_note"] = ev.get("text", "")
                             d["checked_by"] = ev.get("session_id", "")
+                            d["needs_human_note"] = ""
+                            d["needs_human_by"] = ""
+                elif k == "needs_human":
+                    for d in m.checklist:
+                        if d["id"] == ev["item_id"]:
+                            d["needs_human_note"] = ev.get("text", "")
+                            d["needs_human_by"] = ev.get("session_id", "")
+                            d["checked_note"] = ""
+                            d["checked_by"] = ""
+                elif k == "verifier":
+                    m.verifier = ev.get("session_id", "")
                 elif k == "archived":
                     m.archived = True
                 elif k == "unarchived":

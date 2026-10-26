@@ -254,6 +254,7 @@ already agreed, so taking one needs no permission:
 mission take          # hands you one ready item and leases it to this session
 mission queue         # the four lanes: ready · in progress · in review · waiting
 mission guards        # what the guardrails have refused — evidence, read-only
+mission claims --report   # what the disk said about claims WHEN they were made
 ```
 
 `guards` is the ledger of refusals: writes to fields you do not own, human-only
@@ -262,6 +263,54 @@ It exists because guards work by refusing, so their successes left no trace and
 "are these worth the complexity?" could only be answered from memory. It is
 **evidence, not enforcement** — nothing reads it to make a decision, and the
 log is a plain file, so it is not a security record.
+
+## Other sessions: go through the board
+
+**The board is the only channel between sessions.** When you need something
+from another session, or need something done in its context, do not guess its
+state, read its transcript, or message it directly:
+
+- **To learn what it is doing**, read the board: `mission snapshot`,
+  `mission queue --on <its goal>`, `mission why <id>`.
+- **To ask it for work**, put an item on ITS goal (`propose`, or `dispatch` to
+  hand ready work to idle sessions). It sees the item at its next prompt and
+  answers on the board — `claims-done`, `finding`, `checked`, or a note.
+- **To report back**, write to the board, never only to the chat. A result
+  that lives in one conversation is invisible to every other session and to
+  the human scanning the board.
+
+Sessions once coordinated by talking to each other directly, because nothing
+else could carry a request or a verification. The board does now; a direct
+channel is a second record nobody else can see.
+
+## A folder that does not belong on the board
+
+If this session is NOT ATTACHED and the person says its folder should not
+become a goal, record that answer so no later session in the folder asks
+again:
+
+```bash
+mission skip-dir          # this folder, and everything under it
+mission skip-dir --undo   # start asking again
+```
+
+It refuses the home folder and `/`, which would silence every session. A
+recorded no only quiets the question; it never hides a goal you joined.
+
+## The pane
+
+`mission setup` also installs a **pane** — a small panel beside the chat that
+shows THIS session's goal first, then any goal elsewhere waiting on the human.
+It opens by itself only when this session's goal needs the human; `/mission`
+opens it any time. It ships inside the package (`agent_mission/pane/`), and
+setup adds that folder to `CLAUDE_CODE_PLUGIN_DIRS` in the user settings, so
+every session loads the same copy. **Do not write a second pane** in a
+session's own mod folder: two copies of one mod drift, and that is how the
+first one came to disagree with the board.
+
+Its tests run inside the Python suite (`tests/test_pane_mod.py`) through
+`claude plugin test`, which needs a claude new enough to have that command —
+the one on PATH can be older than the engine the session runs on.
 
 `take` leases the item to this session so two sessions cannot silently pick the
 same one. **If you cannot finish it, hand it back with a reason** — a release
@@ -307,7 +356,25 @@ separate. If you are checking:
 mission verify                       # every claim, its artifacts, the disk's verdict
 mission checked 4a1c9e02 "what you read, and why it holds"
 mission finding 4a1c9e02 "what is missing or wrong"
+mission needs-human 4a1c9e02 "what you could not decide"
 ```
+
+**Can't tell is an answer.** `needs-human` says you read the claim and cannot
+decide, and why; the item stays in review with your reason beside it. A forced
+guess is worse.
+
+**One standing verifier per project** (ruled 2026-10-26). A goal can name the
+session that checks its claims:
+
+```bash
+mission verifier                     # this session is this goal's verifier
+mission verifier --clear             # the goal has none
+```
+
+The registered verifier is asked about each new claim at its next prompt;
+every other session is only told. Judge each claim from its brief as if fresh,
+not from what you decided about earlier ones — a long-lived verifier
+accumulating its own verdicts is the risk this arrangement carries.
 
 `checked` is an OPINION and the board labels it as one — you are the same model
 reading the same disk, and the honest value is the fresh context, not

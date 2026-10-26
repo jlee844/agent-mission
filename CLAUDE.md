@@ -18,6 +18,12 @@ The format is strict and it fails SILENTLY in three different ways.
 - **Paths resolve from the GOAL's cwd, not your shell's.** Working inside a
   repo that sits below the goal's root, a repo-relative path comes back
   unbacked. Prefix it.
+- **Claim only when EVERY clause of the item is met.** An item asked for
+  short labels on "every surface"; it was claimed after `show` alone, the
+  human correctly confirmed exactly what was claimed, and the remaining
+  surface landed after the item was closed with nothing to attach to. If you
+  find a gap after a tick, the fix is a **new proposal** naming the gap and
+  the ticked item — not a note, which nobody is asked to rule on.
 - **A `path:line` citation used to be dropped** and is now stripped to the
   path. If you add another citation shape, test it: the failure mode is a
   claim that reads as "you cited nothing" when you cited something.
@@ -38,6 +44,24 @@ The format is strict and it fails SILENTLY in three different ways.
   `pending` and in `accept --pending`, so it could never be accepted. A
   proposal nobody can see is worse than none: the agent reports filing it.
   Probe the end-to-end path through the CLI.
+- **A flag that suppresses failure hides it from you too.** `git mv -k`
+  skips errors silently: the pane folder was untracked, git refused the
+  move, `-k` returned success, and the `|| mv` fallback never ran. The
+  resulting wheel held zero pane files, and only listing the wheel showed it.
+- **Prove packaging by building and installing, never by reading the
+  config.** A `pip install` carries only the package; the first move of the
+  pane left it beside the package, where it would not exist after install.
+  Build the wheel, install it in a clean venv, and check the path exists.
+- **The `claude` on PATH can be older than the engine you run on.** One was
+  2.1.170 under a 2.1.308 session: it had no `plugin test` and its validator
+  rejected the current `hooks.json` format, which reads exactly like a broken
+  mod. `tests/test_pane_mod.py` finds a claude that has the command.
+- **A test nothing runs is a claim.** The pane's tests were written, never
+  run, and run once with the wrong runner (`vitest` cannot resolve
+  `claude-code/testing`). Through the real runner they failed 2 of 2. If a
+  test needs a special runner, wire it into the suite.
+- **The suite runs on Python 3.9.** A runtime annotation such as
+  `str | None` fails to import there; use `from __future__ import annotations`.
 - **Validate a command name against what EXISTS, not against what something
   else references.** A doc was written telling sessions to run a verb that
   had never been implemented.
@@ -57,6 +81,14 @@ The format is strict and it fails SILENTLY in three different ways.
   functions with different sets, so a goal with a claim in review needed
   attention in one surface and not the other. When you find a second copy,
   make it one function.
+- **One copy of the pane, shipped with the tool.** It lives in
+  `agent_mission/pane/` and `mission setup` loads it in every session. Never
+  write a second in a session's mod folder: the first pane was exactly that,
+  loaded only where it was written, and it carried its own copy of the label
+  rule that had already diverged from the board's.
+- **Another session is reached through the board, not directly.** Read its
+  state from `snapshot`/`queue`; ask it for work by putting an item on its
+  goal; report results on the board. See `commands/mission.md`.
 - **A new agent-runnable command must be documented** in
   `commands/mission.md` or exempted with a reason, and listed in the README
   table. Two contract tests enforce it.
