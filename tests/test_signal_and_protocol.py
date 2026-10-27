@@ -568,6 +568,10 @@ def _goal(tmp_path, monkeypatch, name="g"):
     monkeypatch.setenv("AGENT_MISSION_HOME", str(tmp_path))
     st = MissionStore(M.missions_root() / name)
     st.create("s1", str(tmp_path), "Ship the router", by="human")
+    # "worker" serves this goal. The accept line used to go to EVERY session
+    # and these tests never attached one; it is now addressed to the goal's
+    # own sessions (accepted 2026-10-26), so the worker must be one of them.
+    M.attach("worker", name)
     return st
 
 

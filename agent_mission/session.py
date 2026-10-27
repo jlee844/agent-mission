@@ -23,8 +23,19 @@ _TEST = re.compile(r"\b(pytest|jest|vitest|go test|cargo test|npm (run )?test|"
                    r"unittest|tox|rspec)\b|test_[\w-]+\.\w+|\btests?[/.]", re.I)
 
 
+# Where each agent puts its session id in the environment of the commands it
+# runs. Claude Code first: a Codex command started from inside a Claude
+# session inherits both, and the Claude id is the one that session's hooks
+# record. Codex exports CODEX_THREAD_ID, the same id its hooks receive.
+SESSION_ENV = ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID")
+
+
 def current_session_id() -> str | None:
-    return os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip() or None
+    for name in SESSION_ENV:
+        v = os.environ.get(name, "").strip()
+        if v:
+            return v
+    return None
 
 
 def transcript_for(session_id: str) -> Path | None:

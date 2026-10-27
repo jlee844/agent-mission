@@ -57,7 +57,14 @@ _AGENT_ENV = ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT")
 # family does not stop `env -u` either -- nothing here does -- but it removes
 # the class where the list simply fell behind the product.
 _AGENT_ENV_PREFIX = ("CLAUDE_", "CLAUDECODE", "ANTHROPIC_")
-_AGENT_ENV_EXACT = ("AI_AGENT", "CLAUDECODE")
+_AGENT_ENV_EXACT = ("AI_AGENT", "CLAUDECODE",
+                    # Codex. Named, not a CODEX_ prefix: a person may set
+                    # CODEX_HOME in their own shell, and a false positive
+                    # refuses a real person's write. Codex's sandbox blocks
+                    # `ps`, so the ancestor walk sees nothing there and these
+                    # are the only signal.
+                    "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_SANDBOX",
+                    "CODEX_CI", "CODEX_SHELL")
 
 
 def agent_env() -> list[str]:
@@ -68,7 +75,7 @@ def agent_env() -> list[str]:
 # Matched against the ancestor's command. `claude` is the CLI; a node process
 # running it shows up as node with claude on the argv, which is why the check
 # looks at the whole command string and not just the basename.
-_AGENT_HINTS = ("claude", "claude-code")
+_AGENT_HINTS = ("claude", "claude-code", "codex")
 
 _MAX_DEPTH = 24          # launchd is pid 1; this is slack, not a real bound
 

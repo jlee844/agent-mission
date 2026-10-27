@@ -1570,6 +1570,10 @@ def cmd_finding(a) -> int:
     if mid is None:
         return 1
     sid = getattr(a, "as_session", "") or current_session_id() or ""
+    m = st.load()
+    before = next((d for d in (m.checklist if m else [])
+                   if d["id"] == a.item_id), {})
+    claimant = before.get("claimed_by") or ""
     try:
         st.finding(a.item_id, a.text, session_id=sid,
                    by="human" if _at_a_keyboard() else "agent")
@@ -1579,7 +1583,32 @@ def cmd_finding(a) -> int:
     print(f"  sent back: [{a.item_id}] is in the ready queue again")
     print(f"  reason recorded: {a.text[:90]}")
     print("  the claim it had is cleared; nothing was un-accepted or ticked")
+    line = _finding_wake(a.item_id, a.text, mid, claimant, sid)
+    if line:
+        print(f"  {line}")
     return 0
+
+
+def _finding_wake(item_id: str, text: str, mid: str, claimant: str,
+                  sid: str) -> str:
+    """The wake-up line for the session whose claim was just sent back.
+
+    A finding re-queues the work, but the doer only reads the board when
+    someone types in it, so the fix sat untaken. The checker is the one
+    session that knows, so it is told who to wake and what to say -- the
+    same shape as the accept line. Only a finding prompts this: `checked`
+    and `needs-human` leave nothing for the doer to change, so they stay
+    silent. No claimant (a finding found by reading) or the checker being
+    the claimant: nobody else to wake.
+    """
+    if not claimant or claimant == sid:
+        return ""
+    from .signal import wake_text
+    msg = (f"Your claim on {item_id} ({mid}) was sent back by a check: "
+           f"{text[:200]} — fix it, then `mission take {item_id} --on {mid}` "
+           f"and re-claim naming the file you changed.")
+    return f"[{item_id}] the session that claimed it has not been told: " \
+           f"{wake_text([claimant], msg)}"
 
 
 def cmd_snapshot(a) -> int:
@@ -2609,8 +2638,92 @@ def cmd_check(a) -> int:
     return 0
 
 
+def _board_home() -> Path:
+    return Path(os.environ.get("AGENT_MISSION_HOME")
+                or Path.home() / ".agent-mission")
+
+
+def _blocked_write_message(e: PermissionError) -> "str | None":
+    """A refused write to the BOARD, said plainly -- or None for any other
+    permission error, which must stay a real traceback.
+
+    Inside Codex the usual cause is its sandbox: workspace-write refuses
+    paths outside the workspace and read-only refuses everything. One line
+    fixes every mode, so the message gives that line and never suggests
+    widening the sandbox, which would lift it for everything the thread runs.
+    """
+    home = _board_home().expanduser()
+    target = getattr(e, "filename", None) or ""
+    try:
+        if target and not Path(target).expanduser().resolve().is_relative_to(
+                home.resolve()):
+            return None
+    except (AttributeError, OSError):          # py3.8 has no is_relative_to
+        if target and not str(Path(target).resolve()).startswith(
+                str(home.resolve())):
+            return None
+    lines = [f"\n  the board is fine, but this process may not write to it "
+             f"({target or home})."]
+    if os.environ.get("CODEX_SANDBOX"):
+        from . import codex as CX
+        lines += [
+            "  Codex's sandbox blocked it. Reading the board still works.",
+            "  The person can allow exactly this folder by adding to",
+            "  ~/.codex/config.toml:",
+            "",
+            "    " + CX.SANDBOX_LINE.format(store=str(home)).replace(
+                "\n", "\n    "),
+            "",
+            "  or approve this one command outside the sandbox if Codex "
+            "offers. Do not ask for full access.",
+        ]
+    else:
+        lines.append(f"  Check the permissions on {home}.")
+    return "\n".join(lines) + "\n"
+
+
+def _setup_codex(a) -> int:
+    """`setup --codex`: the same two hook lines and the protocol, for Codex.
+
+    Same rule as every other surface: it changes another program's config,
+    so a person at the keyboard runs it, never an agent."""
+    from . import codex as CX
+    store = os.environ.get("AGENT_MISSION_HOME") or str(
+        Path.home() / ".agent-mission")
+    if getattr(a, "check", False):
+        st = CX.status()
+        print(f"  codex home      {st['home']}"
+              + ("" if st["codex_installed"] else "  (not found)"))
+        hook_state = ("installed" if st["hooks"] else
+                      "invalid" if st["hooks_error"] else "missing")
+        print(f"  hooks.json      {hook_state}")
+        if st["hooks_error"]:
+            print(f"                  {st['hooks_error']}")
+        print(f"  AGENTS.md       "
+              f"{'installed' if st['agents_md'] else 'missing'}")
+        # Not a failure: a full-access thread needs no line. Reported so a
+        # workspace-write thread's refusal is found at setup, not mid-task.
+        print(f"  sandbox line    "
+              + ("present" if st["sandbox"] else
+                 "missing — only full-access Codex threads can write the "
+                 "board; add it with `mission setup --codex`'s printed line"))
+        return 0 if st["hooks"] and st["agents_md"] else 1
+    if not _at_a_keyboard():
+        print("  setup --codex changes Codex's hooks and AGENTS.md, so it runs "
+              "only at a person's keyboard. Run it in your own terminal.")
+        return 1
+    for line in CX.install() or ["already installed; nothing changed"]:
+        print(f"  {line}")
+    print()
+    for line in CX.next_steps(store):
+        print(f"  {line}")
+    return 0
+
+
 def cmd_setup(a) -> int:
     """Install the /mission slash command so sessions run it, not read it."""
+    if getattr(a, "codex", False):
+        return _setup_codex(a)
     if getattr(a, "check", False):
         return cmd_check(a)
     src = Path(__file__).resolve().parent.parent / "commands" / "mission.md"
@@ -3083,6 +3196,9 @@ def _build() -> argparse.ArgumentParser:
     su.add_argument("--force", action="store_true")
     su.add_argument("--check", action="store_true",
                     help="report which surfaces are installed; change nothing")
+    su.add_argument("--codex", action="store_true",
+                    help="install the board's hooks and protocol for Codex "
+                         "(GPT) instead of Claude Code")
     su.add_argument("--no-statusline", action="store_true",
                     help="skip the statusline offer")
     su.add_argument("--no-hooks", action="store_true",
@@ -3345,6 +3461,12 @@ def main(argv: list[str] | None = None) -> int:
             setattr(a, name, default)
     try:
         return (a.fn if getattr(a, "fn", None) else cmd_show)(a)
+    except PermissionError as e:
+        msg = _blocked_write_message(e)
+        if msg is None:
+            raise
+        print(msg)
+        return 1
     except NoMissionError:
         # Reported from another session: `mission add` on an empty store raised
         # NoSuchItemError on the id it had just written, and `propose` was

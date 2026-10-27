@@ -604,10 +604,16 @@ def _last_group(body: str) -> str:
 _SUFFIX = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 
 
+# A number with a unit or a version: `3.9s`, `0.5s`, `1.2x`, `v0.2`,
+# `2.1.308`. Path-shaped (a dot and a "suffix") and never a file. Seen live:
+# queue said an item "names 3.9s, so a fresh session can claim it checkably".
+_NUMBERISH = re.compile(r"^v?\d+(?:\.\d+)+[a-z%]{0,3}$", re.I)
+
+
 def looks_like_a_file(tok: str) -> bool:
     """Path-shaped AND plausibly a file or directory. One definition."""
     tok = (tok or "").strip()
-    if not _PATHY.match(tok):
+    if not _PATHY.match(tok) or _NUMBERISH.match(tok):
         return False
     if tok.endswith(("/", "\\")):
         return True
@@ -673,14 +679,86 @@ def _is_evidence(child: Path) -> bool:
     return True
 
 
+def _git(args: list, cwd: Path) -> "subprocess.CompletedProcess | None":
+    import subprocess
+    try:
+        return subprocess.run(["git", "-C", str(cwd), *args],
+                              capture_output=True, text=True, timeout=3)
+    except Exception:         # the claim hook must never crash on git;
+        return None           # any failure falls back to mtime
+
+
+def _git_changed(p: Path, since: float) -> "bool | None":
+    """What git says about whether `p` changed since `since`; None = ask mtime.
+
+    A timestamp moves for reasons that are not work: a formatter rewriting a
+    file byte for byte, a branch switch, a log or build file written on every
+    run. Git can tell those apart, so inside a repo it decides:
+
+      * a commit after acceptance touching the path      -> changed
+      * an uncommitted edit or new file, mtime after     -> changed
+      * gitignored                                       -> not evidence
+      * tracked, clean, last committed before acceptance -> NOT changed,
+        whatever its mtime says
+
+    ⚠️ The literal rule first proposed -- "tracked and modified" -- would have
+    marked COMMITTED work unbacked: once committed a file is tracked and NOT
+    modified, so the best evidence there is would fail. Commits are checked
+    by their time instead.
+
+    Outside any repo (the goal folder itself is often not one; its sub-repos
+    are), or if git is missing or slow, returns None and mtime decides.
+    """
+    base = p if p.is_dir() else p.parent
+    top = _git(["rev-parse", "--show-toplevel"], base)
+    if top is None or top.returncode != 0:
+        return None
+    root = Path(top.stdout.strip())
+    ign = _git(["check-ignore", "-q", str(p)], root)
+    if ign is not None and ign.returncode == 0:
+        return False
+    log = _git(["log", "-1", "--format=%ct", "--", str(p)], root)
+    if log is None or log.returncode != 0:
+        return None
+    if log.stdout.strip() and int(log.stdout.strip()) > since:
+        return True
+    st = _git(["status", "--porcelain", "-z", "--untracked-files=all",
+               "--", str(p)], root)
+    if st is None or st.returncode != 0:
+        return None
+    parts = st.stdout.split("\0")
+    skip = False
+    for entry in parts:
+        if skip:                  # the OLD name of a rename; not a change here
+            skip = False
+            continue
+        if len(entry) < 4:
+            continue
+        skip = entry[0] in "RC"
+        f = root / entry[3:]
+        if p.is_dir() and not _is_evidence(f):
+            continue
+        try:
+            if f.stat().st_mtime > since:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _touched_since(p: Path, since: float) -> bool:
     """Has this artifact changed since the work was agreed?
+
+    Inside a git repo, git decides (`_git_changed`); elsewhere, mtime.
 
     A directory counts if ANYTHING inside it has -- naming a package as the
     artifact of a change inside it is normal and honest, and requiring the
     directory's own mtime to move would reject it on most filesystems.
     Bounded walk: a claim naming a huge tree must not stall the Stop hook.
     """
+    said = _git_changed(p, since) if p.exists() else None
+    if said is not None:
+        return said
     try:
         if not p.is_dir():
             return p.stat().st_mtime > since

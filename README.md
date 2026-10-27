@@ -10,7 +10,7 @@ it — which is evidence, not prevention, and not proof the work is right.**
 [![license](https://img.shields.io/badge/license-MIT-666)](LICENSE)
 
 `mission` is a zero-dependency Python CLI plus a local web board for Claude
-Code sessions, built on three write authorities:
+Code and Codex sessions, built on three write authorities:
 
 - **protected** objectives — human-authored
 - **proposed** work — agent-suggested, human-accepted
@@ -110,7 +110,7 @@ moves the counter except a human ruling on evidence:
         └─────────────────────────────┘
 ```
 
-Integration is one line: Claude Code hooks → append-only event log
+Integration is one line: Claude Code and Codex hooks → append-only event log
 (`~/.agent-mission/`) → statusline · signal · board · CLI. State is a fold
 over the log, so *why does it say this* is always answerable from history.
 
@@ -127,6 +127,67 @@ Opt-in, never installed by default: `--auto-board` starts a writable board
 from your shell rc at login (one code paste per day, buttons thereafter);
 `--notify` adds an OS notification when a proposal lands (edge-triggered, max
 one per 10 minutes).
+
+### Install from Codex first, then connect Claude Code
+
+The board belongs to the local `~/.agent-mission` store, not to either coding
+assistant. On the same Mac and user account, Codex and Claude Code can attach
+to and update the same goals in either order. Set up each client once; the
+trust and sandbox steps are left to the person on purpose: the tool never
+writes them, and an agent should not.
+
+1. Install the CLI, then run Codex setup in a **person-operated terminal**:
+
+   ```bash
+   pip install git+https://github.com/jlee844/agent-mission
+   mission setup --codex
+   ```
+
+   The installer backs up and writes `~/.codex/hooks.json` plus a mission
+   protocol block in `~/.codex/AGENTS.md`. It is idempotent and preserves
+   unrelated hooks. The file uses Codex's required top-level `hooks` object.
+
+2. Finish the two security steps it prints:
+   - In Codex, open `/hooks` and review/trust the two mission hooks. Codex does
+     not run untrusted hooks.
+   - Add the exact `[sandbox_workspace_write]` stanza printed by the installer
+     to `~/.codex/config.toml`. It grants the local agent access to the board
+     store under `~/.agent-mission`; the installer deliberately does not edit
+     this security setting. Preserve any existing `writable_roots` entries.
+
+3. Restart Codex and verify the setup. If the board is new, the **person**
+   creates its first goal from the project directory in a terminal with
+   `mission init`; then attach Codex to that goal. Otherwise, attach to an
+   existing mission:
+
+   ```bash
+   mission setup --codex --check
+   mission missions
+   mission attach <goal-name>
+   mission whereami --full
+   mission queue --on <goal-name>
+   ```
+
+   If no goal fits, the person creates/approves one first; agents must not
+   invent or repurpose goals. The CLI and board are shared, so the goal created
+   during this Codex-first workflow is immediately available to Claude Code.
+
+4. Connect Claude Code later from the same machine/account:
+
+   ```bash
+   mission setup
+   ```
+
+   In Claude Code, run `/mission`, then attach to the same goal (or use
+   `mission attach <goal-name>`). Both clients now report sessions, evidence,
+   proposals, and claims to the same board. No export/import or migration is
+   needed. If the clients use different machines or `AGENT_MISSION_HOME`
+   values, they are not sharing the same local store automatically.
+
+5. If `mission setup --codex --check` reports `hooks.json invalid`, rerun
+   `mission setup --codex` from the person's terminal; the installer can back
+   up and migrate the older flat event format. Then revisit `/hooks` and trust
+   the updated hook definitions again if Codex prompts.
 
 ## Commands
 
@@ -167,6 +228,7 @@ one per 10 minutes).
 | `board` | the shared board; at a tty it is writable (`--stop`) |
 | `passcode` | set the board's write code yourself, so it survives restarts (`--clear`) |
 | `setup` / `help <cmd>` / `version` | install; usage without running; the build + every live command |
+| `setup --codex` | the same hooks and protocol for Codex (GPT) threads; prints the one sandbox line Codex needs, never edits it |
 
 ## Addressing
 

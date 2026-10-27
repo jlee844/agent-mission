@@ -283,6 +283,16 @@ Sessions once coordinated by talking to each other directly, because nothing
 else could carry a request or a verification. The board does now; a direct
 channel is a second record nobody else can see.
 
+**One direct message is allowed: the wake-up.** A session reads the board only
+when someone types in it, so accepted work on an idle session's goal sits
+untaken. When the signal says *your request on <goal> was ACCEPTED … its
+session has not been told*, or when your `finding` prints *the session that
+claimed it has not been told*, send that session the message the line gives you,
+addressed to the app title it names, using your cross-session messaging tool
+if you have one. The message points at the board item and nothing else; the
+answer still comes back on the board. A Codex thread cannot be messaged from a
+Claude session and sees the item at its next prompt.
+
 ## A folder that does not belong on the board
 
 If this session is NOT ATTACHED and the person says its folder should not

@@ -117,6 +117,10 @@ class Item:
     proposed_by: str = "agent"
     accepted: bool = False
     parent: str | None = None
+    # The session that proposed this, when it was a session. Kept so the
+    # ACCEPT can be routed back to whoever asked: a session that files work
+    # on another goal is the one that should wake that goal's session.
+    from_session: str = ""
     # C17: the agent's claim that this item is finished -- the legible-claim
     # text, so the verifier can bind a disk verdict to this exact row. A
     # SUGGESTION, never a state change: `done` still has one writer.
@@ -940,7 +944,9 @@ class MissionStore:
                 elif k == "proposed":
                     m.checklist.append(Item(ev["item_id"], ev["text"],
                                             proposed_by=ev.get("by", "agent"),
-                                            parent=ev.get("parent")).to_dict())
+                                            parent=ev.get("parent"),
+                                            from_session=ev.get(
+                                                "from_session", "")).to_dict())
                 elif k == "criterion_proposed":
                     m.pending_criteria.append({
                         "id": ev["item_id"], "target": ev.get("target", ""),

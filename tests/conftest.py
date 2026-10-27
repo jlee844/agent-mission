@@ -120,7 +120,12 @@ def _no_ambient_session_id(monkeypatch):
 
     A test that needs a session id sets one.
     """
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    # Every variable the code reads an id from, by the code's own list:
+    # widening session.SESSION_ENV to CODEX_THREAD_ID without this made 14
+    # tests fail whenever the suite ran inside a Codex thread.
+    from agent_mission.session import SESSION_ENV
+    for var in SESSION_ENV:
+        monkeypatch.delenv(var, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -140,9 +145,9 @@ def _no_ambient_agent_markers(monkeypatch):
     asserting the HONEST path started seeing the runner's own environment.
     Clearing by the same rule the code reads keeps the two in step.
     """
+    from agent_mission.whoami import _AGENT_ENV_EXACT, _AGENT_ENV_PREFIX
     for var in list(os.environ):
-        if (var.startswith(("CLAUDE_", "CLAUDECODE", "ANTHROPIC_"))
-                or var == "AI_AGENT"):
+        if var.startswith(_AGENT_ENV_PREFIX) or var in _AGENT_ENV_EXACT:
             monkeypatch.delenv(var, raising=False)
     # The parent chain is the other half and cannot be unset, only replaced.
     monkeypatch.setattr("agent_mission.whoami.ancestors", lambda pid=None: [],

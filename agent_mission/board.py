@@ -252,6 +252,7 @@ def mission_rows() -> list[dict]:
     live_ids = HB.live_ids()
     known_ids = HB.known_ids()
 
+    app_titles = None
     for mid, st in M.all_missions():
         m = _safe_load(st.root)
         if m is None or m.archived:
@@ -284,6 +285,12 @@ def mission_rows() -> list[dict]:
         calls = files = tests = fails = 0
         sess = []
         claims_bad, claims_checked = [], 0
+        if app_titles is None:
+            from .apptitles import titles as _titles
+            try:
+                app_titles = _titles()
+            except Exception:              # a title is a nicety, never a crash
+                app_titles = {}
         for sid in M.sessions_of(mid):
             tp = transcript_for(sid)
             a = activity(tp) if tp else None
@@ -318,6 +325,11 @@ def mission_rows() -> list[dict]:
                          "liveness": ("live" if sid in live_ids
                                       else "ended" if sid in known_ids
                                       else "unknown"),
+                         # The name in the app's sidebar. The id alone hid
+                         # the career goal's session: nobody could match
+                         # an 8-character id to the title in the sidebar.
+                         "app": app_titles.get(sid, ("", ""))[0],
+                         "app_kind": app_titles.get(sid, ("", "terminal"))[1],
                          "calls": a.calls if a else 0})
         out.append({
             "id": mid, "full": mid, "mission": True,
@@ -893,6 +905,7 @@ color:var(--mut);cursor:pointer;text-decoration:underline;text-underline-offset:
 .kids{margin-top:.75rem;padding-top:.6rem;border-top:1px solid var(--soft)}
 .kid{display:flex;gap:.5rem;align-items:baseline;font-size:.8rem;padding:.14rem 0}
 .kid .kn{font-family:var(--mono);font-size:.66rem;color:var(--mut);flex:none}
+.kid .kn small.sid{font-size:.6rem;opacity:.7;margin-left:.3em}
 .kid .kt{flex:1;text-wrap:pretty}
 .kid .kp{font-family:var(--mono);font-size:.66rem;color:var(--mut);flex:none}
 .spacer{flex:1}
@@ -1736,7 +1749,8 @@ async function tick(force){
           <span class="dot ${x.liveness==='live'?'working':
                              (x.liveness==='unknown'||x.liveness==='guessed')
                                ?'unknown':'ended'}"></span>
-          <span class=kn>${esc(x.id)}</span>
+          <span class=kn>${x.app?`${esc(x.app)} <small class=sid>${esc(x.id)}${
+            x.app_kind==='codex'?' · Codex':''}</small>`:esc(x.id)}</span>
           <span class=kt>${x.liveness==='live'?'live':
             x.liveness==='guessed'?'possibly live — guessed from file times':
             x.liveness==='unknown'?'liveness unknown — no heartbeat':'ended'}</span>

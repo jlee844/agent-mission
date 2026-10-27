@@ -72,6 +72,56 @@ def _contract_path() -> Path:
                                Path.home() / ".claude" / "commands" / "mission.md"))
 
 
+def _wake_line(item, title: str, mid: str, sid: str, attached: dict) -> str:
+    """Tell the session that asked for work how to wake the one that will do it.
+
+    A session only reads the board when a person types in it, so accepted
+    work on an idle session's goal sat untaken until someone noticed. The
+    asker is the one session that knows it is waiting, and it can message
+    another session -- so it is the one told, by the name the person sees.
+    """
+    from .heartbeat import live_ids
+    from .store import label_of
+    lab = label_of(item)
+    serving = [s for s, g in attached.items() if g == mid and s != sid]
+    if not serving:
+        return (f"[{item.id}] your request on {title} was ACCEPTED: “{lab}” — "
+                f"no session serves that goal yet; it waits on the board")
+    try:
+        live = live_ids()
+    except Exception:
+        live = set()
+    serving.sort(key=lambda s: s not in live)          # live ones first
+    msg = (f"New accepted work on your goal ({mid}): “{lab}”. Take it with "
+           f"`mission take {item.id} --on {mid}`, and report on the board.")
+    return (f"[{item.id}] your request on {title} was ACCEPTED: “{lab}” — its "
+            f"session has not been told: {wake_text(serving, msg)}")
+
+
+def wake_text(sids: list, msg: str) -> str:
+    """Who to wake and how: the sessions by the names the person sees, then
+    the message to send. One rendering for every wake-up the board prompts,
+    so the accept line and the finding line cannot drift apart.
+    """
+    from .apptitles import titles
+    table = titles()
+    who = []
+    for s in sids[:2]:
+        name, kind = table.get(s, ("", "terminal"))
+        if kind == "codex":
+            who.append(f"Codex thread “{name}” (cannot be messaged from here; "
+                       f"it sees this at its next prompt)")
+        elif name:
+            who.append(f"“{name}”")
+        else:
+            who.append(f"session {s[:8]} (terminal, no app title)")
+    target = next((table[s][0] for s in sids
+                   if table.get(s, ("", ""))[1] == "claude-desktop"), "")
+    how = (f" Wake it with a cross-session message to “{target}” saying: "
+           f"{msg}" if target else f" Message: {msg}")
+    return f"{', '.join(who)}.{how}"
+
+
 def check(sid: str, base=None) -> list[str]:
     """One line per mission whose pending count ROSE since this session last
     looked. Empty list almost always — silence is the normal output.
@@ -134,6 +184,7 @@ def check(sid: str, base=None) -> list[str]:
         before = set(seen_ids.get(key, []))
         return [i for i in items if i.id not in before]
 
+    attached = M.attachments(base)
     for mid, st in M.all_missions(base):
         m = st.load()
         if m is None or m.archived:
@@ -196,13 +247,21 @@ def check(sid: str, base=None) -> list[str]:
         akey = f"acc:{mid}"
         now_counts[akey] = len(fresh)
         newly = risen(akey, fresh)
-        if newly:
+        # ADDRESSED, not broadcast. It went to every session on every goal,
+        # so a session attached elsewhere was told to "take" another goal's
+        # item, and the person read that as filed on the wrong goal. The
+        # goal's own sessions get "take it"; the session that ASKED for the
+        # work, when it serves a different goal, gets "wake its session";
+        # everyone else gets nothing -- the board still shows it.
+        if newly and attached.get(sid) == mid:
             last = newly[-1]
             more = f" (+{len(newly) - 1} more)" if len(newly) > 1 else ""
             lines.append(
                 f"[{last.id}] on {m.title} is ACCEPTED and ready{more} — "
-                f"any session may take it: `mission take {last.id} "
-                f"--on {mid}`")
+                f"take it: `mission take {last.id} --on {mid}`")
+        mine = [i for i in newly if getattr(i, "from_session", "") == sid]
+        if mine and attached.get(sid) != mid:
+            lines.append(_wake_line(mine[-1], m.title, mid, sid, attached))
 
         # A HANDBACK is the reply a dispatcher most needs and the only one
         # nothing announced. A peer that takes an item, finds it cannot be

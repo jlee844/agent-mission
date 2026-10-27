@@ -66,6 +66,26 @@ The format is strict and it fails SILENTLY in three different ways.
   else references.** A doc was written telling sessions to run a verb that
   had never been implemented.
 
+- **Testing as Codex from inside a Claude session inherits Claude's id.**
+  `CLAUDE_CODE_SESSION_ID` wins over `CODEX_THREAD_ID` on purpose, so strip
+  every `CLAUDE*` variable first. In zsh, `env $UNSET cmd` with `-u` flags in
+  one string removes NOTHING (an unquoted variable is not word-split); use an
+  array, `env "${UNSET[@]}" cmd`, and count what is left before trusting a
+  result. One run blamed the code for an id that was the harness's.
+- **`codex exec` waits on stdin when stdin is open.** Two headless runs hung
+  for minutes on "Reading additional input from stdin..."; add `< /dev/null`.
+
+- **Widening what the code reads from the environment widens what the tests
+  must clear.** `tests/conftest.py` clears session and agent variables so the
+  suite tests a clean machine. Adding `CODEX_THREAD_ID` to the code without
+  the fixture made 14 tests fail whenever the suite ran inside Codex -- the
+  same failure the fixture's docstring records from 2026-10-08. The fixture
+  now reads the code's own lists (`SESSION_ENV`, `_AGENT_ENV_*`); keep it so.
+- **Inside Codex's sandbox about nine board tests cannot run** (it forbids
+  binding a local socket). That is the environment, not a defect -- but say
+  which tests, never "unrelated": the first report called 23 failures
+  unrelated and 14 of them were real.
+
 ## Changing behaviour
 
 - **A test that pins the opposite of your change is a prior ruling.** Read
